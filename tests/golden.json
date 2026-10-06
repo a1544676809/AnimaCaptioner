@@ -1,0 +1,456 @@
+{
+ "scan": {
+  "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图": [
+   [
+    "grey hair",
+    "seed",
+    "银发"
+   ],
+   [
+    "cherry blossoms",
+    "seed",
+    "樱花"
+   ],
+   [
+    "under tree",
+    "exact",
+    "树下"
+   ],
+   [
+    "standing",
+    "seed",
+    "站立"
+   ],
+   [
+    "serafuku",
+    "seed",
+    "水手服"
+   ],
+   [
+    "wind",
+    "seed",
+    "风"
+   ],
+   [
+    "backlighting",
+    "seed",
+    "逆光"
+   ],
+   [
+    "full body",
+    "seed",
+    "全身构图"
+   ]
+  ],
+  "回头看向镜头": [
+   [
+    "looking back",
+    "seed",
+    "回头"
+   ],
+   [
+    "looking at viewer",
+    "seed",
+    "看向镜头"
+   ]
+  ],
+  "跪坐": [
+   [
+    "sitting on own leg",
+    "seed",
+    "跪坐"
+   ]
+  ],
+  "少女": [],
+  "双马尾": [
+   [
+    "twintails",
+    "seed",
+    "双马尾"
+   ]
+  ],
+  "微笑": [
+   [
+    "smile",
+    "seed",
+    "微笑"
+   ]
+  ],
+  "看向镜头": [
+   [
+    "looking at viewer",
+    "seed",
+    "看向镜头"
+   ]
+  ],
+  "黑色过膝袜": [
+   [
+    "black thighhighs",
+    "exact",
+    "黑色过膝袜"
+   ]
+  ],
+  "女仆装": [
+   [
+    "enmaided",
+    "seed",
+    "女仆装"
+   ]
+  ],
+  "水手服": [
+   [
+    "serafuku",
+    "seed",
+    "水手服"
+   ]
+  ],
+  "逆光": [
+   [
+    "backlighting",
+    "seed",
+    "逆光"
+   ]
+  ],
+  "和服": [
+   [
+    "japanese clothes",
+    "seed",
+    "和服"
+   ]
+  ]
+ },
+ "english": {
+  "wink": [
+   "wink",
+   "anima"
+  ],
+  "see-through": [
+   "see-through",
+   "anima"
+  ],
+  "topless": [
+   "topless",
+   "anima"
+  ],
+  "ass grab": [
+   "ass grab",
+   "anima"
+  ],
+  "vertical stripes": [
+   "vertical stripes",
+   "anima"
+  ],
+  "cat smile": [
+   "cat smile",
+   "anima"
+  ],
+  "long_hair": [
+   "long hair",
+   "anima"
+  ],
+  "silver bell": [
+   null,
+   "unknown"
+  ],
+  "china dress": [
+   "china dress",
+   "anima"
+  ],
+  "hairpin": [
+   "hairpin",
+   "anima"
+  ],
+  "game cg": [
+   "game cg",
+   "anima"
+  ],
+  "pom poms": [
+   "pom poms",
+   "anima"
+  ],
+  "looking away": [
+   "looking away",
+   "anima"
+  ],
+  "bangs": [
+   "bangs",
+   "no-usage"
+  ],
+  "twin tails": [
+   "twintails",
+   "alias"
+  ]
+ },
+ "chinese": {
+  "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图": [
+   null,
+   "no-match"
+  ],
+  "回头看向镜头": [
+   "looking at viewer",
+   "seed"
+  ],
+  "跪坐": [
+   "sitting on own leg",
+   "seed"
+  ],
+  "少女": [
+   null,
+   "no-match"
+  ],
+  "双马尾": [
+   "twintails",
+   "seed"
+  ],
+  "微笑": [
+   "smile",
+   "seed"
+  ],
+  "看向镜头": [
+   "looking at viewer",
+   "seed"
+  ],
+  "黑色过膝袜": [
+   "black thighhighs",
+   "exact"
+  ],
+  "女仆装": [
+   "enmaided",
+   "seed"
+  ],
+  "水手服": [
+   "serafuku",
+   "seed"
+  ],
+  "逆光": [
+   "backlighting",
+   "seed"
+  ],
+  "和服": [
+   "japanese clothes",
+   "seed"
+  ]
+ },
+ "counts": {
+  "tags": 331808,
+  "anima": 108257,
+  "alias": 62828,
+  "cn_exact": 326943,
+  "seed": 273,
+  "cn_keys": 327053,
+  "max_key": 102
+ },
+ "arrange_plain": [
+  "best quality",
+  "score_7",
+  "explicit",
+  "1girl",
+  "solo",
+  "@sayori style",
+  "long hair",
+  "smile",
+  "twintails",
+  "cherry blossoms"
+ ],
+ "arrange_rated": [
+  "explicit",
+  "best quality",
+  "score_7",
+  "1girl",
+  "solo",
+  "@sayori style",
+  "long hair",
+  "smile",
+  "twintails",
+  "cherry blossoms"
+ ],
+ "build_case0": {
+  "text": "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图",
+  "tags": [
+   "grey hair",
+   "full body",
+   "standing",
+   "backlighting",
+   "cherry blossoms",
+   "serafuku",
+   "under tree",
+   "wind"
+  ],
+  "trace": [
+   {
+    "cn": "银发",
+    "tag": "grey hair",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "樱花",
+    "tag": "cherry blossoms",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "树下",
+    "tag": "under tree",
+    "via": "exact",
+    "pass": "scan"
+   },
+   {
+    "cn": "站立",
+    "tag": "standing",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "水手服",
+    "tag": "serafuku",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "风",
+    "tag": "wind",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "逆光",
+    "tag": "backlighting",
+    "via": "seed",
+    "pass": "scan"
+   },
+   {
+    "cn": "全身构图",
+    "tag": "full body",
+    "via": "seed",
+    "pass": "scan"
+   }
+  ]
+ },
+ "prior": {
+  "size": 679,
+  "sample": {
+   "1boy": 0.037258,
+   "1girl": 0.023284,
+   "2 fingers": 0.875,
+   "2girls": 0.036354,
+   "6+girls": 0.030769,
+   ":3": 0.784615,
+   "@sayori style": 0.071674,
+   "after sex": 0.81952,
+   "after vaginal": 0.885246,
+   "against glass": 0.849057,
+   "against wall": 0.849057,
+   "ahoge": 0.411765,
+   "all fours": 0.795455,
+   "animal ear fluff": 0.617653,
+   "animal ear legwear": 0.934541,
+   "animal ears": 0.307205,
+   "ankle strap": 0.470588,
+   "anus": 0.698955,
+   "apron": 0.533333,
+   "arcade cabinet": 0.969697,
+   "arched back": 0.834069,
+   "arm behind back": 0.813953,
+   "arm support": 0.607843,
+   "arm up": 0.678495,
+   "armlet": 0.828571,
+   "armpits": 0.564133,
+   "arms behind back": 0.825,
+   "arms up": 0.609192,
+   "ass": 0.35146,
+   "ass grab": 0.862684,
+   "back": 0.72549,
+   "back bow": 0.417308,
+   "back cutout": 0.901961,
+   "bakery": 0.857943,
+   "bangs": 0.187042,
+   "bare ass": 0.386364,
+   "bare back": 0.575,
+   "bare hips": 0.294118,
+   "bare shoulders": 0.245768,
+   "bare thighs": 0.9
+  }
+ },
+ "audit": {
+  "files": 53,
+  "tags": 2335,
+  "clean": 12,
+  "agg": {
+   "2 fingers|not-a-tag|None": 1,
+   "bangs|no-usage|None": 4,
+   "bare ass|not-a-tag|None": 1,
+   "bare thighs|not-a-tag|None": 1,
+   "black crop top|not-a-tag|None": 1,
+   "black fishnet thighhighs|not-a-tag|None": 1,
+   "black pleated skirt|not-a-tag|None": 1,
+   "black short skirt|not-a-tag|None": 1,
+   "black underbust corset|not-a-tag|None": 1,
+   "blue back bow|not-a-tag|None": 1,
+   "blue eye|not-a-tag|None": 2,
+   "blue hair bow|not-a-tag|None": 3,
+   "blue name tag|not-a-tag|None": 1,
+   "blue obi|not-a-tag|None": 2,
+   "bra only|not-a-tag|None": 1,
+   "buttplug tail|not-a-tag|None": 1,
+   "clothes removed|alias|unworn clothes": 1,
+   "cross straps|not-a-tag|None": 1,
+   "curled ears|not-a-tag|None": 2,
+   "flipped skirt|not-a-tag|None": 2,
+   "folded ears|not-a-tag|None": 4,
+   "gloves removed|alias|unworn gloves": 1,
+   "gold belt buckle|not-a-tag|None": 1,
+   "gold name tag|not-a-tag|None": 1,
+   "gold vertical stripes|not-a-tag|None": 1,
+   "green high heels|not-a-tag|None": 1,
+   "green name tag|not-a-tag|None": 1,
+   "hands on hips|alias|hands on own hips": 1,
+   "leg garter|alias|frilled thigh strap": 2,
+   "light blue and white striped|not-a-tag|None": 1,
+   "light blue bow|not-a-tag|None": 1,
+   "light blue hair bow|not-a-tag|None": 1,
+   "light blue name tag|not-a-tag|None": 1,
+   "magenta bowtie|not-a-tag|None": 1,
+   "mixed bathing|not-a-tag|None": 1,
+   "orange fox tail|not-a-tag|None": 1,
+   "orange name tag|not-a-tag|None": 1,
+   "patterned obi|not-a-tag|None": 1,
+   "pink and white striped|not-a-tag|None": 1,
+   "pink detached sleeves|not-a-tag|None": 1,
+   "pink hair bow|not-a-tag|None": 1,
+   "pink lace-up boots|not-a-tag|None": 1,
+   "pink name tag|not-a-tag|None": 1,
+   "pink sheets|not-a-tag|None": 3,
+   "pink tail bow|not-a-tag|None": 1,
+   "polka dot hair bow|not-a-tag|None": 1,
+   "print yukata|alias|print kimono": 2,
+   "puff sleeves|not-a-tag|None": 1,
+   "purple name tag|not-a-tag|None": 2,
+   "purple obi|alias|purple sash": 1,
+   "red and white plaid|not-a-tag|None": 1,
+   "red and white striped|not-a-tag|None": 3,
+   "red and white vertical stripes|not-a-tag|None": 1,
+   "red high heels|not-a-tag|None": 2,
+   "red plaid capelet|not-a-tag|None": 1,
+   "see-through bangs|not-a-tag|None": 1,
+   "silver bell|not-a-tag|None": 6,
+   "silver belt buckle|not-a-tag|None": 1,
+   "skirt removed|alias|unworn skirt": 1,
+   "striped cat tail|not-a-tag|None": 3,
+   "table tennis table|not-a-tag|None": 1,
+   "thin tail|not-a-tag|None": 1,
+   "touching face|no-usage|None": 1,
+   "turned head|not-a-tag|None": 1,
+   "underbust corset|not-a-tag|None": 1,
+   "vertical striped bra|not-a-tag|None": 2,
+   "wet skin|alias|wet": 1,
+   "white back bow|not-a-tag|None": 6,
+   "white cuffs|not-a-tag|None": 1,
+   "white fishnet thighhighs|not-a-tag|None": 1,
+   "white fishnets|not-a-tag|None": 2,
+   "white maid headdress|not-a-tag|None": 6,
+   "white waist apron|not-a-tag|None": 1,
+   "yellow name tag|not-a-tag|None": 1
+  }
+ }
+}

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RootNamespace>AnimaCaptioner</RootNamespace>
+    <AssemblyName>corecheck</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      直接编译 app 的真实源文件（不是副本），所以归类规则、提示词解析、写盘逻辑
+      一改就会被测到。用相对路径定位，clone 到任何地方都能构建。
+    -->
+    <Compile Include="..\Log.cs" />
+    <Compile Include="..\Core\VocabDb.cs" />
+    <Compile Include="..\Core\CaptionFile.cs" />
+    <Compile Include="..\Core\AppSettings.cs" />
+    <Compile Include="..\Core\LlmClient.cs" />
+    <Compile Include="..\Core\DpapiSecret.cs" />
+    <Compile Include="..\Core\Parity.cs" />
+    <Compile Include="..\Core\TagSections.cs" />
+    <Compile Include="..\Core\TagOrder.cs" />
+    <Compile Include="..\Core\PromptText.cs" />
+    <Compile Include="..\Core\TagEdit.cs" />
+    <Compile Include="..\Core\SafetyRating.cs" />
+    <Compile Include="Sections.cs" />
+    <Compile Include="RoundTrip.cs" />
+    <Compile Include="Prose.cs" />
+    <Compile Include="Edit.cs" />
+    <Compile Include="Safety.cs" />
+    <Compile Include="Defaults.cs" />
+    <Compile Include="RichApi.cs" />
+    <Compile Include="Harness.cs" />
+  </ItemGroup>
+</Project>
