@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>AnimaCaptioner</RootNamespace>
+    <AssemblyName>AnimaCaptioner</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 依赖已安装的 .NET 运行时，不打包运行时本体（省 ~70MB）。
+         目标机需要 .NET 10 Desktop Runtime。 -->
+    <SelfContained>false</SelfContained>
+    <!-- 同上：Windows App SDK 也走已安装的运行时（省 ~200MB）。
+         目标机需要 Windows App Runtime 1.8+。 -->
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+
+    <!-- 许可：软件本体 GPL-3.0。注意 docs\ 下的随附 Markdown 是 CC BY-NC-SA 4.0
+         （非商业），见 docs\LICENSE；标签数据不随本仓库分发。 -->
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+    <Copyright>Copyright (C) 2026 Blue_Coast</Copyright>
+    <Description>Anima 训练集标注工具：按官方大类分段的标签编辑器 + 中文到英文自然语言的翻译器。</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <!-- 纯 .NET 的 Markdown 解析器（lib/net10.0，只依赖 System.Memory）。
+         帮助页用它把 .md 变成 WinUI 原生控件——刻意不用 WebView2：
+         那要拉起整个浏览器渲染栈，滚动和选中都明显迟滞。 -->
+    <PackageReference Include="Markdig" Version="1.4.0" />
+  </ItemGroup>
+
+  <!-- WinUI3 unpackaged + dotnet publish 的已知缺陷：应用自己的 .pri
+       （里面装的是编译后的 XAML）只生成在 bin\，不会被拷进发布目录。
+       结果是发布版一碰 XAML 资源就报 "Cannot find a resource with the given key"。
+       这里显式补上。（此坑与 DshBroker 同源，直接沿用其修法。） -->
+  <Target Name="CopyAppPriToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_AppPriFiles Include="$(TargetDir)*.pri" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_AppPriFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <ItemGroup>
+    <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 帮助文档随程序分发：运行时直接读 <exe>\docs 里的 .md，
+         所以改文档点「重新载入」即可生效，不必重新编译或重启程序。
+         （注意：重新构建会用仓库版本覆盖它——这是刻意的，仓库才是文档的源头。） -->
+    <Content Include="docs\**\*.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

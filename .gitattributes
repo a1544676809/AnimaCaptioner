@@ -1,0 +1,29 @@
+# 行尾显式化，避免 core.autocrlf 在不同机器上给出不同结果。
+# 默认：交给 git 判断文本文件
+* text=auto
+
+# 帮助文档是随程序分发的数据文件，且实测渲染对行尾敏感度已被覆盖
+# （HelpDocs.SplitHeader 会把 CRLF 归一化），这里固定 LF 保证跨平台一致。
+docs/*.md text eol=lf
+
+# 许可原文保持 LF，与 FSF 发布的正式文本一致。
+LICENSE text eol=lf
+docs/LICENSE text eol=lf
+
+# C# / XAML / 工程文件按平台默认即可（Windows 上检出为 CRLF）
+*.cs    text
+*.xaml  text
+*.csproj text
+*.manifest text
+
+# 二进制，禁止任何转换
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.safetensors binary
+*.gguf  binary
+*.sqlite binary
+
+# 生成物/词库数据永不入库（与 .gitignore 呼应，防止误 add）
+bin/**  export-ignore
+obj/**  export-ignore

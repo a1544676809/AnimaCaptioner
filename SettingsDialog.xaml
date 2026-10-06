@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ContentDialog
+    x:Class="AnimaCaptioner.SettingsDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="设置"
+    PrimaryButtonText="保存"
+    CloseButtonText="取消"
+    DefaultButton="Primary">
+
+    <!-- 不要给 RootPanel 设固定宽度。ContentDialog 的内容区被 ContentDialogMaxWidth
+         (548 DIP) 减去内边距后只有 496 DIP 宽，这里写死 560 会让右侧 64 DIP 被裁掉：
+         「测试连接」按钮正好在 x=479..560，于是只露出十几像素，看上去像个莫名其妙的
+         小控件。宽度交给对话框自己算。 -->
+    <ScrollViewer x:Name="ContentScroll" MaxHeight="420" VerticalScrollBarVisibility="Auto"
+                  VerticalScrollMode="Auto">
+        <StackPanel x:Name="RootPanel" Spacing="10">
+
+            <!-- 模型接口 -->
+            <TextBlock Text="模型接口（OpenAI 兼容）" FontWeight="SemiBold" />
+
+            <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
+                     PlaceholderText="http://127.0.0.1:8080/v1" />
+
+            <TextBox x:Name="ModelBox" Header="模型名"
+                     PlaceholderText="8b-iq4_xs" />
+
+            <PasswordBox x:Name="ApiKeyBox" Header="API Key"
+                         PlaceholderText="本地服务留空即可" />
+
+            <TextBlock x:Name="KeyHintText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
+
+            <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <CheckBox x:Name="DisableThinkingBox" Content="关闭思考链 (enable_thinking=false)"
+                          ToolTipService.ToolTip="Qwen3 等混合推理模型默认会先输出思考过程，拆关键词时纯属浪费 token" />
+                <TextBlock Grid.Column="1" x:Name="TestResultText" FontSize="11" Margin="10,0"
+                           VerticalAlignment="Center" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button Grid.Column="2" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
+            </Grid>
+
+            <TextBlock FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Text="本地模型首次请求要编译 GPU kernel，可能明显偏慢；超时设大一些更稳妥。" />
+
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <NumberBox x:Name="MaxTokensBox" Header="max_tokens" Minimum="32" Maximum="8192"
+                           SpinButtonPlacementMode="Compact" />
+                <NumberBox Grid.Column="1" x:Name="TempBox" Header="temperature" Minimum="0" Maximum="2"
+                           SmallChange="0.1" SpinButtonPlacementMode="Compact" />
+                <NumberBox Grid.Column="2" x:Name="TimeoutBox" Header="超时（秒）" Minimum="10" Maximum="3600"
+                           SpinButtonPlacementMode="Compact" />
+            </Grid>
+
+            <!-- 联网搜索 -->
+            <TextBlock Text="联网搜索（模型可调用的工具）" FontWeight="SemiBold" />
+            <TextBlock FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Text="给模型一个 web_search 工具：遇到不认识或没有官方中文释义的标签时，它可以自己决定去查一下。默认指向 192.168.1.4 上已部署的搜索网关。" />
+
+            <CheckBox x:Name="SearchEnabledBox" Content="启用搜索工具"
+                      ToolTipService.ToolTip="实测：关闭思考链时模型不会调用搜索工具，所以启用搜索需要同时让思考链保持开启。" />
+
+            <ComboBox x:Name="ProviderBox" Header="搜索后端" HorizontalAlignment="Stretch"
+                      SelectionChanged="Provider_SelectionChanged">
+                <ComboBoxItem Content="局域网搜索网关（Anthropic 兼容，推荐）" Tag="shim" />
+                <ComboBoxItem Content="SearXNG 实例（直连 JSON 接口）" Tag="searxng" />
+                <ComboBoxItem Content="Tavily API" Tag="tavily" />
+                <ComboBoxItem Content="Brave Search API" Tag="brave" />
+                <ComboBoxItem Content="Serper.dev（Google 结果）" Tag="serper" />
+            </ComboBox>
+
+            <TextBox x:Name="SearchUrlBox" Header="搜索接口地址" />
+
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SearchSniBox" Header="TLS SNI / Host（Caddy 网关必填）" />
+                <TextBlock Grid.Column="1" FontSize="10" VerticalAlignment="Bottom" Margin="6,0,0,6"
+                           MaxWidth="140" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                           Text="填证书域名，不是 IP" />
+            </Grid>
+
+            <PasswordBox x:Name="SearchKeyBox" Header="搜索 API Key"
+                         PlaceholderText="局域网网关 / 自建 SearXNG 可留空" />
+
+            <TextBlock x:Name="SearchHintText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <NumberBox x:Name="SearchMaxBox" Header="回灌条数" Minimum="1" Maximum="20"
+                           SpinButtonPlacementMode="Compact" Width="110" />
+                <TextBlock Grid.Column="1" x:Name="SearchTestText" FontSize="11" Margin="10,0"
+                           VerticalAlignment="Center" TextWrapping="Wrap"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button Grid.Column="2" x:Name="SearchTestBtn" Content="测试搜索"
+                        Click="TestSearch_Click" VerticalAlignment="Bottom" />
+            </Grid>
+
+            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+
+            <!-- 数据路径 -->
+            <TextBlock Text="数据路径" FontWeight="SemiBold" />
+
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="DatasetBox" Header="训练集目录" />
+                <Button Grid.Column="1" Content="浏览…" Click="BrowseDataset_Click"
+                        VerticalAlignment="Bottom" />
+            </Grid>
+
+            <TextBox x:Name="VocabBox" Header="词库数据库 (vocab.sqlite)" />
+
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="SeedBox" Header="人工整理映射 (seed.json)" />
+                <Button Grid.Column="1" Content="浏览…" Click="BrowseSeed_Click"
+                        VerticalAlignment="Bottom" />
+            </Grid>
+
+            <TextBlock x:Name="SettingsPathText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+
+            <!-- 标签大类配色 -->
+            <TextBlock Text="标签大类配色" FontWeight="SemiBold" />
+            <TextBlock FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Text="中间 tag 列表按 Anima 官方大类分段显示，每段用这里的颜色画框。点色块打开取色器。" />
+
+            <Grid x:Name="ColorGrid" ColumnSpacing="8" RowSpacing="4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <!-- 六个大类的行由代码生成：写死在 XAML 里的话，
+                     TagSections.All 一改就两边不同步了。
+                     取色器放在弹出层里而不是直接铺在页面上——六个 ColorPicker
+                     平铺会把对话框撑到屏幕外，底部的保存按钮都够不到。 -->
+            </Grid>
+
+            <Button x:Name="ResetColorsBtn" Content="恢复默认配色" Click="ResetColors_Click" />
+
+        </StackPanel>
+    </ScrollViewer>
+</ContentDialog>

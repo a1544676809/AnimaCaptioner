@@ -1,0 +1,42 @@
+# 自带文档的许可
+
+本目录（`docs/`）下的 Markdown 文件是 **AnimaCaptioner 的自带帮助文档**，
+与软件本体（C# 源码）的许可**不同**。
+
+| 内容 | 许可 |
+|---|---|
+| 软件本体（`*.cs` / `*.xaml` / `*.csproj` 等） | GNU GPL v3.0 — 见仓库根目录 [LICENSE](../LICENSE) |
+| **本目录的文档（`*.md`）** | **CC BY-NC-SA 4.0** |
+
+## CC BY-NC-SA 4.0
+
+<https://creativecommons.org/licenses/by-nc-sa/4.0/>
+
+- **BY 署名** —— 转载或引用需注明来源
+- **NC 非商业性使用** —— **不得用于商业用途**
+- **SA 相同方式共享** —— 改编后必须以相同协议分发
+
+## 为什么和代码分开
+
+这批 `.md` 是随程序分发的**数据文件**，由帮助窗口在运行期读取（见
+`Core/HelpDocs.cs`），不是软件源码，所以不跟随 GPL-3.0。
+
+由此带来一个实际后果：**若要把本软件用于商业用途，本目录需单独取得授权或整体移除。**
+移除 `docs/` 后程序仍可正常运行，只是帮助窗口会提示目录为空。
+
+## 第三方内容的归属
+
+- `08-safety-ratings.md` 里的评级判据**译自 Danbooru 官方 wiki `howto:rate`**
+  （<https://danbooru.donmai.us/wiki_pages/howto:rate>）。原文版权归 Danbooru 所有，
+  此处按引用与改写使用。
+- `03-prompt-format.md` / `04-tag-order.md` / `09-tags-vs-prose.md` 引用了
+  **Anima 模型卡**（[circlestone-labs/Anima](https://huggingface.co/circlestone-labs/Anima)，
+  CircleStone Labs × Comfy Org）与 Hugging Face 讨论区的公开内容，按引用使用；
+  模型权重本身采用非商业许可，与本软件无关。
+- `09-tags-vs-prose.md` 的部分统计数字来自对本地训练集的实测，不含第三方内容。
+
+## 标签数据
+
+**本仓库不包含任何标签数据**（无 `.sqlite` / `.csv` / 标签表）。程序在运行期从本机
+路径读取，词库由多个上游来源合并而成，各自协议不同 —— 详见根目录
+[README](../README.md#3-标签数据不随本仓库分发) 的「许可」一节。

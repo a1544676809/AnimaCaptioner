@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="AnimaCaptioner.HelpWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="帮助">
+
+    <Grid x:Name="RootGrid" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 工具栏 -->
+        <Grid Grid.Row="0" Padding="12,8,12,8" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Text="帮助" FontSize="16" FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+
+            <Button x:Name="ReloadBtn" Grid.Column="1" Content="重新载入" Click="Reload_Click"
+                    ToolTipService.ToolTip="重新读盘。改完 .md 不必重启程序，点这里即可（F5）" />
+            <Button x:Name="OpenFolderBtn" Grid.Column="2" Content="打开文档目录" Click="OpenFolder_Click"
+                    ToolTipService.ToolTip="在资源管理器里打开 docs 目录，直接编辑里面的 .md" />
+        </Grid>
+
+        <!-- 主体：左目录 + 右内容。左右比例固定，用不着分隔条——目录项都很短，
+             宽度给够就行，再让用户拖反而多一个要记的状态。 -->
+        <Grid Grid.Row="1" Padding="12,0,12,0" ColumnSpacing="0">
+            <Grid.ColumnDefinitions>
+                <!-- 目录项都是短标题（最长「提示词：标签 + 自然语言」），
+                     给 216 就够；再多就是从表格那边抢宽度，而表格里的路径
+                     会因此被折成好几行。 -->
+                <ColumnDefinition Width="216" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 左：模块目录 -->
+            <Border Grid.Column="0" CornerRadius="8,0,0,8" BorderThickness="1,1,0,1"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                <ListView x:Name="NavList" SelectionMode="Single"
+                          SelectionChanged="Nav_SelectionChanged"
+                          Padding="4,6,4,6">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                                       Margin="4,6,4,6" />
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Border>
+
+            <!-- 右：正文。标题与摘要固定，下面是可滚动的内容。
+                 滚动条由 ScrollHost 自己画（常驻可见），不用 ScrollViewer 自带那根。 -->
+            <Border Grid.Column="1" CornerRadius="0,8,8,0" BorderThickness="0,1,1,1"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                <Grid Padding="20,16,16,14">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                        <TextBlock x:Name="TitleText" FontSize="22" FontWeight="SemiBold"
+                                   TextWrapping="Wrap" />
+                        <TextBlock x:Name="SummaryText" FontSize="13" TextWrapping="Wrap"
+                                   Margin="0,4,0,0"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+
+                    <ContentControl Grid.Row="1" x:Name="ScrollSlot" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 状态栏：用的哪个目录、几个模块、有没有问题 -->
+        <Grid Grid.Row="2" Padding="12,6,12,10">
+            <TextBlock x:Name="StatusText" FontSize="11" TextWrapping="NoWrap"
+                       TextTrimming="CharacterEllipsis"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Grid>
+    </Grid>
+</Window>
