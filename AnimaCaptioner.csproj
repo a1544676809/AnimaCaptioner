@@ -7,6 +7,10 @@
     <RootNamespace>AnimaCaptioner</RootNamespace>
     <AssemblyName>AnimaCaptioner</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 资源管理器 / 任务栏固定项看到的 exe 图标。没有这一行的话，
+         exe 会顶着 .NET 的默认图标，而 Assets\app.ico 只被当普通文件拷来拷去。
+         （窗口和任务栏的图标是另外的机制：由 AppWindow.SetIcon 在启动时设。） -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
