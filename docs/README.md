@@ -13,6 +13,7 @@
 | `07-editing-docs.md` | 编辑本文档 |
 | `08-safety-ratings.md` | 安全标签的边界 |
 | `09-tags-vs-prose.md` | 标签还是自然语言 |
+| `10-accessory-color-and-repeat.md` | 配件的颜色与重复 |
 
 ## 怎么改
 
