@@ -69,7 +69,8 @@ SettingsDialog.xaml(.cs)  设置
 HelpWindow.xaml(.cs)     帮助窗口
 MarkdownRenderer.cs      Markdig → WinUI 元素
 docs/                   帮助文档（10 个模块，随程序分发）
-Assets/app.ico          应用图标（#66CCFF 方块 + 四行分类色条目，9 档尺寸 16–256px）
+Assets/app.ico          应用图标（9 档尺寸 16–256px）
+tools/icon/             图标的 SVG 源文件与生成脚本
 ```
 
 ## 回归测试

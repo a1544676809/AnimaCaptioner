@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="100%" height="100%">
+  <defs>
+    <!-- 中等明度、兼具通透感与力量感的活力天青蓝渐变 -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#0EA5E9"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+
+    <!-- 画芯：温暖浪漫的二次元晚霞落日色 -->
+    <linearGradient id="photo-art" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="45%" stop-color="#FB7185"/>
+      <stop offset="100%" stop-color="#818CF8"/>
+    </linearGradient>
+
+    <!-- 4类本体填充渐变 -->
+    <linearGradient id="pill-orange" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#EA580C"/>
+    </linearGradient>
+
+    <linearGradient id="pill-teal" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+
+    <linearGradient id="pill-pink" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FB7185"/>
+      <stop offset="100%" stop-color="#E11D48"/>
+    </linearGradient>
+
+    <linearGradient id="pill-slate" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#64748B"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+
+    <!-- 适配中蓝色背景的通透环境阴影 -->
+    <filter id="soft-shadow" x="-20%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#0369A1" flood-opacity="0.35"/>
+    </filter>
+    <filter id="card-shadow" x="-20%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="9" stdDeviation="10" flood-color="#025686" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <!-- 图标底板（介于浅空蓝与深海蓝之间的活力中度蓝） -->
+  <rect width="256" height="256" rx="56" fill="url(#bg-grad)"/>
+  <!-- 晶莹高光内边缘 -->
+  <rect width="254" height="254" x="1" y="1" rx="55" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="2"/>
+
+  <!-- 主体：纯白画框（兼顾明亮质感与干净轮廓） -->
+  <g filter="url(#card-shadow)">
+    <rect x="24" y="32" width="144" height="184" rx="20" fill="#FFFFFF"/>
+    <rect x="36" y="44" width="120" height="138" rx="12" fill="url(#photo-art)"/>
+    <rect x="36" y="194" width="40" height="10" rx="5" fill="#E2E8F0"/>
+  </g>
+
+  <!-- 前景：4个彩色胶囊标签（浅色亮边同色系） -->
+  <g filter="url(#soft-shadow)">
+    <!-- 1. 质量/元信息 (橙色胶囊 + 浅杏黄描边) -->
+    <g transform="translate(104, 44)">
+      <rect width="124" height="34" rx="17" fill="url(#pill-orange)" stroke="#FEF3C7" stroke-opacity="0.75" stroke-width="1.8"/>
+      <circle cx="17" cy="17" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+    </g>
+
+    <!-- 2. 人物数量 (青绿胶囊 + 浅薄荷绿描边) -->
+    <g transform="translate(122, 88)">
+      <rect width="106" height="34" rx="17" fill="url(#pill-teal)" stroke="#D1FAE5" stroke-opacity="0.75" stroke-width="1.8"/>
+      <circle cx="17" cy="17" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+    </g>
+
+    <!-- 3. 画师风格 (粉红胶囊 + 浅玫瑰粉描边) -->
+    <g transform="translate(90, 132)">
+      <rect width="138" height="34" rx="17" fill="url(#pill-pink)" stroke="#FFE4E6" stroke-opacity="0.75" stroke-width="1.8"/>
+      <circle cx="17" cy="17" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+    </g>
+
+    <!-- 4. 一般标签 (蓝灰胶囊 + 浅钢蓝灰描边) -->
+    <g transform="translate(112, 176)">
+      <rect width="116" height="34" rx="17" fill="url(#pill-slate)" stroke="#E2E8F0" stroke-opacity="0.75" stroke-width="1.8"/>
+      <circle cx="17" cy="17" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+    </g>
+  </g>
+</svg>

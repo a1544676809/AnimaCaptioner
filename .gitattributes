@@ -2,6 +2,9 @@
 # 默认：交给 git 判断文本文件
 * text=auto
 
+# 本文件自身固定 LF（否则每次 checkout 都会被改成 CRLF 并给出警告）
+.gitattributes text eol=lf
+
 # 帮助文档是随程序分发的数据文件，且实测渲染对行尾敏感度已被覆盖
 # （HelpDocs.SplitHeader 会把 CRLF 归一化），这里固定 LF 保证跨平台一致。
 # 仓库里的 markdown 一律 LF，避免同一份文档在不同机器上检出成不同行尾。
@@ -16,6 +19,10 @@ docs/LICENSE text eol=lf
 *.xaml  text
 *.csproj text
 *.manifest text
+
+# SVG 是 XML 文本，Python 脚本跨平台用，都固定 LF
+*.svg   text eol=lf
+*.py    text eol=lf
 
 # 二进制，禁止任何转换
 *.ico   binary
