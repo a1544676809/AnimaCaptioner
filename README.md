@@ -82,6 +82,7 @@ tools/icon/             图标的 SVG 源文件与生成脚本
 cd tests
 dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe parity      # clone 下来就能跑，不需要任何外部数据
+.\bin\Release\net8.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
 ```
 
 `parity` 与 Python 参考实现做 126 项对拍，只需要随仓库分发的 `tests/golden.json`。

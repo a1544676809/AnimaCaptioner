@@ -32,6 +32,10 @@ internal static class Harness
             case "defaults":
                 return DefaultsProbe.Run();
 
+            case "models":
+                // 纯解析，不联网也不需要数据集
+                return CoreCheck.Models.Run();
+
             case "richapi":
                 return CoreCheck.RichApi.Run(
                     Arg(1) ?? @"D:\NuGet\Packages\microsoft.windowsappsdk.winui\1.8.260803003\lib\net6.0-windows10.0.17763.0\Microsoft.WinUI.dll");
@@ -81,6 +85,7 @@ internal static class Harness
 
                       parity                      与 Python 实现 126 项对拍（只需 golden.json）
                       defaults                    默认路径解析
+                      models                      /models 响应解析（不联网）
                       sections   <训练集>          归类 / 排序 / 颜色 / 结构编辑
                       prose      <训练集> <词库> <seed>
                       edit       <训练集> <词库> <seed>

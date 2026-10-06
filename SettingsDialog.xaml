@@ -25,8 +25,22 @@
             <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
                      PlaceholderText="http://127.0.0.1:8080/v1" />
 
-            <TextBox x:Name="ModelBox" Header="模型名"
-                     PlaceholderText="8b-iq4_xs" />
+            <!-- 模型名做成可输入的下拉框：能列出服务端给的模型，也允许直接键入
+                 列表里没有的名字（别名、自定义名，或压根不实现 /models 的网关）。 -->
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
+                          PlaceholderText="8b-iq4_xs" HorizontalAlignment="Stretch"
+                          SelectionChanged="Model_SelectionChanged" />
+                <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
+                        Click="FetchModels_Click" VerticalAlignment="Bottom" />
+            </Grid>
+
+            <TextBlock x:Name="ModelListText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
             <PasswordBox x:Name="ApiKeyBox" Header="API Key"
                          PlaceholderText="本地服务留空即可" />

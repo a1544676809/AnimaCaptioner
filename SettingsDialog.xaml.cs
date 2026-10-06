@@ -30,6 +30,14 @@ public sealed partial class SettingsDialog : ContentDialog
     /// <summary>每个大类的取色器控件，恢复默认时要把它的值也对齐。</summary>
     private readonly Dictionary<string, ColorPicker> _pickers = new(StringComparer.Ordinal);
 
+    /// <summary>最近一次从服务端取到的模型，键是 id（忽略大小写）。给当前填写项补说明用。</summary>
+    private readonly Dictionary<string, LlmClient.ModelInfo> _modelInfos = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>还没取过列表时提示行显示的内容。</summary>
+    private const string ModelHintIdle =
+        "模型名可以从服务端拉取：点「获取列表」或「测试连接」都会请求 GET /models。" +
+        "列表里没有的名字（别名、自定义名）也可以直接键入——有些网关根本不实现这个接口。";
+
     public SettingsDialog(AppSettings cfg, LlmClient llm)
     {
         InitializeComponent();
@@ -43,6 +51,7 @@ public sealed partial class SettingsDialog : ContentDialog
         MaxTokensBox.Value = cfg.MaxTokens;
         TempBox.Value = cfg.Temperature;
         TimeoutBox.Value = cfg.TimeoutSeconds;
+        ModelListText.Text = ModelHintIdle;
 
         DatasetBox.Text = cfg.DatasetDir;
         VocabBox.Text = cfg.VocabDbPath;
@@ -522,32 +531,155 @@ public sealed partial class SettingsDialog : ContentDialog
         finally { SearchTestBtn.IsEnabled = true; }
     }
 
-    private async void Test_Click(object sender, RoutedEventArgs e)
+    // ---- 模型列表 ----
+
+    /// <summary>提示行的两种配色。都只在需要时构造，没有缓存价值。</summary>
+    private static Microsoft.UI.Xaml.Media.Brush HintBrush =>
+        (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+
+    private static Microsoft.UI.Xaml.Media.Brush BadBrush =>
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed);
+
+    private static Microsoft.UI.Xaml.Media.Brush GoodBrush =>
+        new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.MediumSeaGreen);
+
+    private async void FetchModels_Click(object sender, RoutedEventArgs e)
     {
-        // 用界面上的当前值测，而不是已保存的值——否则用户改了地址点测试会测到旧地址
+        var (ok, models, err) = await FetchModelsAsync();
+        Log.Write(ok
+            ? $"settings fetch models: {models.Count} 个"
+            : "settings fetch models FAILED: " + err);
+    }
+
+    private void Model_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        UpdateModelHint(ModelBox.Text.Trim());
+
+    /// <summary>
+    /// 拉一次 /models，结果同时喂给下拉框和提示行。
+    /// 「获取列表」和「测试连接」共用它——同一个请求没必要发两次。
+    /// </summary>
+    private async Task<(bool Ok, List<LlmClient.ModelInfo> Models, string Error)> FetchModelsAsync()
+    {
+        // 用界面上的当前值去取，而不是已保存的值：改了地址还没保存就点获取，
+        // 想看的当然是新地址有什么。
         var probe = new AppSettings
         {
             ApiBaseUrl = BaseUrlBox.Text.Trim(),
-            Model = ModelBox.Text.Trim(),
-            TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value)
+            TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value),
         };
         probe.ApiKey = ApiKeyBox.Password;
 
+        FetchModelsBtn.IsEnabled = false;
         TestBtn.IsEnabled = false;
-        TestResultText.Text = "正在连接…";
+        ModelListText.Foreground = HintBrush;
+        ModelListText.Text = "正在获取模型列表…";
         try
         {
-            var (ok, msg) = await _llm.TestAsync(probe);
-            TestResultText.Text = (ok ? "✓ " : "✗ ") + msg;
-            TestResultText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-                ok ? Microsoft.UI.Colors.MediumSeaGreen : Microsoft.UI.Colors.OrangeRed);
-            Log.Write("settings test: " + (ok ? "OK " : "FAIL ") + msg);
+            var (ok, models, err) = await _llm.ListModelsAsync(probe);
+            if (ok)
+            {
+                PopulateModels(models);
+            }
+            else
+            {
+                ModelListText.Foreground = BadBrush;
+                ModelListText.Text = "✗ " + err;
+            }
+            return (ok, models, err);
         }
         catch (Exception ex)
         {
-            TestResultText.Text = "✗ " + ex.Message;
+            ModelListText.Foreground = BadBrush;
+            ModelListText.Text = "✗ " + ex.Message;
+            return (false, new(), ex.Message);
         }
-        finally { TestBtn.IsEnabled = true; }
+        finally
+        {
+            FetchModelsBtn.IsEnabled = true;
+            TestBtn.IsEnabled = true;
+        }
+    }
+
+    /// <summary>把取到的模型灌进下拉框。</summary>
+    private void PopulateModels(List<LlmClient.ModelInfo> models)
+    {
+        _modelInfos.Clear();
+        foreach (var m in models) _modelInfos[m.Id] = m;
+
+        // 踩过的坑：清空 Items 会把可编辑 ComboBox 的 Text 一并清掉，
+        // 于是用户刚填好的模型名凭空消失。先存后恢复。
+        var keep = ModelBox.Text;
+        ModelBox.Items.Clear();
+        foreach (var m in models) ModelBox.Items.Add(m.Id);
+        ModelBox.Text = keep;
+
+        // 只有"服务端恰好报了一个模型"且"用户还没填名字"时才代填。
+        // 多个模型时代选第一个纯属乱猜。
+        if (string.IsNullOrWhiteSpace(keep) && models.Count == 1)
+        {
+            ModelBox.Text = models[0].Id;
+            Log.Write("model list: 服务端只报了 " + models[0].Id + "，已自动填入模型名");
+        }
+
+        UpdateModelHint(ModelBox.Text.Trim());
+    }
+
+    /// <summary>把"服务端给了什么"和"当前填的是什么"写进提示行。</summary>
+    private void UpdateModelHint(string current)
+    {
+        if (ModelListText is null) return;
+
+        if (_modelInfos.Count == 0)
+        {
+            ModelListText.Foreground = HintBrush;
+            ModelListText.Text = ModelHintIdle;
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append($"服务端列出 {_modelInfos.Count} 个模型。");
+
+        if (!string.IsNullOrWhiteSpace(current) && _modelInfos.TryGetValue(current, out var info))
+        {
+            ModelListText.Foreground = HintBrush;
+            sb.Append($"当前「{info.Id}」");
+            var detail = info.Describe();
+            sb.Append(detail.Length > 0 ? '：' + detail : "（服务端未提供量化 / 上下文信息）");
+
+            var alias = (info.Aliases ?? new List<string>())
+                .Where(a => !string.Equals(a, info.Id, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (alias.Count > 0) sb.Append(" · 别名 ").Append(string.Join(", ", alias));
+        }
+        else if (!string.IsNullOrWhiteSpace(current))
+        {
+            // 不当成错误：很多网关就是不在 /models 里报别名或自定义名，
+            // 报成错误会把"能用"的配置吓退。
+            ModelListText.Foreground = BadBrush;
+            sb.Append($"⚠ 填写的「{current}」不在列表里。若这个名字确实可用（别名、自定义名），照常保存即可。");
+        }
+
+        ModelListText.Text = sb.ToString();
+    }
+
+    private static string SummarizeModels(List<LlmClient.ModelInfo> models)
+    {
+        if (models.Count == 0) return "连接成功，但服务端没有列出模型（可以直接手填模型名）";
+        var head = string.Join(", ", models.Take(8).Select(m => m.Id));
+        return models.Count > 8
+            ? $"连接成功，可用模型：{head} …共 {models.Count} 个"
+            : "连接成功，可用模型：" + head;
+    }
+
+    private async void Test_Click(object sender, RoutedEventArgs e)
+    {
+        TestResultText.Text = "正在连接…";
+        // 与「获取列表」共用同一个请求：一次调用既验连通性，也顺手刷新模型列表
+        var (ok, models, err) = await FetchModelsAsync();
+        TestResultText.Text = ok ? "✓ " + SummarizeModels(models) : "✗ " + err;
+        TestResultText.Foreground = ok ? GoodBrush : BadBrush;
+        Log.Write("settings test: " + (ok ? "OK " : "FAIL ") +
+                  (ok ? SummarizeModels(models) : err));
     }
 
     private async void BrowseDataset_Click(object sender, RoutedEventArgs e)

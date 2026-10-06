@@ -155,6 +155,24 @@ viewport=349`。
 
 ---
 
+## 可编辑下拉框
+
+设置里的「模型名」是 `ComboBox` + `IsEditable="True"`（该属性在 WinUI 3 里存在，
+用编译器核实过）。两处只有真跑起来才会暴露：
+
+- **清空 `Items` 会把 `Text` 一并清掉。** 刷新模型列表时先 `Items.Clear()` 再填，
+  结果用户刚填好的模型名凭空消失——而列表本身看起来完全正常。修法是先存后恢复，
+  实测 `model name preserved = True`。
+- **下拉项的文字就是选中后要用的值。** 若把「量化级别」「上下文长度」拼进条目文本，
+  选中后那一长串会被当成模型名发出去，服务端只回 404。所以条目里只放模型 id，
+  扩展信息放下面那行提示。
+
+顺带一条判断：**「服务端没报模型」不等于「连接失败」。** 有些网关不实现 `/models`
+（回 `{"object":"list","data":[]}`），这时该照常让用户手填模型名，所以
+`ListModelsAsync` 把 `Ok` 和 `Models.Count` 分成两件事返回。
+
+---
+
 ## 网络
 
 接 `192.168.1.4` 上的搜索网关时踩的两个静默失败，成因都在 Caddy 按 SNI 选站点：
@@ -203,8 +221,17 @@ viewport=349`。
 另外 UIA 报的 `Hyperlink` 矩形可能覆盖**整行**（实测 5 个字的链接报 531px 宽），
 点它的中心会落在文字之外，那种情况直接用 `InvokePattern`。
 
-**PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 ANSI 读**，脚本里写死中文会乱码。
-测试脚本一律保持纯 ASCII，中文走独立 UTF-8 文件或界面输入。
+**UI Automation 找窗口不能只 `FindFirst` 按 PID 找。** 输入法会把辅助窗口注入宿主进程，
+实测撞到一个 `SoPY_Status`（搜狗）窗口排在真正的应用窗口前面，于是后续 `Descendants`
+枚举出 0 个元素、报「控件找不到」——而控件其实好好地在界面上。按
+`ClassName == 'WinUIDesktopWin32WindowClass'` 挑才稳。顺带：`$TRUE` 是 PowerShell 的
+只读自动变量，赋值会报「无法覆盖变量 true」。
+
+**PowerShell 版本决定中文能不能写在脚本里。** 本机 `pwsh` 是 **PowerShell 7.6**，
+无 BOM 的 UTF-8 `.ps1` 里的中文正常；但**远程 Windows Server 上用
+`powershell -File` 起的是 5.1**，它按 ANSI 读，脚本里的中文会乱码——那种场景
+（以及一切交给 5.1 跑的脚本）必须保持纯 ASCII，中文走独立 UTF-8 文件或界面输入。
+两种环境混着用时，一律按严格的那条来。
 
 ---
 

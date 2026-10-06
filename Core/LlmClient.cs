@@ -416,40 +416,205 @@ public sealed class LlmClient : IDisposable
                .Where(k => k.Length > 0)
                .ToList();
 
-    /// <summary>连通性自检：拉 /models。返回 (是否成功, 说明)。</summary>
-    public async Task<(bool Ok, string Message)> TestAsync(AppSettings cfg, CancellationToken ct = default)
+    /// <summary>
+    /// 服务端列出的一个模型。
+    ///
+    /// 后三项来自 llama-server 的扩展字段（`data[].meta`），标准 OpenAI 服务不提供。
+    /// 但选模型时恰好最需要它们：同一个模型的不同量化在列表里只是一串相似的名字，
+    /// 只有 ftype 能把 IQ4_XS / Q4_K_M / Q6_K 区分开。
+    /// </summary>
+    public sealed record ModelInfo(
+        string Id,
+        string Quantization = "",
+        int ContextLength = 0,
+        long SizeBytes = 0,
+        IReadOnlyList<string>? Aliases = null)
     {
-        if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl)) return (false, "未配置接口地址");
+        /// <summary>
+        /// 界面上的一行说明。三项扩展信息都没有时返回空串，由调用方决定不显示。
+        /// （标准 OpenAI 服务只会给 id，那时这一行本来就是空的。）
+        /// </summary>
+        public string Describe()
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Quantization)) parts.Add(Quantization);
+            if (ContextLength > 0) parts.Add("上下文 " + ContextLength);
+            if (SizeBytes > 0) parts.Add(FormatSize(SizeBytes));
+            return string.Join(" · ", parts);
+        }
+    }
+
+    /// <summary>把字节数写成人类可读的大小。</summary>
+    public static string FormatSize(long bytes) =>
+        bytes >= 1L << 30 ? (bytes / (double)(1L << 30)).ToString("F2") + " GB"
+        : bytes >= 1L << 20 ? (bytes / (double)(1L << 20)).ToString("F1") + " MB"
+        : bytes + " B";
+
+    /// <summary>
+    /// 拉取服务端可用模型列表（GET /models）。
+    ///
+    /// 注意 **HTTP 成功但列表为空是合法结果**，不是故障：有些网关压根不实现
+    /// /models（返回 `{"object":"list","data":[]}`）。这时应当照常让用户手填
+    /// 模型名，而不是报"连接失败"——所以 Ok 与 Models.Count 是两件事。
+    /// </summary>
+    public async Task<(bool Ok, List<ModelInfo> Models, string Error)> ListModelsAsync(
+        AppSettings cfg, CancellationToken ct = default)
+    {
+        LastError = "";
+        if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl)) return (false, new(), "未配置接口地址");
+
         var url = cfg.ApiBaseUrl.TrimEnd('/') + "/models";
+        // 列模型是个轻量请求，不该等模型加载那种长超时；但也不要短到本地服务
+        // 首次编译 kernel 时直接判失败。
+        var timeout = Math.Min(30, Math.Max(5, cfg.TimeoutSeconds));
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             if (!string.IsNullOrWhiteSpace(cfg.ApiKey))
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey.Trim());
-            SetTimeout(Math.Min(30, Math.Max(5, cfg.TimeoutSeconds)));
+            SetTimeout(timeout);
+
             using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
             var raw = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
             if (!resp.IsSuccessStatusCode)
-                return (false, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
-
-            var names = new List<string>();
-            try
             {
-                using var doc = JsonDocument.Parse(raw);
-                if (doc.RootElement.TryGetProperty("data", out var data))
-                    foreach (var m in data.EnumerateArray())
-                        if (m.TryGetProperty("id", out var id))
-                            names.Add(id.GetString() ?? "");
+                var msg = $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}";
+                // 401/403 的正文里常带着"key 不对"这类具体原因，值得直接给用户看
+                if (!string.IsNullOrWhiteSpace(raw)) msg += "：" + Truncate(raw, 300);
+                LastError = msg;
+                Log.Write($"models {msg} url={url}");
+                return (false, new(), msg);
             }
-            catch { }
 
-            var list = names.Count > 0 ? string.Join(", ", names.Take(8)) : "(未列出模型)";
-            return (true, "连接成功，可用模型：" + list);
+            if (!TryParseModels(raw, out var models))
+                Log.Write("models: 响应不是可识别的形状 " + Truncate(raw, 300));
+
+            Log.Write($"models listed: {models.Count} url={url}");
+            return (true, models, "");
+        }
+        catch (TaskCanceledException)
+        {
+            LastError = "请求超时";
+            return (false, new(), $"请求超时（{timeout} 秒）");
         }
         catch (Exception ex)
         {
-            return (false, ex.Message);
+            LastError = ex.Message;
+            Log.Write("models request failed: " + ex);
+            return (false, new(), ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 解析 /models 的响应。**纯函数，不碰网络**，所以能在测试工程里直接对着真实
+    /// 响应断言（tests/Models.cs）。解析不出来时返回空列表。
+    /// </summary>
+    public static List<ModelInfo> ParseModels(string raw) =>
+        TryParseModels(raw, out var models) ? models : new List<ModelInfo>();
+
+    /// <summary>
+    /// 兼容四种真实存在的形状：
+    ///   1. 标准 OpenAI —— `{"data":[{"id":"..."}]}`
+    ///   2. llama-server —— 同样有 data，另带 `aliases` / `meta{n_ctx,ftype,size}`
+    ///   3. 只有 models —— `{"models":[{"name":"..."}]}`
+    ///   4. 裸数组 —— `["a","b"]` 或 `[{"id":"a"}]`
+    /// 返回值表示"是不是一个能认出来的列表形状"，与"列表里有没有东西"无关。
+    /// </summary>
+    public static bool TryParseModels(string raw, out List<ModelInfo> models)
+    {
+        models = new List<ModelInfo>();
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+
+        JsonDocument doc;
+        // 只吞解析异常：里面的走查若出错应当暴露出来，而不是被悄悄当成"空列表"
+        try { doc = JsonDocument.Parse(raw); }
+        catch (JsonException) { return false; }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                AddModels(root, models);
+                return true;
+            }
+            if (root.ValueKind != JsonValueKind.Object) return false;
+
+            if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+                AddModels(data, models);          // 标准字段优先
+            else if (root.TryGetProperty("models", out var ms) && ms.ValueKind == JsonValueKind.Array)
+                AddModels(ms, models);
+
+            return true;
+        }
+    }
+
+    private static void AddModels(JsonElement array, List<ModelInfo> sink)
+    {
+        foreach (var el in array.EnumerateArray())
+        {
+            if (el.ValueKind == JsonValueKind.String)
+            {
+                var s = el.GetString();
+                if (!string.IsNullOrWhiteSpace(s)) sink.Add(new ModelInfo(s.Trim()));
+                continue;
+            }
+            if (el.ValueKind != JsonValueKind.Object) continue;
+
+            var id = Str(el, "id") ?? Str(el, "name") ?? Str(el, "model");
+            if (string.IsNullOrWhiteSpace(id)) continue;
+
+            var hasMeta = el.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Object;
+            sink.Add(new ModelInfo(
+                id.Trim(),
+                hasMeta ? Str(meta, "ftype") ?? "" : "",
+                hasMeta ? Int(meta, "n_ctx") : 0,
+                hasMeta ? Long(meta, "size") : 0L,
+                StrArray(el, "aliases")));
+        }
+        DedupeModels(sink);
+    }
+
+    private static string? Str(JsonElement o, string name) =>
+        o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int Int(JsonElement o, string name) =>
+        o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : 0;
+
+    private static long Long(JsonElement o, string name) =>
+        o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : 0;
+
+    private static List<string>? StrArray(JsonElement o, string name)
+    {
+        if (!o.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.Array) return null;
+
+        var list = new List<string>();
+        foreach (var e in v.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String) continue;
+            var s = e.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) list.Add(s.Trim());
+        }
+        return list.Count > 0 ? list : null;
+    }
+
+    /// <summary>
+    /// 按 id 去重（忽略大小写，保留先出现的写法）并排序。
+    ///
+    /// 比较一律用 OrdinalIgnoreCase，不用默认的区域敏感比较：模型名是标识符，
+    /// 土耳其语 I/ı 那类区域规则只会让同一个列表在不同语言的机器上排出不同顺序。
+    /// </summary>
+    private static void DedupeModels(List<ModelInfo> list)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keep = new List<ModelInfo>(list.Count);
+        foreach (var m in list)
+            if (seen.Add(m.Id)) keep.Add(m);
+
+        keep.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase));
+        list.Clear();
+        list.AddRange(keep);
     }
 
     private static ChatResult Fail(string m) { return new ChatResult(false, "", "", "", m); }

@@ -35,6 +35,7 @@
     <Compile Include="Edit.cs" />
     <Compile Include="Safety.cs" />
     <Compile Include="Defaults.cs" />
+    <Compile Include="Models.cs" />
     <Compile Include="RichApi.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
