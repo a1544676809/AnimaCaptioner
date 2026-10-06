@@ -366,6 +366,14 @@
                                                  Invoked="TagCopyAccel_Invoked" />
                             <KeyboardAccelerator Key="V" Modifiers="Control"
                                                  Invoked="TagPasteAccel_Invoked" />
+                            <!-- Ctrl+↑/↓ 也要挂在这里。菜单上的同名加速键在列表有焦点时
+                                 **收不到**：ListView 自己把 Ctrl+方向键当成"移动焦点"用掉了
+                                 （实测焦点在列表里按 Ctrl+↓，列表滚了一点、标签纹丝不动）。
+                                 和 Ctrl+C/V 是同一类问题，处理方式也一样。 -->
+                            <KeyboardAccelerator Key="Up" Modifiers="Control"
+                                                 Invoked="TagUpAccel_Invoked" />
+                            <KeyboardAccelerator Key="Down" Modifiers="Control"
+                                                 Invoked="TagDownAccel_Invoked" />
                         </ListView.KeyboardAccelerators>
                         <!-- 分段不用 ListView 的 GroupStyle：WinUI 3 上实测分组头
                              不渲染（CollectionViewSource 确实分好了组，日志能看到

@@ -52,6 +52,13 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<TagItem> _tagRows = new();
     private readonly List<TagItem> _dragged = new();
 
+    /// <summary>
+    /// 中栏标签列表内部的 ScrollViewer，用来在列表重建后把滚动位置放回去。
+    /// 首次布局之前可视树里还找不到它，所以**找不到时不缓存**，下次再找；
+    /// 找到就留着（主窗口的列表模板建好之后不会再重建）。
+    /// </summary>
+    private ScrollViewer? _tagScroll;
+
     /// <summary>左栏图片列表。与 _items 一一对应（同序），列表项带缩略图与标注状态。</summary>
     private readonly ObservableCollection<ImageItem> _imageItems = new();
 
@@ -454,7 +461,8 @@ public sealed partial class MainWindow : Window
             _proseTail = parsed.ProseTail;
 
             SetCaptionText(raw);
-            RefreshTagRows();
+            // 换图片：这是**另一张图**的内容，回到顶部才对（其余重建都保留滚动位置）。
+            RefreshTagRows(resetScroll: true);
         }
         finally { _loading = false; }
 
@@ -588,10 +596,12 @@ public sealed partial class MainWindow : Window
     /// 直接写 <c>string.Join(", ", _pendingTags)</c>，在提示词只有标签时没问题，
     /// 但现在提示词可能带一段自然语言尾巴——那样写会把散文整个丢掉。
     /// </summary>
-    private void CommitPrompt()
+    /// <param name="keepVisibleIndex">重建后必须留在视野里的那一行（_pendingTags 下标）。
+    /// 只有上移/下移需要传：其余操作改动的是行的内容而不是行的位置。</param>
+    private void CommitPrompt(int keepVisibleIndex = -1)
     {
         SetCaptionText(PromptText.Rebuild(_pendingTags, _proseTail));
-        RefreshTagRows();
+        RefreshTagRows(keepVisibleIndex: keepVisibleIndex);
     }
 
     /// <summary>改写正文但不触发 TextChanged 的数据回灌。</summary>
@@ -738,8 +748,17 @@ public sealed partial class MainWindow : Window
     ///
     /// 分段边界画在每段第一行的行模板里，而不是用 ListView 的分组头——
     /// 后者在 WinUI 3 上实测不渲染。
+    ///
+    /// 关于滚动位置：<c>_tagRows</c> 一 Clear，ListView 的 extent 就归零，
+    /// ScrollViewer 会**立刻弹回顶端**——上移/下移一个标签也会连带把视线甩到
+    /// 列表开头。所以默认做法是重建前记下位置、重建后放回去，让视线跟着标签走。
+    /// 只有换图片时例外（不同的图 = 不同的内容，回到顶部才对）。
     /// </summary>
-    private void RefreshTagRows()
+    /// <param name="resetScroll">换图片时置 true：新图的标签从顶部看起。</param>
+    /// <param name="keepVisibleIndex">重建后必须仍留在视野里的那一行（_pendingTags 下标）。
+    /// 上移/下移传被移动的那个标签：它被移到视口上/下边缘之外时，列表跟着翻，
+    /// 让它停在最上/最下一行，而不是滚出屏幕。</param>
+    private void RefreshTagRows(bool resetScroll = false, int keepVisibleIndex = -1)
     {
         // 列表即将被整体重建：正在编辑的那一行对象会被丢掉（新 TagItem 是另一批实例），
         // 而且此时 _pendingTags 很可能已经被别的操作换过内容——再拿编辑框里的文字
@@ -748,6 +767,10 @@ public sealed partial class MainWindow : Window
         // 正常路径不受影响：Enter 提交和失焦提交都会先把 _editingRow 置空，
         // 走到这里时已经是 no-op。真正会撞上的是"编辑中切了图片"这类重建。
         AbandonEdit("列表被重建");
+
+        // 重建前的滚动位置。resetScroll 时不要它（切图回到顶部）。
+        var sv = resetScroll ? null : TagScrollViewer();
+        var keepOffset = sv?.VerticalOffset ?? 0;
 
         var issues = new Dictionary<string, (string Status, string? Use)>(StringComparer.OrdinalIgnoreCase);
         if (_vocab is not null)
@@ -885,6 +908,155 @@ public sealed partial class MainWindow : Window
             SectionOrderHint.Visibility = Visibility.Collapsed;
         }
         _ = orderedTags;
+
+        if (sv is null) return;
+        if (resetScroll) ResetTagScroll(sv);
+        else RestoreTagScroll(sv, keepOffset, keepVisibleIndex);
+    }
+
+    /// <summary>
+    /// 换图片时把列表放回顶部。
+    ///
+    /// 显式设一次，**不依赖"集合 Clear 会自然弹回顶端"**——那是我们正在修的 bug 行为
+    /// （实测每个重建周期里 `natural` 都是 0），拿它当特性用，等于把"回到顶部"这件事
+    /// 押在一个将来可能被上游改掉、也可能被我们别处顺手修掉的副作用上。
+    /// </summary>
+    private void ResetTagScroll(ScrollViewer sv)
+    {
+        sv.UpdateLayout();
+        sv.ChangeView(null, 0, null, true);
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            try { sv.UpdateLayout(); } catch { }
+            sv.ChangeView(null, 0, null, true);
+        });
+    }
+
+    /// <summary>中栏列表内部的 ScrollViewer。首次布局前还不存在，所以只缓存找到的结果。</summary>
+    private ScrollViewer? TagScrollViewer()
+    {
+        if (_tagScroll is not null) return _tagScroll;
+        _tagScroll = FindDescendant<ScrollViewer>(TagList);
+        return _tagScroll;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        var n = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T hit) return hit;
+            var deeper = FindDescendant<T>(child);
+            if (deeper is not null) return deeper;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 把重建前的滚动位置放回去，并保证 <paramref name="keepVisibleIndex"/> 那一行还在视野里。
+    ///
+    /// 顺序是实测出来的，不能想当然地合并：
+    /// 1. 位置先放回去——集合 Clear 之后 extent 归零，ListView 自己会退回顶端。
+    /// 2. 隔一跳再设一次——<c>ChangeView</c> 在布局尚未更新、以及内容刚换时会被**静默
+    ///    忽略**（预览窗口和帮助窗口都踩过），所以要 <c>UpdateLayout()</c> 之后再设。
+    /// 3. 再隔一跳才去量目标行、必要时翻页。**这一步不能和第 1 步挤在同一个回调里**：
+    ///    `ChangeView` 是异步的，后写的"放回位置"会覆盖先算好的翻页，而量几何又量到
+    ///    还没滚的旧布局，结果翻页量算成 0、行停在视口外（实测外了 38 DIP）。
+    ///
+    /// 贴边量自己算，不用 <c>ScrollIntoView</c>：后者带滚动动画、位置不是立刻可读，
+    /// 而且给的是"最少滚动"，一旦有行的行高变了（上移会让某个标签变成段首、多出一条
+    /// 段头），落点就不好预期。这里直接把行坐标和视口比，越界多少就滚多少——于是行
+    /// 正好停在视口的上/下边缘。行还没被实体化（`ContainerFromItem` 返回 null，实测
+    /// 约四成）时算不出来，那时才退回 <c>ScrollIntoView</c> 兜底。
+    ///
+    /// 日志：`natural` 是不做补救时它自己停在哪儿（也就是那个 bug 的样子），`want` 是
+    /// 重建前记下的位置，`row=` 是量到的行位置、必要时附上翻页量。
+    /// </summary>
+    private void RestoreTagScroll(ScrollViewer sv, double offset, int keepVisibleIndex)
+    {
+        sv.UpdateLayout();
+
+        // 不做补救时 ListView 自己停在哪儿：集合 Clear 会把 extent 归零，
+        // 于是这里读到的就是 0——也就是"每次移动都把视线甩回列表开头"那个现象。
+        var natural = sv.VerticalOffset;
+
+        if (offset > 0) sv.ChangeView(null, offset, null, true);
+
+        // 第一跳：内容刚换时首次 ChangeView 可能被静默忽略，布局之后再设一次。
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            try { sv.UpdateLayout(); } catch { }
+            if (offset > 0) sv.ChangeView(null, offset, null, true);
+
+            // 第二跳：等位置真正落地，再量目标行、必要时翻页。
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                try { sv.UpdateLayout(); } catch { }
+                var geo = MeasureRow(sv, keepVisibleIndex);
+                var over = geo.Over;
+
+                string action;
+                if (geo.Known)
+                {
+                    if (Math.Abs(over) > 0.5)
+                    {
+                        sv.ChangeView(null, sv.VerticalOffset + over, null, true);
+                        action = $" -> 翻页 {over:F0}";
+                    }
+                    else action = "（已在视野内）";
+                }
+                else if (keepVisibleIndex >= 0 &&
+                         _tagRows.FirstOrDefault(r => r.PendingIndex == keepVisibleIndex) is { } row)
+                {
+                    // 量不到容器：ListView 还没把这一行实体化（虚拟化是增量做的，
+                    // 实测约四成的次数在两跳之后仍拿不到容器）。这时退回平台自己的
+                    // ScrollIntoView——它内部会先实体化再滚动，能保证这行进视野。
+                    // 代价是带一点滚动动画、位置不是立刻可读，所以只在量不到时用。
+                    TagList.ScrollIntoView(row);
+                    action = " -> 量不到容器，交给 ScrollIntoView";
+                }
+                else action = "";
+
+                // 只在"本来就有滚动位置"或"要求保持某行可见"时记一行：
+                // 在提示词框里打字也会走到这里，那时 offset=0，不必刷屏。
+                if (offset <= 0 && keepVisibleIndex < 0) return;
+                Log.Write($"tag scroll: want={offset:F0} natural={natural:F0} " +
+                          $"keep={keepVisibleIndex} {geo.Text}{action}");
+            });
+        });
+    }
+
+    private readonly record struct RowBox(double Top, double Bottom, double Viewport,
+                                          string Text, bool Known)
+    {
+        /// <summary>要把它带回视口需要滚多少（0 = 已经在视野里）。</summary>
+        public double Over => !Known || Viewport <= 0 ? 0
+            : Top < 0 ? Top
+            : Bottom > Viewport ? Bottom - Viewport
+            : 0;
+    }
+
+    /// <summary>
+    /// 量目标行在视口里的位置。相对 ScrollViewer 的坐标**已包含滚动位移**，
+    /// 所以 `Top` 就是它在视口里的纵向位置（单位是 DIP，不是物理像素）。
+    /// </summary>
+    private RowBox MeasureRow(ScrollViewer sv, int index)
+    {
+        var vp = sv.ViewportHeight;
+        if (index < 0) return new RowBox(0, 0, vp, "row=[n/a]", false);
+        var row = _tagRows.FirstOrDefault(r => r.PendingIndex == index);
+        if (row is null) return new RowBox(0, 0, vp, "row=[no-row]", false);
+        if (TagList.ContainerFromItem(row) is not FrameworkElement c)
+            return new RowBox(0, 0, vp, "row=[no-container]", false);   // 还没实体化
+        try
+        {
+            var y = c.TransformToVisual(sv).TransformPoint(new Windows.Foundation.Point(0, 0)).Y;
+            var bottom = y + c.ActualHeight;
+            return new RowBox(y, bottom, vp,
+                $"row=[top={y:F0} bottom={bottom:F0} vp={vp:F0}]", true);
+        }
+        catch { return new RowBox(0, 0, vp, "row=[transform-failed]", false); }
     }
 
     /// <summary>数一数有多少个标签排在了比它所属大类更靠后的大类之后（即跨段乱序）。</summary>
@@ -1473,8 +1645,15 @@ public sealed partial class MainWindow : Window
         }
 
         _pendingTags = res.Tags;
-        CommitPrompt();
         var keep = res.MovedTo.Select(i => _pendingTags[i]).ToList();
+
+        // 列表会被整体重建，所以重建前记下的滚动位置会被放回去（见 RefreshTagRows），
+        // 再点名"被移动的那一行"要留在视野里：它被带到视口上/下边缘之外时，列表
+        // 跟着翻一页，让它停在最上/最下一行——而不是让视线被甩回列表开头。
+        //
+        // 取 MovedTo 首项而不是末项：delta<0 时它是升序、delta>0 时是降序，
+        // 所以首项恰好就是最可能先出屏幕的那一个（上移取最上、下移取最下）。
+        CommitPrompt(keepVisibleIndex: res.MovedTo.Count > 0 ? res.MovedTo[0] : -1);
 
         TagList.SelectedItems.Clear();
         foreach (var t in keep)
@@ -2377,6 +2556,28 @@ public sealed partial class MainWindow : Window
         if (TextInputFocused()) return;      // 输入框里的 Ctrl+C 归它自己
         args.Handled = true;
         CopySelectedTags();
+    }
+
+    /// <summary>
+    /// Ctrl+↑ / Ctrl+↓（焦点在标签列表里时）。
+    ///
+    /// 为什么必须另外挂一份：菜单项上的同名加速键在列表有焦点时**收不到**——
+    /// ListView 把 Ctrl+方向键当成"移动焦点"用掉了（实测：焦点在列表里按 Ctrl+↓，
+    /// 列表滚了 3%、标签一个没动）。这和 Ctrl+C/V 是同一类问题，所以处理方式
+    /// 也一样：菜单项只留快捷键提示，真正的加速键挂在列表上。
+    /// </summary>
+    private void TagUpAccel_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (TextInputFocused()) return;
+        args.Handled = true;
+        MoveSelected(-1);
+    }
+
+    private void TagDownAccel_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (TextInputFocused()) return;
+        args.Handled = true;
+        MoveSelected(1);
     }
 
     private async void TagPasteAccel_Invoked(KeyboardAccelerator sender,

@@ -110,10 +110,16 @@ internal static class Safety
                 Console.WriteLine($"  缺安全标签 {missing.Count} 处: {string.Join(", ", missing)}");
 
             // 不变量：文件数必须是 53；分布必须与实测基线一致（改动词表会打破它）
+            //
+            // 2026-10-07：基线从「9 处分歧 + safe 一档为空」改成「8 处 + safe=1」——
+            // 训练集本身变了（022_01_Chocola_20_white 标成了 safe），不是判据变了。
+            // 这一条正好是当初建议的"给 safe 补一个样例"，所以它是对的方向；
+            // 断言跟着数据走，不把旧快照当成不可变的事实。
             Check("扫描到 53 个 caption", total == 53, "实际 " + total);
-            Check("有分歧时会被报出（当前基线 9 处）", diverge.Count == 9, "实际 " + diverge.Count);
+            Check("有分歧时会被报出（当前基线 8 处）", diverge.Count == 8, "实际 " + diverge.Count);
             Check("只应有 1 处缺安全标签", missing.Count == 1, "实际 " + missing.Count);
-            Check("safe 一档当前为空（记录在案）", dist.GetValueOrDefault("safe") == 0);
+            Check("safe 一档已有样例（1 张）", dist.GetValueOrDefault("safe") == 1,
+                  "实际 " + dist.GetValueOrDefault("safe"));
         }
 
         Console.WriteLine($"\n=== safety: {checks - fails}/{checks} 通过 ===");

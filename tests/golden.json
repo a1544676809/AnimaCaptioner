@@ -328,7 +328,7 @@
   ]
  },
  "prior": {
-  "size": 679,
+  "size": 680,
   "sample": {
    "1boy": 0.037258,
    "1girl": 0.023284,
@@ -343,7 +343,7 @@
    "against wall": 0.849057,
    "ahoge": 0.411765,
    "all fours": 0.795455,
-   "animal ear fluff": 0.617653,
+   "animal ear fluff": 0.618634,
    "animal ear legwear": 0.934541,
    "animal ears": 0.307205,
    "ankle strap": 0.470588,
@@ -422,7 +422,6 @@
    "pink name tag|not-a-tag|None": 1,
    "pink sheets|not-a-tag|None": 3,
    "pink tail bow|not-a-tag|None": 1,
-   "polka dot hair bow|not-a-tag|None": 1,
    "print yukata|alias|print kimono": 2,
    "puff sleeves|not-a-tag|None": 1,
    "purple name tag|not-a-tag|None": 2,
