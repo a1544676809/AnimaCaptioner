@@ -51,6 +51,13 @@
   </Target>
 
   <ItemGroup>
+    <!-- tests\ 是独立的 net8 测试工程，有自己的 Main。SDK 默认会把
+         **\*.cs 全收进来，于是应用工程也会看到那个入口点（CS0017 多个入口点），
+         而它的 bin\obj 里还有自动生成的 AssemblyInfo，一并排除掉。 -->
+    <Compile Remove="tests\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- 帮助文档随程序分发：运行时直接读 <exe>\docs 里的 .md，
          所以改文档点「重新载入」即可生效，不必重新编译或重启程序。
