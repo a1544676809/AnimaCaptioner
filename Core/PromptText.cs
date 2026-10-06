@@ -42,6 +42,40 @@ public static class PromptText
     /// <summary>着色区间：在原文里的绝对 [Start, Start+Length)。</summary>
     public readonly record struct ColorSpan(int Start, int Length, string Section);
 
+    /// <summary>
+    /// 训练侧的 token 预算。
+    ///
+    /// 这条约束来自训练器源码，不是估计值：
+    ///   - `library/anima_train_utils.py` 第 101-110 行，两个分词器默认都是 512；
+    ///   - `library/strategy_anima.py` 第 57-77 行把这两个值传给分词器时带
+    ///     `truncation=True, padding="max_length"`。
+    ///
+    /// **`truncation=True` 意味着超出部分被直接砍掉，不报错、不警告。** 而且后果
+    /// 有方向性：散文排在最后，所以超长时被丢掉的正好是散文，标签全都留着——
+    /// 表现为「训练正常跑完」，但模型从没读到那段描述。
+    ///
+    /// 换算率实测自 Anima 自带的 T5 分词器（`comfy/text_encoders/t5_tokenizer`）：
+    /// 标签密集的 caption 是 **3.23 字符/token**，纯散文约 4.0–4.3。
+    /// 这里取标签密度——它是更保守的一侧（同样字符数下 token 更多）。
+    /// </summary>
+    public const int MaxTokens = 512;
+
+    /// <summary>标签密集文本的字符/token（实测 53 个真实 caption 得 3.234）。</summary>
+    public const double CharsPerTokenTagged = 3.23;
+
+    /// <summary>
+    /// 建议的字符软上限。留一成余量，因为这里的估算是按字符密度做的，
+    /// 而标点、连字符、数字都会让实际 token 数偏离平均值。
+    /// </summary>
+    public static int SoftCharBudget => (int)(MaxTokens * 0.9 * CharsPerTokenTagged);
+
+    /// <summary>按实测换算率估算 token 数。</summary>
+    public static int EstimateTokens(string? text) =>
+        string.IsNullOrEmpty(text) ? 0 : (int)Math.Ceiling(text.Length / CharsPerTokenTagged);
+
+    /// <summary>是否可能超过训练侧的 512 截断点。</summary>
+    public static bool OverBudget(string? text) => EstimateTokens(text) > MaxTokens;
+
     private static readonly char[] SentenceEnd = { '.', '!', '?', ';', '\u3002', '\uff01', '\uff1f' };
 
     private static readonly string[] InnerBoundaries = { ". ", "! ", "? ", "...", "\u3002" };

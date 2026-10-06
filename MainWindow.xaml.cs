@@ -845,6 +845,12 @@ public sealed partial class MainWindow : Window
             : _pendingTags.Count + " tags" + (issues.Count > 0 ? $" · ⚠ {issues.Count} 待确认" : " · 校验通过")
               + (proseRows > 0 ? " · 含自然语言" : "");
 
+        // 训练侧的 token 预算提示。超 512 会被训练器**静默截断**（truncation=True），
+        // 而散文排在最后，所以被丢的正好是散文——界面上必须说出来，否则无从察觉。
+        var raw = GetCaptionText();
+        if (PromptText.OverBudget(raw))
+            CaptionStatusText.Text += $" · ⚠ 约 {PromptText.EstimateTokens(raw)} tokens，超过训练上限 512，末尾会被静默截断";
+
         // 列表是按大类分段显示的，但文件里的实际顺序可能不是。
         // 两者不一致时必须说出来：否则用户看到的是分好段的界面，存下去的却是
         // 另一个顺序，而界面上没有任何迹象。给一条提示和一个一键修好的入口。

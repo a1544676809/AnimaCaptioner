@@ -76,6 +76,60 @@ hard_tags（正典标签） → soft_phrases（视觉短语） → nltags_block�
 
 它的规则里有一条值得单独抄下来：**`nltags_block` 不重复已在 `hard_tags` 里出现的外观/服装。**
 
+## 两条从训练器源码里核实出来的硬约束
+
+这两条不是"建议"，违反了会**静默出错**——训练照跑，不报任何警告。我直接读了训练器源码确认。
+
+### 1. caption 必须是**单行**
+
+`Anima-Standalone-Trainer` 的 `library/train_util.py` 第 885 行：
+
+```python
+else:
+    # if caption is multiline, use the first line
+    caption = caption.split("\n")[0]
+```
+
+**注释就写着"多行时只用第一行"。** 也就是说 `.txt` 里若有换行，**第二行起的内容在训练时被整段丢弃，没有任何提示**。
+
+还有第二重问题：官方模型卡的「Dataset tags」一节写明，`ye-pop` / `deviantart` 这两个数据集标签的格式就是**首行 + 换行**。所以 caption 里出现换行，除了被截断，还会让模型把首行误读成数据集标签。
+
+> 本程序已经防住了这一条：提示词框里按回车产生的段落标记会被折成空格（`GetCaptionText()`），实际写盘永远是单行。现有 53 个 caption 实测**含内部换行的 0 个**。
+
+### 2. 训练侧的 token 上限是 **512**，超长会**静默截断**
+
+`library/anima_train_utils.py` 第 101-110 行，两个分词器的默认值都是 512：
+
+```python
+"--qwen3_max_token_length", type=int, default=512,
+"--t5_max_token_length",     type=int, default=512,
+```
+
+而这两个值最终传给分词器时是**强制截断**——`library/strategy_anima.py` 第 57-77 行，两条路径完全一样：
+
+```python
+qwen3_encoding = self.qwen3_tokenizer(text, return_tensors="pt",
+    truncation=True, padding="max_length", max_length=self.qwen3_max_length)
+...
+t5_encoding = self.t5_tokenizer(text, return_tensors="pt",
+    truncation=True, padding="max_length", max_length=self.t5_max_length)
+```
+
+**`truncation=True` 意味着超出的部分被直接砍掉，不报错、不警告。** 而且后果有方向性：按本文推荐的顺序，**散文排在最后**——所以一旦超长，被丢掉的正好是散文，标签反而全都留着。你会看到「训练正常跑完」，但模型从没读到那段描述。
+
+这一点要和**推理端**区分开——推理时两个分词器是 `max_length=99999999`（不截断，512 那里只是补齐下限 `if out.shape[1] < 512: pad`）。本文档讲训练集，所以按**硬上限**对待。
+
+### 附带一条：`shuffle_caption` 用不了
+
+`anima_train_network.py` 第 63-66 行有断言，TE 缓存开启时（Anima 标准配方）：
+
+```python
+assert (...), "when caching Text Encoder output, shuffle_caption, token_warmup_step
+              or caption_tag_dropout_rate cannot be used"
+```
+
+这解释了为什么 caption 里**不用靠打乱标签顺序**来增强——标准配方下打乱是关掉的。也意味着标签顺序在训练里是**照读**的。
+
 ## 一个必须知道的冲突：散文会盖掉取景标签
 
 [HF #140](https://huggingface.co/circlestone-labs/Anima/discussions/140) 里 `Jamerrone` 做了对照实验（纯标签 / 纯散文 / 混合），结论是：
@@ -119,7 +173,7 @@ sky with clouds.
 | 规则 | 依据 |
 |---|---|
 | **英文**。中文必须翻。 | 作者 #52：*"T5 wasn't trained on Chinese… the model only understands English."* 实测 T5 词表 **0 个 CJK 字符** |
-| **标签在前、散文在后** | 官方 example.png；社区三层约定；作者自己 LoRA 用 `caption_prefix` 前置 |
+| **标签在前、散文在后**（惯例，非强制） | 官方 example.png 和模型卡范例都是这个形态，且用**句号+空格**过渡（`…safe. An anime girl…`）。但官方同时说 *"mix tags and natural language in **arbitrary order**"*，作者 #9 也说训练数据里 tags→caption 和 caption→tags **两种都有**。所以这是惯例，不是要求 |
 | **标签区用 `", "`（逗号+空格）** | 见下方实测 |
 | **散文 2–4 句** | 官方下限 2 句；#140 报告 2–3 段就崩 |
 | **散文别重复标签已有的外观/服装** | 社区约定明写；重复等于双重加权 |
@@ -144,16 +198,19 @@ sky with clouds.
 
 **两种文体的换算率不同**，这点影响预算：
 
-| 文体 | 字符/token | 512 token 能放 |
-|---|---|---|
-| **标签列表** | **3.23** | ≈1650 字符 |
-| 自然语言散文 | 4.0–4.3 | ≈2050 字符 ≈ 340 词 |
+| 文体 | 字符/token | 512 token 能放 | 留一成余量 |
+|---|---|---|---|
+| **标签列表** | **3.23** | ≈1650 字符 | **≈1485 字符** |
+| 自然语言散文 | 4.0–4.3 | ≈2050 字符 ≈ 340 词 | ≈1845 字符 |
 
-标签更"贵"，因为短词多、标点多。按散文预算时用 4.0，按标签预算时用 3.23。
+标签更"贵"，因为短词多、标点多。**按标签密度（3.23）预算才是安全的一侧**——同样字符数下它算出的 token 更多。标签区 + 散文混排时用 3.23。
 
-512 是**下限不是上限**（`if out.shape[1] < 512: pad`），但 T5-XXL 自己的 `model_max_length` 就是 512，训练数据的 caption 也都是这个形状，所以超过就属于**分布外**。建议按 **≤400 词** 预算。
+**注意 512 在训练侧是硬上限，不是下限。** 推理端两个分词器都是 `max_length=99999999`（`if out.shape[1] < 512: pad` —— 那里 512 是补齐下限），但**训练器把 512 传给分词器时带 `truncation=True`，超出部分直接砍掉**（`strategy_anima.py:57-77`，两条路径都是）。本文档讲训练集，所以按**上限**对待。
 
-你现有 53 个 caption（实测）：**90–248 token，平均 164** —— 离上限很远，即使加 2–4 句散文也很宽松（每张加 50 token 也才到 300 左右）。
+你现有 53 个 caption（实测）：**90–248 token，平均 164**，最长 248 —— 离上限有**一倍以上余量**，即使每张加 2–4 句散文也还在预算内（每张加 50 token 约到 300）。
+
+> 程序里已经加了这条提示：提示词原文超过约 1485 字符时，中栏底部会显示
+> `⚠ 约 N tokens，超过训练上限 512，末尾会被静默截断`。实测在 1431 token 的样例上正确触发。
 
 ## 关于 `", "` 的实测修正
 
@@ -184,6 +241,8 @@ sky with clouds.
 > I haven't tested yet, but I expect that **duplicating the images and captioning each duplicate in different styles** will help
 
 **我的判断：对 53 张的 style LoRA，不值得做。** 理由：作者说 LoRA 格式宽容度高；变体会让每张图重复训练，等于改变有效 epoch；而收益没人给出受控证据。**先把单一格式做对。**
+
+> ⚠️ 如果你想试，**不能靠在一个 `.txt` 里写多行来实现**——训练器只读第一行（见上文源码），第二行起会被静默丢掉。作者那六种变体是在**他自己的 `diffusion-pipe` 管线**里做的，不是靠多行 caption。社区提到的做法是**复制图片、每份配一种格式**。
 
 ## 一个真实的格式缺陷（公开数据集里发现的）
 
@@ -245,6 +304,31 @@ other's cheek. Keep both faces sharp and turned toward each other.
 ### 3. 一个只能靠图判断的点
 
 `neko4_cs04b_cut` 标的是 `sensitive`，但有 `kiss` + `hand on another's cheek`。**kiss 在官方判据里归 `sensitive`**（`heavy kissing` 才到 `nsfw`），所以这个标注是对的——但它同时说明：**接触类内容即使不升级档位，也必须描述清楚**，否则模型学不到"两个人在互动"。
+
+## 触发词放哪：一处真实的分歧
+
+你的 `@sayori style` 该放哪？社区里有**两种都有实据**的做法：
+
+| 主张 | 出处 | 理由 |
+|---|---|---|
+| **放最前** | 多个 LoRA 训练指南；`Nana7mi0721` 的模板全部以 `@trigger` 开头 | 配合 `keep_tokens=N` 形成稳定锚点 |
+| **放官方 character 段**（即质量/人数之后） | `Rinne414` 指南 | 官方顺序里 character 就在那个位置，触发词本质上就是"角色/风格"位 |
+
+**我的判断：对你这种全数据集统一的情况，两种都合法，关键是别混用。**
+
+有一条实证让这个选择变得不那么重要：**`shuffle_caption` 在 Anima 标准配方下是关掉的**（源码断言，见上文），所以"置首 + `keep_tokens` 防打乱"这个原始理由**在这条链路上不成立**。而且官方顺序里 `@artist` 本来就排在 general 之前——你的 `@sayori style` 现在紧跟 `solo` 之后，位置是合规的。
+
+**所以：保持现状即可，不必改。** 但要保证 53 张**全都一样**——中途换位置会让模型把"位置"也当成一个变量。
+
+我核对了你的实际数据，**53/53 全部一致**：触发词始终紧跟人数段，前面只出现「安全词 + 人数词」，没有例外。
+
+```text
+sensitive, 1girl, @sayori style                     ← 位置 2
+sensitive, 1girl, solo, @sayori style               ← 位置 3（人数段多一个 solo）
+explicit, 1girl, 1boy, solo focus, @sayori style    ← 位置 4（两个人数词）
+```
+
+那个"位置 2/3/4"的差别**不是不一致**，而是人数段本身长度不同——这正符合官方顺序（`[…] [1girl/1boy…] [character] [series] [artist] [general]`）。
 
 ## 一句话总结
 
