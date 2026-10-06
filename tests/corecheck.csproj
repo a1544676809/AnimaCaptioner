@@ -28,11 +28,13 @@
     <Compile Include="..\Core\TagOrder.cs" />
     <Compile Include="..\Core\PromptText.cs" />
     <Compile Include="..\Core\TagEdit.cs" />
+    <Compile Include="..\Core\TagComplete.cs" />
     <Compile Include="..\Core\SafetyRating.cs" />
     <Compile Include="Sections.cs" />
     <Compile Include="RoundTrip.cs" />
     <Compile Include="Prose.cs" />
     <Compile Include="Edit.cs" />
+    <Compile Include="Complete.cs" />
     <Compile Include="Safety.cs" />
     <Compile Include="Defaults.cs" />
     <Compile Include="Models.cs" />

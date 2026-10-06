@@ -78,8 +78,17 @@ public static class TagEdit
     }
 
     /// <summary>
-    /// 编辑一个已存在的标签：把 <paramref name="input"/> 当成新名字。
+    /// 编辑一个已存在的标签：把 <paramref name="input"/> 当成**新名字**。
     /// <paramref name="others"/> 是列表里**除它之外**的标签，用来防重复。
+    ///
+    /// 与 <see cref="NormalizeOne"/> 的分工不能混：那一个是"把现有标签规范一遍"，
+    /// 所以"本来就是规范形式"要如实报告"无需改动"；而这一个是用户明确敲了一个
+    /// 新名字，`long hair` → `twintails` 是一次正常改名——不能因为 `twintails`
+    /// 本身就是正典形式而拒绝。之前这里复用了 NormalizeOne，于是**凡是敲一个
+    /// 已经合法的标签当新名字都会被拒**，Tab 补全在就地编辑里也就完全落不了地
+    /// （实测：`edit rejected: 'long hair' -> 'twintails'`）。
+    ///
+    /// 该拒绝的只有四种：空、逗号、没改、撞名。
     /// </summary>
     public static Result Apply(string? input, string? oldTag,
                                IReadOnlyList<string> others, VocabDb? vocab)
@@ -99,7 +108,23 @@ public static class TagEdit
         if (string.Equals(raw, old, StringComparison.Ordinal))
             return new Result(false, old, "unchanged", "没有改动。");
 
-        return NormalizeOne(raw, old, others, vocab);
+        var r = Resolve(raw, vocab);
+        if (r.Tag.Length == 0)
+            return new Result(false, old, "empty", "标签不能为空。要移除它请用「删除」。");
+
+        foreach (var o in others)
+        {
+            if (!string.Equals(o, r.Tag, StringComparison.OrdinalIgnoreCase)) continue;
+            return string.Equals(r.Tag, raw, StringComparison.Ordinal)
+                ? new Result(false, old, "duplicate", $"列表里已经有「{raw}」了。")
+                : new Result(false, old, "duplicate",
+                    $"「{raw}」的规范形式是「{r.Tag}」，但列表里已经有它了。");
+        }
+
+        var via = DescribeStatus(r.Status);
+        return string.Equals(r.Tag, raw, StringComparison.Ordinal)
+            ? new Result(true, raw, r.Status, $"「{old}」→「{raw}」（{via}）")
+            : new Result(true, r.Tag, r.Status, $"「{raw}」→「{r.Tag}」（{via}）");
     }
 
     /// <summary>

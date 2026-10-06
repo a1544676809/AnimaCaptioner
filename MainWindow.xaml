@@ -319,12 +319,16 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <!-- QueryIcon 用 FontIcon 而不是 SymbolIcon：Symbol 枚举里没有
-                         合适的图标，而字形码点已逐条核对存在。 -->
+                         合适的图标，而字形码点已逐条核对存在。
+                         KeyDown 只用来接 Tab——Enter 由 QuerySubmitted 走
+                         （AutoSuggestBox 自己会把它转成那个事件）。 -->
                     <AutoSuggestBox x:Name="AddTagBox"
-                                    PlaceholderText="添加标签：中文或英文"
+                                    PlaceholderText="添加标签：中文或英文（Tab 补全）"
+                                    MaxSuggestionListHeight="260"
                                     TextChanged="AddTagBox_TextChanged"
                                     SuggestionChosen="AddTagBox_SuggestionChosen"
-                                    QuerySubmitted="AddTagBox_QuerySubmitted">
+                                    QuerySubmitted="AddTagBox_QuerySubmitted"
+                                    KeyDown="AddTagBox_KeyDown">
                         <AutoSuggestBox.QueryIcon>
                             <FontIcon Glyph="&#xE710;" />
                         </AutoSuggestBox.QueryIcon>
@@ -347,14 +351,17 @@
                               DragItemsStarting="TagList_DragItemsStarting"
                               DragOver="TagList_DragOver" Drop="TagList_Drop"
                               RightTapped="TagList_RightTapped"
-                              DoubleTapped="TagList_DoubleTapped">
+                              DoubleTapped="TagList_DoubleTapped"
+                              PreviewKeyDown="TagList_PreviewKeyDown">
                         <!-- 打字时的按键不能被全局加速键吃掉（Del 会在编辑标签时删掉整个标签）。
-                             F2 进编辑、Esc 退出、Ctrl+C/V 复制粘贴，都挂在列表上而不是全局：
+                             F2 进编辑、Ctrl+C/V 复制粘贴，都挂在列表上而不是全局：
                              加速键只在焦点位于列表子树内时才触发，所以不会劫持提示词框里
-                             自己的 Ctrl+C/Ctrl+V。 -->
+                             自己的 Ctrl+C/Ctrl+V。
+                             Esc 不在这里——行内输入框是 AutoSuggestBox，它自己的类处理
+                             函数会先把 Esc 吃掉并置 Handled，加速键根本收不到；
+                             改成在构造函数里用 AddHandler(handledEventsToo) 接。 -->
                         <ListView.KeyboardAccelerators>
                             <KeyboardAccelerator Key="F2" Invoked="TagEditAccel_Invoked" />
-                            <KeyboardAccelerator Key="Escape" Invoked="TagEscapeAccel_Invoked" />
                             <KeyboardAccelerator Key="C" Modifiers="Control"
                                                  Invoked="TagCopyAccel_Invoked" />
                             <KeyboardAccelerator Key="V" Modifiers="Control"
@@ -402,13 +409,23 @@
                                                        Visibility="{x:Bind DisplayVisibility, Mode=OneWay}" />
                                             <!-- 编辑态：就地改名。Enter 提交、Esc 取消、失焦提交。
                                                  Text 走 OneTime 绑定：输入框的内容归用户所有，
-                                                 不能被后台刷新（改色、重建列表）覆盖掉。 -->
-                                            <TextBox x:Name="TagEditBox" Text="{x:Bind Tag}"
+                                                 不能被后台刷新（改色、重建列表）覆盖掉。
+                                                 用 AutoSuggestBox 而不是 TextBox：双击进来时
+                                                 要能像"添加标签"那样展开候选列表，并且共用
+                                                 同一套 Tab 补全（AutoSuggestBox 的候选弹层
+                                                 在 Popup 里，不会被列表行的裁剪切掉）。
+                                                 Text 默认 OneTime，所以控件不会把用户改的字
+                                                 写回 TagItem——它只负责"回车时读一遍"。 -->
+                                            <AutoSuggestBox x:Name="TagEditBox" Text="{x:Bind Tag}"
                                                      FontFamily="Consolas" Padding="4,2"
+                                                     MaxSuggestionListHeight="240"
+                                                     PlaceholderText="标签，中文或英文"
                                                      Visibility="{x:Bind EditVisibility, Mode=OneWay}"
+                                                     TextChanged="TagEditBox_TextChanged"
+                                                     SuggestionChosen="TagEditBox_SuggestionChosen"
+                                                     QuerySubmitted="TagEditBox_QuerySubmitted"
                                                      KeyDown="TagEditBox_KeyDown"
-                                                     LostFocus="TagEditBox_LostFocus"
-                                                     IsSpellCheckEnabled="False" />
+                                                     LostFocus="TagEditBox_LostFocus" />
                                             <TextBlock Text="{x:Bind Note}" FontSize="11"
                                                        Visibility="{x:Bind NoteVisibility}"
                                                        Foreground="{x:Bind NoteBrush}" />

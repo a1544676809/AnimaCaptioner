@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text;
 using AnimaCaptioner.Core;
+using Microsoft.UI.Input;                    // InputKeyboardSource（问 Shift 有没有按着）
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -10,6 +11,7 @@ using Microsoft.UI.Xaml.Media;              // VisualTreeHelper
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
+using Windows.UI.Core;                       // CoreVirtualKeyStates
 
 namespace AnimaCaptioner;
 
@@ -54,6 +56,21 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<ImageItem> _imageItems = new();
 
     private readonly ThumbnailLoader _thumbs = new();
+
+    /// <summary>
+    /// 两个输入框各自的 Tab 补全状态。**必须一份一个**：共用一个实例时，
+    /// 在"添加标签"里按过 Tab 之后，就地编辑框的第一次 Tab 会从那一格继续，
+    /// 于是补出来的候选和框里写的字毫无关系。
+    /// </summary>
+    private readonly TagComplete.Cycler _addCycle = new();
+    private readonly TagComplete.Cycler _editCycle = new();
+
+    /// <summary>
+    /// Tab 补全是程序性改写输入框文字，而那次改动同样会触发 TextChanged。
+    /// 这个标志让处理函数分清"用户打的字"和"我们自己填的候选"——后者不能
+    /// 清掉候选列表（清了列表会闪一下，用户就看不出还有几个候选可切）。
+    /// </summary>
+    private bool _completing;
 
     /// <summary>独立预览窗口。null 表示当前没开；关闭后置回 null。</summary>
     private PreviewWindow? _preview;
@@ -884,46 +901,117 @@ public sealed partial class MainWindow : Window
         return bad;
     }
 
-    // ================= 添加标签 =================
+    // ================= 输入框的候选与 Tab 补全 =================
 
     private void AddTagMenu_Click(object sender, RoutedEventArgs e) => AddTagBox.Focus(FocusState.Programmatic);
+
+    /// <summary>
+    /// 把候选铺进下拉列表。列表内容与 Tab 循环走的是同一份
+    /// <see cref="TagComplete.Suggest"/> 结果——否则按 Tab 会跳到列表里
+    /// 根本看不见的东西上，"看得见的才切得到"这条就不成立了。
+    /// </summary>
+    private static void ShowCandidates(AutoSuggestBox box, IReadOnlyList<TagComplete.Candidate> list)
+    {
+        box.ItemsSource = list.Select(TagComplete.Display).ToList();
+        box.IsSuggestionListOpen = list.Count > 0;
+    }
+
+    /// <summary>
+    /// Shift 有没有按着。Shift+Tab 要往回切，而 KeyRoutedEventArgs 里只有
+    /// 一个 VirtualKey，修饰键状态得另外问。
+    /// </summary>
+    private static bool ShiftDown() =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+                           .HasFlag(CoreVirtualKeyStates.Down);
+
+    /// <summary>
+    /// Tab / Shift+Tab 补全。返回 true 表示这次按键被吃掉了（要阻止它继续
+    /// 去做焦点切换）。
+    ///
+    /// 没有候选时返回 false：空输入框里按 Tab 是"跳到下一个控件"，
+    /// 拦住它又什么都不做会让 Tab 在这个窗口里失灵。
+    /// </summary>
+    private bool CompleteFrom(AutoSuggestBox box, TagComplete.Cycler cycle,
+                              bool backwards, string? hint = null)
+    {
+        var step = cycle.Next(box.Text, q => TagComplete.Suggest(q, _vocab), backwards);
+        if (step is null)
+        {
+            TranslateInfoText.Text = box.Text.Trim().Length == 0
+                ? "先在输入框里打几个字，再按 Tab 补全。"
+                : $"词库里没有和「{box.Text.Trim()}」匹配的标签。";
+            return false;
+        }
+
+        var s = step.Value;
+
+        // 填字和铺列表都要包在标志里：给候选列表设 ItemsSource 会再触发一次
+        // TextChanged，那一下如果被当成"用户改了字"，循环就被清了，
+        // 于是连按两次 Tab 卡在同一格。
+        _completing = true;
+        try
+        {
+            box.Text = s.Item.Tag;
+            ShowCandidates(box, cycle.Items);
+        }
+        finally { _completing = false; }
+
+        TranslateInfoText.Text = TagComplete.Status(s) + (hint ?? "");
+        Log.Write($"complete: '{s.Item.Tag}' {s.Index + 1}/{s.Count} fresh={s.Fresh} back={backwards}");
+        return true;
+    }
 
     /// <summary>输入时用词库给候选。中英混输都支持。</summary>
     private void AddTagBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
     {
-        // 只在用户真的打字时给建议；程序性设 Text 会触发一次 UserInput
-        // 之外的原因，不过滤掉会在回车加入时又弹出候选框。
+        // 循环作废按**内容**判，不按事件判：Tab 填完字之后再给列表设 ItemsSource
+        // 还会触发一次 TextChanged，那一下看着像"用户改了字"，真去清循环就会让
+        // 连按两次 Tab 卡在同一格上（实测日志里两条 fresh=True 同格）。
+        if (!_addCycle.At(sender.Text)) _addCycle.Reset();
+
+        // 只在用户真的打字时给建议；程序性设 Text 会触发一次
+        // UserInput 之外的原因（Tab 补全也走这条路），不过滤掉会在
+        // 回车加入时又弹出候选框。
         if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
         {
+            if (_completing) return;          // 是我们自己填的候选，列表留着别动
             sender.ItemsSource = null;
+            sender.IsSuggestionListOpen = false;
             return;
         }
 
-        var q = sender.Text.Trim();
-        if (q.Length == 0 || _vocab is null) { sender.ItemsSource = null; return; }
+        ShowCandidates(sender, TagComplete.Suggest(sender.Text, _vocab));
+    }
 
-        var hits = _vocab.Search(q, 20);
-        sender.ItemsSource = hits
-            .Select(h => h.Cn.Length > 0 ? $"{h.Tag}   —   {h.Cn}" : h.Tag)
-            .ToList();
+    /// <summary>
+    /// Tab 补全。Enter 不在这里接——AutoSuggestBox 自己会把它转成
+    /// QuerySubmitted，两条路都接会重复触发（虽然 EndEdit / AddTag
+    /// 都是幂等的，但没必要留两条入口）。
+    /// </summary>
+    private void AddTagBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Tab) return;
+        if (sender is not AutoSuggestBox box) return;
+        if (CompleteFrom(box, _addCycle, ShiftDown())) e.Handled = true;
     }
 
     /// <summary>从候选里选一个：把候选还原成纯标签填进输入框。</summary>
     private void AddTagBox_SuggestionChosen(AutoSuggestBox sender,
                                             AutoSuggestBoxSuggestionChosenEventArgs args)
     {
-        if (args.SelectedItem is string s)
-            sender.Text = s.Split("   —   ", 2, StringSplitOptions.None)[0].Trim();
+        var tag = TagComplete.Bare(args.SelectedItem as string);
+        if (tag.Length == 0) return;
+        sender.Text = tag;
+        _addCycle.SyncTo(tag);      // 接着按 Tab 从这一格往后走，而不是从头重来
     }
 
     private void AddTagBox_QuerySubmitted(AutoSuggestBox sender,
                                           AutoSuggestBoxQuerySubmittedEventArgs args)
     {
         // 用户选了候选就用候选，否则用输入框原文
-        var text = args.ChosenSuggestion is string s
-            ? s.Split("   —   ", 2, StringSplitOptions.None)[0].Trim()
-            : (args.QueryText ?? "").Trim();
-        if (text.Length > 0) AddTag(text);
+        var tag = TagComplete.Bare(args.ChosenSuggestion as string);
+        if (tag.Length == 0) tag = (args.QueryText ?? "").Trim();
+        if (tag.Length > 0) AddTag(tag);
     }
 
     private void AddTag_Click(object sender, RoutedEventArgs e)
@@ -1965,7 +2053,7 @@ public sealed partial class MainWindow : Window
     /// 提交时会退化成"没有改动"——把用户的输入静默丢掉。
     /// 持有引用则即使容器被回收，Text 仍然读得到。
     /// </summary>
-    private TextBox? _editingBox;
+    private AutoSuggestBox? _editingBox;
 
     /// <summary>Esc 取消时回到这个值，避免"改了一半又反悔"变成提交。</summary>
     private bool _editCancelled;
@@ -2022,46 +2110,136 @@ public sealed partial class MainWindow : Window
         }
 
         _editingBox = box;
+        _editCycle.Reset();
+        box.ItemsSource = null;
+        box.IsSuggestionListOpen = false;
         box.Text = row.Tag;          // 每次进编辑都从当前值开始，不吃上次的半成品
-        box.Focus(FocusState.Programmatic);
-        box.SelectAll();
 
-        TranslateInfoText.Text = "编辑中：Enter 提交，Esc 取消。";
+        // 焦点和全选都落到模板里的内部 TextBox 上：AutoSuggestBox 自己没有
+        // SelectAll（那是 TextBox 的方法，编译期就报 CS1061），而且全选与否
+        // 决定了用户接着打的一个字是"替换整个标签"还是"插进去"。
+        var inner = InnerTextBox(box);
+        if (inner is not null) { inner.Focus(FocusState.Programmatic); inner.SelectAll(); }
+        else box.Focus(FocusState.Programmatic);
+
+        TranslateInfoText.Text = "编辑中：Enter 提交，Esc 取消，Tab 补全。";
         Log.Write($"edit begin: '{row.Tag}'");
     }
 
     /// <summary>找到某一行模板里的输入框。虚拟化后该行可能没有实体容器，返回 null。</summary>
-    private TextBox? FindEditBox(TagItem row)
+    private AutoSuggestBox? FindEditBox(TagItem row)
     {
         var container = TagList.ContainerFromItem(row);
-        return container is null ? null : FindByName(container, "TagEditBox");
+        return container is null ? null : FindEditBox(container);
     }
 
-    private static TextBox? FindByName(DependencyObject root, string name)
+    private static AutoSuggestBox? FindEditBox(DependencyObject root)
     {
         var n = VisualTreeHelper.GetChildrenCount(root);
         for (var i = 0; i < n; i++)
         {
             var child = VisualTreeHelper.GetChild(root, i);
-            if (child is TextBox tb && tb.Name == name) return tb;
-            if (FindByName(child, name) is { } found) return found;
+            if (child is AutoSuggestBox b && b.Name == "TagEditBox") return b;
+            if (FindEditBox(child) is { } found) return found;
         }
         return null;
     }
 
+    /// <summary>AutoSuggestBox 模板里的那个 TextBox（聚焦与全选要落在它身上）。</summary>
+    private static TextBox? InnerTextBox(DependencyObject root)
+    {
+        var n = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is TextBox tb) return tb;
+            if (InnerTextBox(child) is { } found) return found;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 就地编辑时的候选。模板里每一行都有这个输入框、共用同一个处理器，
+    /// 所以先确认事件来自"正在编辑的那个框"——否则重建列表时那些
+    /// 刚被实体化出来的空输入框会各自去查一遍词库。
+    /// </summary>
+    private void TagEditBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (!ReferenceEquals(sender, _editingBox)) return;
+
+        // 同"添加标签"：作废循环要看内容，不看事件——设 ItemsSource 也会
+        // 再触发一次 TextChanged，那一下不能清循环。
+        if (!_editCycle.At(sender.Text)) _editCycle.Reset();
+
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+        {
+            if (_completing) return;
+            sender.ItemsSource = null;
+            sender.IsSuggestionListOpen = false;
+            return;
+        }
+
+        ShowCandidates(sender, TagComplete.Suggest(sender.Text, _vocab));
+    }
+
+    private void TagEditBox_SuggestionChosen(AutoSuggestBox sender,
+                                             AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (!ReferenceEquals(sender, _editingBox)) return;
+        var tag = TagComplete.Bare(args.SelectedItem as string);
+        if (tag.Length == 0) return;
+        sender.Text = tag;
+        _editCycle.SyncTo(tag);
+    }
+
+    /// <summary>点了候选就直接提交——点它本身已经表达了"就要这个"。</summary>
+    private void TagEditBox_QuerySubmitted(AutoSuggestBox sender,
+                                           AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        if (!ReferenceEquals(sender, _editingBox)) return;
+        var tag = TagComplete.Bare(args.ChosenSuggestion as string);
+        if (tag.Length > 0) sender.Text = tag;
+        EndEdit(commit: true);
+    }
+
     private void TagEditBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (sender is not AutoSuggestBox box) return;
+
+        if (e.Key == Windows.System.VirtualKey.Tab)
+        {
+            // 补全后要提醒怎么收尾：Tab 只改字，不提交
+            if (CompleteFrom(box, _editCycle, ShiftDown(), "　（Enter 提交，Esc 取消）"))
+                e.Handled = true;
+            return;
+        }
+
         if (e.Key == Windows.System.VirtualKey.Enter)
         {
             e.Handled = true;
             EndEdit(commit: true);
         }
-        else if (e.Key == Windows.System.VirtualKey.Escape)
-        {
-            e.Handled = true;
-            _editCancelled = true;
-            EndEdit(commit: false);
-        }
+    }
+
+    /// <summary>
+    /// 列表子树里的 Esc。两段式：候选列表开着时第一次只关列表，再按一次才取消编辑
+    /// ——一次 Esc 就把用户刚打的字全丢掉太狠了。
+    ///
+    /// 必须在**隧道**阶段（PreviewKeyDown）做，不能用冒泡的 KeyDown：行内输入框是
+    /// AutoSuggestBox，它自己的类处理函数会先把 Esc 吃掉、顺手关掉候选列表，
+    /// 等冒泡到我们这里 `IsSuggestionListOpen` 已经是 false 了——两段式永远进不去
+    /// 第一段（实测踩到）。隧道阶段读到的才是"这一下之前"的状态；
+    /// 而这里置 Handled 会连冒泡的 KeyDown 一起抑制，AutoSuggestBox 就收不到。
+    /// </summary>
+    private void TagList_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Escape) return;
+        if (_editingRow is null) return;
+        if (_editingBox is { IsSuggestionListOpen: true }) return;   // 这一下归候选列表
+
+        e.Handled = true;
+        _editCancelled = true;
+        EndEdit(commit: false);
     }
 
     /// <summary>
@@ -2073,6 +2251,24 @@ public sealed partial class MainWindow : Window
     {
         if (_editingRow is null) return;
         if (_editCancelled) { _editCancelled = false; return; }
+        if (sender is not AutoSuggestBox box) return;
+
+        // 候选列表还开着时失焦，多半是用户在点候选。那一刻的顺序是
+        // 点击 → SuggestionChosen（把选中项写回输入框）→ 失焦；在这里立刻
+        // 提交，提交到的是"点之前"那几个字——用户点的是 A，存下去的却是半个 B。
+        // 所以推迟一轮，等选中项先落到输入框里。
+        if (box.IsSuggestionListOpen)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!ReferenceEquals(box, _editingBox)) return;   // 已经换了一行在编辑
+                if (_editingRow is null || _editCancelled) return;
+                if (box.IsSuggestionListOpen) return;             // 列表又开了，说明焦点回来了
+                EndEdit(commit: true);
+            });
+            return;
+        }
+
         EndEdit(commit: true);
     }
 
@@ -2174,14 +2370,6 @@ public sealed partial class MainWindow : Window
         var row = TagList.SelectedItems.Cast<TagItem>().FirstOrDefault(r => r.CanEdit);
         if (row is null) { TranslateInfoText.Text = "先选中一个标签再按 F2。"; return; }
         BeginEdit(row);
-    }
-
-    private void TagEscapeAccel_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (_editingRow is null) return;
-        args.Handled = true;
-        _editCancelled = true;
-        EndEdit(commit: false);
     }
 
     private void TagCopyAccel_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)

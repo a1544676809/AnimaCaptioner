@@ -95,7 +95,8 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 .\bin\Release\net8.0\corecheck.exe sections    # 归类 / 排序 / 颜色 / 结构编辑
 .\bin\Release\net8.0\corecheck.exe prose       # 标签 vs 散文、保存不丢散文、token 预算
-.\bin\Release\net8.0\corecheck.exe edit        # 标签解析 / 防重复 / 规范化收敛
+.\bin\Release\net8.0\corecheck.exe edit        # 标签解析 / 改名 / 防重复 / 规范化收敛
+.\bin\Release\net8.0\corecheck.exe complete    # 输入框候选与 Tab 补全（含 679 个真实标签的抗性）
 .\bin\Release\net8.0\corecheck.exe safety      # 安全标签档位核对
 .\bin\Release\net8.0\corecheck.exe roundtrip   # caption 逐字节往返
 .\bin\Release\net8.0\corecheck.exe defaults    # 默认路径解析

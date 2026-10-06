@@ -44,11 +44,34 @@ public static class Edit
         }
         if (unknown.Length > 0) Console.WriteLine("  PASS");
 
-        // 编辑一个认不出的标签：必须报告"保持原样"，而不是悄悄改掉
+        // 认不出的标签被"规范化"时：报告"保持原样"，而不是悄悄改掉
+        var nz = TagEdit.NormalizeOne("bangs", "bangs", new[] { "1girl" }, vocab);
+        Console.WriteLine($"  normalize 'bangs' (unknown): ok={nz.Ok} tag='{nz.Tag}' ({nz.Status})");
+        if (nz.Ok || !string.Equals(nz.Tag, "bangs", StringComparison.Ordinal))
+        { Console.WriteLine("  FAIL (should stay as-is)"); fail++; }
+        else Console.WriteLine("  PASS (kept verbatim)");
+
+        // 但"改名"是另一回事：用户明确敲了 bangs 当新名字，就该用 bangs。
+        // 词库不认它不代表不能用它——训练集里本来就有 74 个词库不认的真实标签。
         var ap = TagEdit.Apply("bangs", "mix", new[] { "1girl" }, vocab);
-        Console.WriteLine($"  edit 'mix' -> 'bangs': ok={ap.Ok} tag='{ap.Tag}' ({ap.Status})");
-        if (ap.Ok) { Console.WriteLine("  FAIL (should not silently change)"); fail++; }
-        else Console.WriteLine("  PASS (refused, tag kept)");
+        Console.WriteLine($"  rename 'mix' -> 'bangs': ok={ap.Ok} tag='{ap.Tag}' ({ap.Status})");
+        if (!ap.Ok || !string.Equals(ap.Tag, "bangs", StringComparison.Ordinal))
+        { Console.WriteLine("  FAIL (explicit rename must be honoured)"); fail++; }
+        else Console.WriteLine("  PASS (user's new name wins)");
+
+        // 改成一个**本来就合法**的标签也必须能改：这是 Tab 补全在就地编辑里的
+        // 落地路径（Tab 补出来的都是正典形式）。曾经这里被当成"没有改动"拒绝。
+        var rn = TagEdit.Apply("twintails", "long hair", new[] { "1girl" }, vocab);
+        Console.WriteLine($"  rename 'long hair' -> 'twintails': ok={rn.Ok} tag='{rn.Tag}' ({rn.Status})");
+        if (!rn.Ok || !string.Equals(rn.Tag, "twintails", StringComparison.Ordinal))
+        { Console.WriteLine("  FAIL (rename to a canonical tag must be allowed)"); fail++; }
+        else Console.WriteLine("  PASS (canonical rename allowed)");
+
+        // 撞名仍然要拒
+        var dupRename = TagEdit.Apply("twintails", "long hair", new[] { "twintails" }, vocab);
+        Console.WriteLine($"  rename into an existing tag: ok={dupRename.Ok} status={dupRename.Status}");
+        if (dupRename.Ok) { Console.WriteLine("  FAIL (duplicate must be refused)"); fail++; }
+        else Console.WriteLine("  PASS (refused)");
 
         // ---------- 2. 规范化确实工作 ----------
         Console.WriteLine();

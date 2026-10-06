@@ -171,6 +171,13 @@ viewport=349`。
 - **`GroupStyle.HeaderTemplate` 在 WinUI 3 上不渲染。** 用 `CollectionViewSource` +
   `IsSourceGrouped` 确实分好了组（日志能看到 `groups=4`），但分组头一个都没画出来。
   改成分段条带画在**每段第一行的行模板**里，边界由数据自己表达。
+- **"改名"和"规范化"是两件事，不能共用一个函数。** `TagEdit.Apply` 原来直接转调
+  `NormalizeOne`，而后者对「输入解析出来就是它自己」一律回"已经是规范形式"——
+  于是把 `long hair` 改成 `twintails` 会被拒，而 `twintails` 正是 Tab 补全给出的
+  形式，**新增的补全在就地编辑里完全落不了地**（日志 `edit rejected:
+  'long hair' -> 'twintails' (anima)`）。现在 `Apply` 只管四件该拒的事：空、逗号、
+  没改、撞名；词库不认的新名字也照用——用户明确敲了它，而训练集里本来就有
+  74 个词库不认的真实标签。
 
 ---
 
@@ -189,6 +196,32 @@ viewport=349`。
 顺带一条判断：**「服务端没报模型」不等于「连接失败」。** 有些网关不实现 `/models`
 （回 `{"object":"list","data":[]}`），这时该照常让用户手填模型名，所以
 `ListModelsAsync` 把 `Ok` 和 `Models.Count` 分成两件事返回。
+
+### `AutoSuggestBox`（Tab 补全 / 候选列表）
+
+补全用的是 `AutoSuggestBox`，它的模板内部有一个真的 `TextBox`。四条实测教训：
+
+- **`AutoSuggestBox` 没有 `SelectAll`**（那是 `TextBox` 的，编译期 CS1061）。
+  进编辑时要全选，得先走可视树拿到模板里的 `TextBox`，聚焦和全选都落在它身上。
+- **给候选列表设 `ItemsSource` 会再触发一次 `TextChanged`。** 那一下看着像
+  "用户改了字"，若据此清掉 Tab 循环，**连按两次 Tab 会卡在同一格上**
+  （日志里两条 `fresh=True` 同格）。所以"循环要不要作废"只能按**内容**判
+  （框里的字是否等于当前候选），不能按事件判。
+- **`AutoSuggestBox` 会吃掉 `Esc`**（它要用它关候选列表），普通 `KeyDown` 和挂在
+  `ListView` 上的 `Escape` 加速键都收不到——表现是"按 Esc 没反应，编辑框赖着不走"，
+  换成 `AutoSuggestBox` 之前（`TextBox`）是好的。而且**必须用隧道的
+  `PreviewKeyDown`**，不能用 `handledEventsToo` 的冒泡 `KeyDown`：等冒泡到我们这里，
+  它已经把列表关掉了，`IsSuggestionListOpen` 永远是 false，"第一次 Esc 只关列表"
+  这段逻辑根本进不去。隧道阶段读到的才是"这一下之前"的状态。
+- **表格/列表里的长条目会被裁切**，但 `AutoSuggestBox` 的候选弹层在 `Popup` 里，
+  不会被行容器的裁剪切掉——所以行内编辑框换成它之后，候选列表能正常展开。
+
+还有一个反直觉的：**候选排序不能直接用 `VocabDb.Search` 的结果。**
+它的评分里"废弃/无引用 +10"会把一个**前缀**候选压到仅靠**包含**命中的候选后面，
+于是 Tab 会跳到 `@nsfw bb`、`@silver bell` 这种只是碰巧含有输入串的东西上
+（实测就是这条把 `nsfw`、`silver bell` 变成了画师名）。另外候选还要逐条过一遍
+解析：直接把搜索结果当候选，Tab 会补出 `china dress`，而回车存下去的是 `qipao`
+（词库把退役名重定向到正典名）——**框里写的和实际存的不一样**。
 
 ---
 
@@ -251,6 +284,22 @@ viewport=349`。
 `powershell -File` 起的是 5.1**，它按 ANSI 读，脚本里的中文会乱码——那种场景
 （以及一切交给 5.1 跑的脚本）必须保持纯 ASCII，中文走独立 UTF-8 文件或界面输入。
 两种环境混着用时，一律按严格的那条来。
+
+**合成鼠标按键不会移动指针。** `mouse_event(LEFTDOWN)` 只在**光标当前所在处**按下，
+它不会去你传的坐标——所以"点添加框"实际点在别处，而脚本里一点异常都看不到。
+必须先 `SetCursorPos`，再按下/抬起。
+
+**点完要回读焦点，不能默认点中了。** 窗口刚被提到前台时，第一次点击可能不生效
+（应用还没处理完激活），后面的 `Ctrl+A` / `DEL` / `Ctrl+V` 就全打到别处，
+`Text` 读回来是空——看起来像"粘贴坏了"，其实只是没点中。用
+`AutomationElement.FocusedElement` 确认焦点确实落在目标输入框里，不中就重点。
+
+**窗口不在前台时，合成按键会静静地发给别人。** `SetForegroundWindow` 单独用会被
+系统拒绝（实测窗口被 DSH 界面压在下面），此时所有 `SendKeys` / `keybd_event` 都去了
+别的窗口，而脚本一路"成功"。做法是 `SetWindowPos(HWND_TOPMOST)` 提上来再抢焦点，
+并且**回读 `GetForegroundWindow` 断言**。跑长脚本时人可能会碰一下别的窗口——
+那之后的按键全发错窗口，于是把"有人碰了机器"误判成"程序有 bug"，
+所以每次输入前都重新确认一次前台并计数。
 
 ---
 
