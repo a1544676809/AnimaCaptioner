@@ -44,7 +44,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- 左：模块目录 -->
-            <Border Grid.Column="0" CornerRadius="8,0,0,8" BorderThickness="1,1,0,1"
+            <Border x:Name="NavCard" Grid.Column="0" CornerRadius="8,0,0,8" BorderThickness="1,1,0,1"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                 <ListView x:Name="NavList" SelectionMode="Single"
@@ -61,10 +61,10 @@
 
             <!-- 右：正文。标题与摘要固定，下面是可滚动的内容。
                  滚动条由 ScrollHost 自己画（常驻可见），不用 ScrollViewer 自带那根。 -->
-            <Border Grid.Column="1" CornerRadius="0,8,8,0" BorderThickness="0,1,1,1"
+            <Border x:Name="ContentCard" Grid.Column="1" CornerRadius="0,8,8,0" BorderThickness="0,1,1,1"
                     BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
-                <Grid Padding="20,16,16,14">
+                <Grid x:Name="ContentArea" Padding="20,16,16,14">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -78,7 +78,11 @@
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
 
-                    <ContentControl Grid.Row="1" x:Name="ScrollSlot" />
+                    <!-- 这里必须是 Grid 而不是 ContentControl：ContentControl 的子元素
+                         默认**不拉伸**（按内容的 DesiredSize 排、左对齐），于是正文在
+                         宽窗口里只铺到最长那一行的宽度，右边留一大片空白。
+                         实测：容器 1429 DIP 时内容只有 936。Grid 的子元素默认填满。 -->
+                    <Grid x:Name="ScrollSlot" Grid.Row="1" />
                 </Grid>
             </Border>
         </Grid>

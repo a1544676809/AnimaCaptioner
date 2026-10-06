@@ -161,6 +161,11 @@ internal sealed class ScrollHost : Grid
            $"viewport={_scroll.ViewportHeight:F0} barH={_barCol.ActualHeight:F0} " +
            $"thumbH={_thumb.Height:F0} track={_track.Visibility}";
 
+    /// <summary>供诊断：横向几何。正文没铺满窗口时，这一行能指出是哪一层窄了。</summary>
+    public string DescribeWidth()
+        => $"self={ActualWidth:F0} viewportW={_scroll.ViewportWidth:F0} " +
+           $"extentW={_scroll.ExtentWidth:F0} bar={_barCol.ActualWidth:F0}";
+
     private static double ThumbHeight(double trackH, double viewport, double total)
         => Math.Max(28, total > 0 ? trackH * (viewport / total) : trackH);
 

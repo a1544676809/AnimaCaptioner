@@ -101,6 +101,13 @@ viewport=349`。
 预览窗口和帮助页都踩到了——切换模块后正文停在中间，而代码里明明调了 `ScrollToTop`。
 修法是先 `UpdateLayout()` 再 `ChangeView`，并在 `DispatcherQueue` 里补一次。
 
+还有一个是**宿主容器类型选错**：帮助页原来把 `ScrollHost` 塞进 `ContentControl`，而
+`ContentControl` 的子元素默认**不拉伸**（按内容的 `DesiredSize` 排、左对齐），于是正文
+在宽窗口里只铺到最长那一行的宽度。实测最大化时容器 1429 DIP、内容只有 936，右边空一大片，
+看着就像"正文没有适应窗口"。换成 `Grid` 即可——`Grid` 的子元素默认填满。
+判断手法很直接：把容器和内容的 `ActualWidth` 一起打出来比（帮助页的 `help layout:`
+日志就是干这个的，`slot` 对 `host`/`body`）。
+
 ---
 
 ## Markdown 渲染
@@ -130,6 +137,18 @@ viewport=349`。
   判 `TextBox` / `RichEditBox` / `AutoSuggestBox`），命中就直接让路。
   `Ctrl+C/V` 更进一步，挂在 `ListView.KeyboardAccelerators` 上——加速键只在焦点位于
   该子树内时才触发，从机制上避开冲突。
+- **加速键别挂在铺满窗口的容器上。** 帮助页的 `F5` 原来挂在 `RootGrid` 上，结果是鼠标停在
+  正文这类"自己没提示"的地方时，页面上会凭空冒出一个小「F5」提示框。改前改后用同一个脚本、
+  同一个坐标悬停正文各截一次，差别很清楚；挂到「重新载入」按钮上就不冒了，而快捷键照样
+  整个窗口有效。
+
+  机制没验到底：把 `F5` **同时**挂到 `RootGrid` 和按钮上做消融，反而不冒了，所以"就近归属"
+  比"从悬停处往上找到持有者"更贴切，但这条没坐实——所以代码注释里只写了实测到的现象。
+
+  顺带一条对取证有用的观察：这类**加速键提示**在指针移上去时立刻就画，而 `ToolTipService`
+  的普通提示要等悬停计时，合成鼠标输入（`SetCursorPos`）能稳定抓到前者、抓不到后者。
+- **`Esc` 干脆不用加速键。** 它有同样的提示问题，而且语义上不属于任何控件。改用
+  `RootGrid.AddHandler(UIElement.KeyDownEvent, …, handledEventsToo: true)`，一样能关窗。
 - **构造期不能开设置对话框。** `--settings` 一开始直接调 `ShowSettingsAsync()`，
   而 `_cfg` 要等 `Initialize()`（挂在 `RootLoaded` 上）才赋值，于是构造函数里第一句
   取 `cfg.ApiBaseUrl` 就 NullReferenceException。改成延迟到 `Initialize()` 之后。

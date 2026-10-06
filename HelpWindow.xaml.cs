@@ -28,6 +28,7 @@ public sealed partial class HelpWindow : Window
 
     private AppSettings? _cfg;
     private string _currentId = "";
+    private double _lastLoggedW = -1;
 
     /// <summary>打开时通知主窗口清引用（否则再点菜单不会开新窗口）。</summary>
     public event Action? Closed2;
@@ -46,24 +47,53 @@ public sealed partial class HelpWindow : Window
 
         // 正文区装进自绘滚动条宿主。ScrollViewer 自带那根是浮层会淡出，
         // 静止时一个像素都不画（见 ScrollHost 的注释）。
-        ScrollSlot.Content = _host;
+        ScrollSlot.Children.Add(_host);
 
         NavList.ItemsSource = null;
 
         Closed += (_, _) => Closed2?.Invoke();
 
-        AddAccel(Windows.System.VirtualKey.F5, Windows.System.VirtualKeyModifiers.None, () => Reload());
-        AddAccel(Windows.System.VirtualKey.Escape, Windows.System.VirtualKeyModifiers.None, Close);
+        // F5 挂在这个按钮上，而**不是** RootGrid 上。这是实测出来的：改前改后用同一个
+        // 脚本、同一个坐标悬停正文，挂在 RootGrid（它铺满整个窗口）上时页面上会凭空
+        // 冒出一个小「F5」提示框，挂到按钮上就不冒，而快捷键照样整个窗口有效。
+        //
+        // 机制没往下挖到底：把 F5 **同时**挂到 RootGrid 和这个按钮上做消融，反而不冒了。
+        // 所以"就近归属"比"从悬停处往上找到持有者"更贴切，但这条没验实——写在这里是
+        // 免得以后有人图省事把它挪回 RootGrid，又把这个提示放出来。
+        AddAccel(ReloadBtn, Windows.System.VirtualKey.F5,
+                 Windows.System.VirtualKeyModifiers.None, () => Reload());
+
+        // Esc 不用加速键：它有同样的提示问题，而且语义上不属于任何控件。
+        // 用 KeyDown 一样能关窗，还不会被输入法的窗口吃掉。
+        RootGrid.AddHandler(UIElement.KeyDownEvent,
+            new KeyEventHandler((_, e) =>
+            {
+                if (e.Key != Windows.System.VirtualKey.Escape) return;
+                e.Handled = true;
+                Close();
+            }), handledEventsToo: true);
 
         RootGrid.Loaded += (_, _) => ApplyWindowBounds();
+
+        // 拖大窗口时各层宽度怎么变，逐次记一行（默认关，AC_TRACE=1 打开）。
+        // 只在宽度变化超过 4 DIP 时记，免得拖动过程刷屏。
+        if (Environment.GetEnvironmentVariable("AC_TRACE") == "1")
+        {
+            RootGrid.SizeChanged += (_, _) =>
+            {
+                if (Math.Abs(RootGrid.ActualWidth - _lastLoggedW) < 4) return;
+                _lastLoggedW = RootGrid.ActualWidth;
+                LogLayout();
+            };
+        }
     }
 
-    private void AddAccel(Windows.System.VirtualKey key,
+    private void AddAccel(UIElement owner, Windows.System.VirtualKey key,
                           Windows.System.VirtualKeyModifiers mods, Action act)
     {
         var a = new KeyboardAccelerator { Key = key, Modifiers = mods };
         a.Invoked += (_, e) => { e.Handled = true; act(); };
-        RootGrid.KeyboardAccelerators.Add(a);
+        owner.KeyboardAccelerators.Add(a);
     }
 
     // ================= 打开 =================
@@ -226,7 +256,27 @@ public sealed partial class HelpWindow : Window
         // 这类问题看数字比看截图可靠（截图会拿到别的窗口，也会拍到中途状态）。
         // 排队两次：SetContent 内部那次布局之后轨道才有真实高度。
         DispatcherQueue.TryEnqueue(() => DispatcherQueue.TryEnqueue(() =>
-            Log.Write($"help module '{m.Id}': {_host.Describe()}")));
+        {
+            Log.Write($"help module '{m.Id}': {_host.Describe()}");
+            LogLayout();
+        }));
+    }
+
+    /// <summary>
+    /// 横向几何落一行日志：正文没铺满窗口时，从这一行就能看出是哪一层窄了——
+    /// 是窗口、卡片、滚动宿主，还是右栏容器。
+    /// </summary>
+    private void LogLayout()
+    {
+        try
+        {
+            Log.Write($"help layout: root={RootGrid.ActualWidth:F0} " +
+                      $"nav={NavCard.ActualWidth:F0} card={ContentCard.ActualWidth:F0} " +
+                      $"area={ContentArea.ActualWidth:F0} slot={ScrollSlot.ActualWidth:F0} " +
+                      $"host[{_host.DescribeWidth()}] " +
+                      $"body={_contentHost.ActualWidth:F0} bodyWanted={_contentHost.DesiredSize.Width:F0}");
+        }
+        catch (Exception ex) { Log.Write("help layout log failed: " + ex.Message); }
     }
 
     /// <summary>站内 .md 链接：切成模块 id 并跳过去。</summary>
