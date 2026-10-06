@@ -1,11 +1,13 @@
 # 配件的颜色与重复：蝴蝶结这类元素怎么写
 
-> 颜色为什么不能单独写、同一个配件出现好几次怎么区分、样式能不能和颜色拼成一个标签。
+> 颜色为什么不能单独写、同一个配件出现好几次怎么区分、样式能不能和颜色拼成一个标签、
+> 位置／颜色／样式三者全不同时该怎么办。
 
 ## 一句话规则
 
 **颜色永远紧贴它修饰的名词、合成一个整体**，不能拆成两个标签。
 **重复先靠位置词分开，位置相同再靠数量词，数量词也说不清就写散文。**
+**标签给的是一个集合，给不了一组配对** —— 三者全不同时，默认不要去写那个配对。
 **左右和「第几个」永远无法用标签表达。**
 
 ---
@@ -74,7 +76,7 @@
 
 | 词族 | 裸词 | 颜色变体 |
 |---|---|---|
-| `bell` / `neck bell` / `jingle bell` | 有 | **0 个** |
+| `bell` / `neck bell` / `jingle bell` | 有 | **0 个**（唯一例外见第五节：Danbooru 侧有 `gold bell`，222 篇，Anima 索引里没有）|
 | `name tag` | 20,864 | **0 个** |
 | `badge` | 11,567 | **0 个** |
 | `striped` / `plaid` / `polka dot` / `vertical stripes` | 有 | **0 个** |
@@ -165,6 +167,63 @@
 
 **两个家族里都没有 bow / ribbon。**
 
+## 三者同时都不同：位置、颜色、样式各不一样
+
+例如「白色蕾丝蝴蝶结在头上、粉色荷叶边蝴蝶结在颈上」。这时先要认清一件事：
+
+> **标签能表达的是一个集合，不是一组配对。**
+
+实测（合并表 331,836 条 + Anima 索引 108,257 条）：
+
+| 问题 | 实测结果 |
+|---|---|
+| 有没有标签同时带位置和颜色？ | 全表 **1 条**：`white hair bow`（34 帖，**不在** Anima 索引里）。等于没有 |
+| 有没有标签同时带两种颜色？ | 9 条，全是作品名／标题／画师命名这类专名（`pokemon black and white`、`black vs white`…），没有一条是给物件配色的 |
+| 有没有「第几个」？ | `two bows` / `second bow` 这类 **0 条** |
+| 「好几个」怎么表达？ | `multiple hair bows` 9,545 · `multiple bows` 1,518 · `multiple belts` 8,448 · `multiple earrings` 6,649 · `multiple hairpins` 2,251 …… 但**没有 `multiple ribbons`** |
+| 「只有一件」怎么表达？ | `single *` 共 137 条：`single thighhigh` 64,582 · `single earring` 49,987 · `single glove` 45,703 · `single sock` 10,623 …… 但**没有 `single bow` / `single ribbon`** |
+| 左右？ | `left` / `right` 加 bow / ribbon **全 0** |
+| 「不对称」？ | 83 条里**没有** bow / ribbon 成员 |
+
+所以上面那个例子，标签能给的是：
+
+```
+hair bow + neck ribbon + white bow + pink bow + lace-trimmed bow + frilled ribbon
+```
+
+**集合是全的，但「白色那个在头上」丢了** —— 2 个位置 × 2 个颜色 = 4 种读法，标签收不窄。
+
+### 默认：配对这件事不写
+
+判断依据仍是 caption paradox —— **你标的是推理时想控制的量**。
+style LoRA 里「哪个蝴蝶结挂哪儿」几乎不是你会在推理时指定的东西，而散文不是免费的：
+一旦散文开始描写背景，`upper body` / `close-up` 这类取景标签会被无视（HF #140 的对照实验），
+超过 2–3 段还会先崩手。
+
+**所以默认做法是：每个属性各写它真实的标签，到此为止。**
+
+### 确实要配对时：一句话，每件一个小句
+
+- **只写一句**，不要让它长成一段。
+- **框景、背景、光照全部留在标签里**，不写进这句散文。
+- 形容词在名词前，和标签同序：`a white lace bow in her hair and a pink frilled one at her throat`。
+- **别写左右** —— 见第四节：翻转增强开着的话，写了也是错的。
+
+上限要有预期：**这是唯一能表达配对的通道，但没有可靠证据说它一定生效。**
+最接近的对照实验是 lilting.ch 的左右控制 —— 他们把方向信息全交给散文之后，
+**方向控制依然没实现**（跨 epoch / seed 仍然随机）。他们自陈那次只跑了 636 步
+（官方建议 12,000+）且学习率偏高，所以既不能说散文无效，也不能说它有效。
+按「尽力而为、推理时验证」对待，别按「控制」对待。
+
+### 更值得先试的两条替代路
+
+1. **降属性**：只留信息量最大的那一个（通常是位置），颜色交给散文或干脆不写。
+   一件饰品一次占三个标签，对 style LoRA 是负担。
+2. **换成现成的成对机制**：如果是「一对东西的两边」（左右腿、两只手），
+   别用散文 —— 用专门词族 `asymmetrical legwear` 42,979 · `mismatched gloves` 9,144 ·
+   `asymmetrical sleeves` 9,286 · `mismatched footwear` 4,408，再加两个颜色标签。
+   标签是现成的，比散文可靠。**蝴蝶结没有这个机制**（两个词族里都没有 bow / ribbon）。
+
 ---
 
 # 三、样式和颜色不能拼成一个标签
@@ -232,13 +291,48 @@ CivitAI 上的 Anima LoRA 训练指南（文章 31678）明确写着：
 同一类型的问题还有两组，**不在上面这个 139 的统计里**（它们不含 bow/ribbon/frill），
 但都属于「颜色挂在一个没有颜色的家族上」：
 
-| 现在写的 | 次数 | 索引状态 | 说明 |
+| 现在写的 | 次数 | 状态 | 说明 |
 |---|---|---|---|
-| `gold bell` | 12 | ABSENT | `bell` 133,045 · `neck bell` 53,511 · `jingle bell` 44,712 都**没有颜色变体** |
-| `silver bell` | 6 | ABSENT | 同上 |
-| {颜色} name tag | 9（8 个不同） | 全部 ABSENT | `name tag` 20,864 · `badge` 11,567，**都没有颜色变体** |
+| `gold bell` | 12 | Danbooru 有 **222** 篇，**Anima 索引里没有** | `bell` 133,045 · `neck bell` 53,511 · `jingle bell` 44,712 在 Anima 索引里**都没有颜色变体**；`gold bell` 是唯一例外 |
+| `silver bell` | 6 | **完全不存在** | 同上。顺带一提 `@silver bell` 是画师名（184 篇），不是这个东西 |
+| {颜色} name tag | 9（8 个不同） | 全部不存在 | `name tag` 20,864 · `badge` 11,567，**都没有颜色变体** |
 
-这两组的处理方式和蝴蝶结一样：**颜色没有标签可挂** → 写进散文，不要造 `gold bell`。
+> 一处要留意：`gold bell` 会被程序的「校验」判成**正常** —— 因为它在 Danbooru 表里
+> 确实有 222 篇。但 222 篇和 `red hair bow` 的 71 篇是同一量级，等于没训过。
+> **「校验通过」不等于「这个词有用」。**
+
+这三组的处理方式和蝴蝶结一样：**颜色没有标签可挂** → 写进散文，不要造标签。
+
+## 本训练集里「多实例」的文件
+
+同一个词族出现 2 次以上、而且属性不一样的文件。括号里是那一族实际写成了什么：
+
+| 文件 | 实际情况 | 处理 |
+|---|---|---|
+| `azuki.txt` | bow ×3：`yellow bow` + `white hair bow` + `white back bow` | 2 位置 × 2 颜色 = 4 种读法 → `hair bow` + `back bow` + `yellow bow` + `white bow`，**配对不写** |
+| `ingame_08.txt` | ribbon ×3：`white ribbon` + `neck ribbon` + `red ribbon` | 位置相同、两种颜色 → 三条都留，配对不写 |
+| `022_01_Chocola_20_white.txt` | bow ×4：`hair bow` + `black bow` + `polka dot hair bow` + `red hair bow` | 位置同、颜色两种、样式一种 → `hair bow` + `black bow` + `red bow` + `polka dot bow` |
+| `5_vanilla.txt` | bowtie/bow ×4 + belt ×3：`red belt` + `blue belt` + `gold belt buckle` | 腰带是两条不同颜色 → `red belt` + `blue belt` + `belt buckle` + `gold belt`（1,023） |
+| `fanbox_002.txt` | `blue hair bow` + `bow` + `ribbon` + `hair ribbon`，**以及 `blue thighhighs` + `purple thighhighs`** | 两腿不同色 → **用成对机制**：加 `asymmetrical legwear`（42,979），比散文可靠 |
+| `1_vannila.txt` | `light blue bow` + `white bow` + `hair ribbon` + `white ribbon` | 只改 `light blue bow` → `blue bow` |
+| `052_02_Vanilla_19_white.txt` | `blue hair bow` + `blue bow` + `blue bowtie` + `striped bow` | 颜色其实只有蓝一种 → 拆位置标签即可 |
+| `3_vanilla.txt` | `light blue hair bow` + `blue bowtie` + `tail bow` + `tail ornament` | 只改 `light blue hair bow` → `hair bow` + `blue bow` |
+| `neko4_h03o.txt` | tail ×5：`striped cat tail` + `tail` + `cat tail` + `striped tail` + `fluffy tail` | **不是配对问题**：同一根尾巴写了五遍，过度标注 → `cat tail` + `striped tail` 就够 |
+| `1_chocola.txt` | bow ×6：`hair bow` + `white bow` + `pink bow` + `pink bowtie` + `bow panties` + `bow bra` | **全部存在，一个字都不用改** |
+| `neko4_h02l.txt` | bow ×4：`bow` + `hair bow` + `blue bow` + `pink bow` | **全部存在**；只有裸词 `bow` 是父词，可留可删 |
+
+两句能直接对照的：**`fanbox_002.txt` 的腿袜有现成的成对机制**（`asymmetrical legwear`），
+**`azuki.txt` 的蝴蝶结没有** —— 所以前者不必写散文，后者只能接受配对缺失。
+
+顺带这一轮又查出几个不存在的写法（都不含 bow/ribbon/frill，所以不在这 139 的统计里）：
+
+| 现在写的 | 次数 | 建议 |
+|---|---|---|
+| `striped cat tail` | 3 | `cat tail` + `striped tail`（4,430） |
+| `orange fox tail` | 1 | `fox tail` + `orange tail`（945） |
+| `thin tail` | 1 | `thin` 不是标签 → `tail`，或写进散文 |
+| `white fishnet thighhighs` | 1 | `fishnet thighhighs` + `white thighhighs` |
+| `gold belt buckle` | 1 | `belt buckle` + `gold belt`（1,023） |
 
 ---
 
@@ -248,7 +342,7 @@ CivitAI 上的 Anima LoRA 训练指南（文章 31678）明确写着：
 2. **不存在的话，颜色该挂到哪个名词上？** 找一个同类别、有颜色的词
    （`back bow` 没颜色 → 颜色挂 `bow`；`hair bow` 没颜色 → 颜色挂 `bow`）。
 3. **有两件以上吗？** 位置不同 → 各写各的位置标签；位置相同 → `multiple hair bows`；
-   要分清哪一件是哪一件 → **写散文，不要造标签**。
+   要分清哪一件是哪一件 → **写散文，不要造标签**（但先读二之末节：默认不写，位置词往往已经够了）。
 
 ## 三条不要做
 
