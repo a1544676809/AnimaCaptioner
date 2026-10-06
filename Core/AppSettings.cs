@@ -15,14 +15,35 @@ public sealed class AppSettings
     /// <summary>搜索 Key 用独立的 entropy：两把钥匙各自加密，换掉一把不影响另一把。</summary>
     private const string SearchEntropy = "AnimaCaptioner.v1.SearchApiKey";
 
-    /// <summary>训练集目录（图片 + 同名 .txt）。</summary>
-    public string DatasetDir { get; set; } = @"E:\train\sayori-style-v1";
+    /// <summary>词库文件的默认位置（本仓库不含词库，需自行构建后放到这里）。</summary>
+    public static string DefaultVocabPath(string fileName) =>
+        Path.Combine(Dir, "vocab", fileName);
 
-    /// <summary>词库数据库。</summary>
-    public string VocabDbPath { get; set; } = @"E:\ComfyUI\anima-vocab\vocab.sqlite";
+    /// <summary>
+    /// 训练集的默认位置：用户「图片」目录下的 AnimaCaptioner\dataset。
+    /// 刻意不用相对路径——程序常从 bin\ 里启动，相对路径会指向构建输出。
+    /// </summary>
+    private static string DefaultDatasetDir()
+    {
+        var pics = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        if (string.IsNullOrEmpty(pics)) pics = Dir;
+        return Path.Combine(pics, "AnimaCaptioner", "dataset");
+    }
 
-    /// <summary>人工整理的中文 → 标签映射。</summary>
-    public string SeedPath { get; set; } = @"E:\ComfyUI\anima-vocab\seed.json";
+    /// <summary>
+    /// 训练集目录（图片 + 同名 .txt）。默认取用户「图片」目录下的 AnimaCaptioner\dataset，
+    /// 首次运行不存在时会由界面提示选择。真实值存在 settings.json 里，改这里不影响已有配置。
+    /// </summary>
+    public string DatasetDir { get; set; } = DefaultDatasetDir();
+
+    /// <summary>
+    /// 词库数据库。**本仓库不附带词库**，需自行构建后在此指定路径
+    /// （设置对话框里可改）。默认放在 %LOCALAPPDATA%\AnimaCaptioner\vocab\ 下。
+    /// </summary>
+    public string VocabDbPath { get; set; } = DefaultVocabPath("vocab.sqlite");
+
+    /// <summary>人工整理的中文 → 标签映射（词库构建产物之一）。</summary>
+    public string SeedPath { get; set; } = DefaultVocabPath("seed.json");
 
     /// <summary>OpenAI 兼容接口的 base，例如 http://127.0.0.1:8080/v1 。</summary>
     public string ApiBaseUrl { get; set; } = "http://127.0.0.1:8080/v1";
