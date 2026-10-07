@@ -799,6 +799,7 @@ public sealed partial class MainWindow : Window
         // 重建前的滚动位置。resetScroll 时不要它（切图回到顶部）。
         var sv = resetScroll ? null : TagScrollViewer();
         var keepOffset = sv?.VerticalOffset ?? 0;
+        var keepSelBefore = TagList.SelectedItems.Cast<TagItem>().Select(r => r.Tag).ToList();
 
         var issues = new Dictionary<string, (string Status, string? Use)>(StringComparer.OrdinalIgnoreCase);
         if (_vocab is not null)
@@ -940,6 +941,28 @@ public sealed partial class MainWindow : Window
         if (sv is null) return;
         if (resetScroll) ResetTagScroll(sv);
         else RestoreTagScroll(sv, keepOffset, keepVisibleIndex);
+
+        // 重建前的选中按**标签名**套回新一批行对象上。
+        //
+        // 必须重新设：_tagRows.Clear() 换掉的是一批**全新的 TagItem 实例**，
+        // 原来的选中对象已被丢弃，于是 ListView 的选中变成空（实测
+        // RDBG before: sel=[closed mouth] → 改完就什么都不选）。这里按名字
+        // 找回等价的那一行，用户的"选中某个标签"才不会因为改个名就丢掉。
+        // keepVisibleIndex 点名的那一行优先——它就是刚被操作的对象。
+        if (!resetScroll && keepSelBefore.Count > 0)
+        {
+            var restore = keepVisibleIndex >= 0
+                ? _tagRows.Where(r => r.PendingIndex == keepVisibleIndex).Select(r => r.Tag).ToList()
+                : keepSelBefore;
+            var restored = restore
+                .Select(t => _tagRows.FirstOrDefault(r => string.Equals(r.Tag, t, StringComparison.OrdinalIgnoreCase)))
+                .Where(r => r is not null).Cast<TagItem>().ToList();
+            if (restored.Count > 0)
+            {
+                TagList.SelectedItems.Clear();
+                foreach (var r in restored) TagList.SelectedItems.Add(r);
+            }
+        }
     }
 
     /// <summary>
@@ -1293,14 +1316,23 @@ public sealed partial class MainWindow : Window
         return (true, $"已添加「{tag}」（{kind} 段）" + (via.Length > 0 ? $" · 词库 {via}" : ""));
     }
 
-    /// <summary>把某一行滚进视野并选中，方便确认刚加进去的标签在哪。</summary>
-    private void SelectTagRow(string tag)
+    /// <summary>
+    /// 把某一行滚进视野并选中，方便确认刚加进去的标签在哪。
+    ///
+    /// <paramref name="alsoFollow"/> 表示"这一行刚从别处搬过来，视线要跟着它走"——
+    /// 这时不再用 <c>ScrollIntoView</c>：那个是**同步**的，而列表重建后的位置恢复
+    /// （<see cref="RestoreTagScroll"/>）是隔两跳的异步动作，两者在时间上错开，
+    /// 结果就是 ScrollIntoView 先滚过去、稍后又被恢复逻辑覆盖（实测
+    /// offAfter=1089 之后又被拉回 want=0 的相反情形）。这种行改由
+    /// <paramref name="keepVisibleIndex"/> 在重建路径里统一处理。
+    /// </summary>
+    private void SelectTagRow(string tag, bool alsoFollow = false)
     {
         var row = _tagRows.FirstOrDefault(r => string.Equals(r.Tag, tag, StringComparison.OrdinalIgnoreCase));
         if (row is null) return;
         TagList.SelectedItems.Clear();
         TagList.SelectedItems.Add(row);
-        TagList.ScrollIntoView(row);
+        if (!alsoFollow) TagList.ScrollIntoView(row);
     }
 
     /// <summary>菜单/按钮：把所有标签按官方大类顺序规整一遍，段内顺序不动。</summary>
@@ -2633,6 +2665,14 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// 原地替换而不是"删掉再追加"：后者会把它挪到本段末尾，用户的段内排序
     /// 就白排了。换完按大类归位（改名可能改变归属，比如中文名→标签会从
     /// general 挪到它该在的段），段内次序仍然保持。
+    ///
+    /// 重建要**点名被改的那一行要留在视野里**，和上移/下移走同一条已验证的路径：
+    /// 不点名的后果实测有三样——(1) 列表回到顶部（重建把 extent 归零，位置没人
+    /// 放回去）；(2) 选中丢在别的行上（重建换了批新的 TagItem 对象，原选中对象
+    /// 已被丢弃）；(3) 改动引起的跨段归位会把行挪出视口。所以走
+    /// <c>keepVisibleIndex</c>：它既负责让该行停在最上/最下一行，也在行还没被
+    /// 实体化时退回 <c>ScrollIntoView</c> 兜底（那条是重建路径内部的一跳，
+    /// 不会和恢复逻辑抢）。
     /// </summary>
     private void ApplyTagRename(string oldTag, string newTag)
     {
@@ -2641,8 +2681,16 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
         _pendingTags[i] = newTag;
         _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
-        CommitPrompt();
-        SelectTagRow(newTag);
+
+        // Canonicalize 可能把它拨到别的段，所以它在新序列里的下标未必还是 i。
+        var j = _pendingTags.FindIndex(t => string.Equals(t, newTag, StringComparison.OrdinalIgnoreCase));
+        CommitPrompt(keepVisibleIndex: j >= 0 ? j : i);
+
+        // alsoFollow=true：滚动交给 keepVisibleIndex，这里只负责选中。
+        // 若改名被 Canonicalize 换掉了（同名重复等），就退回"选它原来的下标"。
+        if (!_tagRows.Any(r => string.Equals(r.Tag, newTag, StringComparison.OrdinalIgnoreCase)))
+            CommitPrompt();
+        SelectTagRow(newTag, alsoFollow: true);
     }
 
     private void TagEditAccel_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)

@@ -213,6 +213,23 @@ viewport=349`。
   返回 null（实测约四成），那时算不出翻页量、标签可能滑出视口。退回平台自己的
   `ScrollIntoView` 兜底（它内部会先实体化再滚动）；能量到就用自己算的精确翻页量，
   落点是"正好贴边"，可复现也可断言。
+- **改名后必须点名"被改的那一行"，否则三样都会坏。** 实测 `ApplyTagRename`
+  走的是裸 `CommitPrompt()`（`keepVisibleIndex = -1`），日志一次说全：
+  ```
+  RDBG before: offset=1089 keep=-1 sel=[closed mouth]   ← 位置记对了
+  RDBG after:  offset=0    keep=-1                      ← 但掉回顶部
+  ```
+  三处后果：(1) 位置没人放回去 → 回顶部；(2) **选中丢在别的行**——`_tagRows.Clear()`
+  换掉的是一批**全新的 `TagItem` 实例**，原选中对象已被丢弃，`ListView` 的选中随之
+  变空；(3) 改名可能跨段（`medium breasts` → 别的段），行被重排后移出视口。
+  改法是复用上移/下移那条已验证的路径：`keepVisibleIndex` 传**新名字在新序列里的
+  下标**（`Canonicalize` 会重排，所以不能沿用改名前的 `i`），并让 `RefreshTagRows`
+  按**标签名**把重建前的选中重新套回新行对象上。
+- **`ScrollIntoView` 和重建后的位置恢复不能在同一个流程里各做一次。**
+  `ScrollIntoView` 是**同步**的，而 `RestoreTagScroll` 隔两跳才落地，两者时间上错开：
+  先滚到目标，几十毫秒后又被恢复逻辑覆盖（旧值），或者反过来把该跟随的行带偏。
+  所以 `SelectTagRow` 加了 `alsoFollow`：需要"跟着这一行走"的场景
+  （改名、跨段归位）只负责**选中**，滚动统一交给 `keepVisibleIndex`。
 
 ---
 
