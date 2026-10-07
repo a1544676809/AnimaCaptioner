@@ -551,10 +551,27 @@ public sealed partial class MainWindow : Window
         if (_index >= 0 && _index < _items.Count) OpenPreview();
     }
 
-    /// <summary>打开（或激活）独立预览窗口。</summary>
+    /// <summary>
+    /// 打开（或激活）独立预览窗口。真正的动作排到本次输入处理完之后再做。
+    ///
+    /// 不能在双击事件里就把窗口建出来并激活：Win32 的「点击激活」是系统处理这次输入
+    /// 时才落到主窗口上的，晚于事件里的 Activate()，于是刚打开的预览立刻被压下去。
+    /// 实测这个竞态与双击速度相关——快 → 主窗口留下焦点，慢 → 预览拿到焦点。
+    /// 排到输入处理完之后，新窗口的激活就不会再被覆盖。
+    /// </summary>
     private void OpenPreview()
     {
         if (_index < 0 || _index >= _items.Count) return;
+
+        var index = _index;
+        DispatcherQueue.TryEnqueue(
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            () => OpenPreviewNow(index));
+    }
+
+    private void OpenPreviewNow(int index)
+    {
+        if (index < 0 || index >= _items.Count) return;
 
         try
         {
@@ -570,14 +587,14 @@ public sealed partial class MainWindow : Window
                 _preview = w;
             }
 
-            if (!_preview.Open(_items, _index, _cfg))
+            if (!_preview.Open(_items, index, _cfg))
             {
                 _preview = null;
                 _ = Info("没有可预览的图片", "这个目录里没有图片。");
                 return;
             }
 
-            _preview.Activate();
+            _preview.BringToFront();
         }
         catch (Exception ex)
         {

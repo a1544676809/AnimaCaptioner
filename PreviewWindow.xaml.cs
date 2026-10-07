@@ -29,6 +29,11 @@ public sealed partial class PreviewWindow : Window
     private double _lastSetZoom = 1.0;     // 我们上次设下去的 ZoomFactor，用于识别用户手动缩放
     private int _loadSeq;                  // 丢弃过期的异步载入结果
     private AppSettings? _cfg;
+    private bool _closing;
+    private long _frontUntil;              // 竞争窗口：在这之前前台不是自己就抢回来
+    private int _frontRetries;
+    private int _frontHeld;                // 连续几次都握住了就可以收工
+    private Microsoft.UI.Xaml.DispatcherTimer? _frontWatch;
 
     /// <summary>关闭窗口时通知主窗口把引用清掉（否则再按空格不会开新窗口）。</summary>
     public event Action? Closed2;
@@ -52,9 +57,77 @@ public sealed partial class PreviewWindow : Window
         AddAccel(Windows.System.VirtualKey.Subtract, Windows.System.VirtualKeyModifiers.Control, () => Zoom(0.8));
         AddAccel(Windows.System.VirtualKey.Number0, Windows.System.VirtualKeyModifiers.Control, FitToWindow);
 
-        Closed += (_, _) => Closed2?.Invoke();
+        Closed += (_, _) => { _closing = true; Closed2?.Invoke(); };
         RootGrid.Loaded += (_, _) => ApplyWindowBounds();
     }
+
+    /// <summary>
+    /// 把预览窗口请到最前并拿到焦点。由主窗口在**双击输入处理完之后**调用——
+    /// 窗口不能在点击事件的当口创建，原因见 MainWindow.OpenPreview。
+    ///
+    /// 但只抢一次不够。实测：抢到前台后 2–5ms 就被换回主窗口（主窗口的 XAML 焦点
+    /// 还在图片列表上，系统按「有焦点的窗口才是活动窗口」扳回去），补抢一次之后还会
+    /// 再被换走一次，而第二次**不会**再触发 Activated(Deactivated)——因为补抢是在该
+    /// 事件处理器里调 Activate()，重入时事件被吞了。
+    ///
+    /// 所以这里不看事件，直接核对实际前台句柄：开一个短暂的竞争窗口，每隔 40ms 查一次，
+    /// 不是自己就再抢。连续三次都是自己就提前收工，窗口最长 500ms——之后用户主动切
+    /// 窗口不会再被抢回来。
+    /// </summary>
+    public void BringToFront()
+    {
+        _frontRetries = 0;
+        _frontHeld = 0;
+        _frontUntil = Environment.TickCount64 + 500;
+        ClaimFront();
+
+        _frontWatch ??= new Microsoft.UI.Xaml.DispatcherTimer
+        { Interval = TimeSpan.FromMilliseconds(40) };
+        _frontWatch.Tick -= FrontWatchTick;
+        _frontWatch.Tick += FrontWatchTick;
+        _frontWatch.Start();
+    }
+
+    private void FrontWatchTick(object? sender, object e)
+    {
+        if (_closing || Environment.TickCount64 > _frontUntil) { _frontWatch?.Stop(); return; }
+
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        if (GetForegroundWindow() == hwnd)
+        {
+            if (++_frontHeld >= 3) _frontWatch?.Stop();
+            return;
+        }
+
+        _frontHeld = 0;
+        _frontRetries++;
+        ClaimFront();
+    }
+
+    private void ClaimFront()
+    {
+        try
+        {
+            Activate();
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+            if (GetForegroundWindow() != hwnd) SetForegroundWindow(hwnd);
+
+            // 把键盘焦点真正放进预览窗口：主窗口的 XAML 焦点还留在图片列表上时，
+            // 光调 SetForegroundWindow 会被系统按「有焦点的窗口才是活动窗口」扳回去。
+            Scroll.IsTabStop = true;
+            Scroll.Focus(FocusState.Programmatic);
+
+            Log.Write($"preview front: {(GetForegroundWindow() == hwnd ? "focused" : "NOT focused")}" +
+                      $" (try {_frontRetries})");
+        }
+        catch (Exception ex) { Log.Write("preview bring-to-front failed: " + ex.Message); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     private void AddAccel(Windows.System.VirtualKey key,
                           Windows.System.VirtualKeyModifiers mods, Action act)

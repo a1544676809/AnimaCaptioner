@@ -149,6 +149,21 @@ viewport=349`。
   的普通提示要等悬停计时，合成鼠标输入（`SetCursorPos`）能稳定抓到前者、抓不到后者。
 - **`Esc` 干脆不用加速键。** 它有同样的提示问题，而且语义上不属于任何控件。改用
   `RootGrid.AddHandler(UIElement.KeyDownEvent, …, handledEventsToo: true)`，一样能关窗。
+- **新开的窗口抢不到前台：只调 `SetForegroundWindow` 没用，得核对实际前台句柄。**
+  双击图片打开预览时，主窗口的 XAML 焦点还留在图片列表上，系统按「有焦点的窗口才是活动
+  窗口」把前台扳回主窗口——实测抢到前台后 **2–5ms** 就被换走（日志里 `preview front:
+  focused` 之后紧跟 `preview activated: Deactivated` / `main activated: CodeActivated`；
+  注意后者是 `CodeActivated` 而非 `PointerActivated`，所以不是"点击"打回来的）。
+  试过三种都不行：只调 `SetForegroundWindow`；把窗口尺寸设置挪到激活之后（**消融证明
+  Resize/Move 无辜**——跳过它照样丢焦点）；把键盘焦点 `Focus()` 进预览的 `ScrollViewer`。
+  而补抢第二次时 `Activated` **不再触发**——因为补抢是在该事件处理器里调 `Activate()`，
+  重入时事件被吞掉，所以"靠事件重试"这条路本身不可靠。
+  现在不看事件：开一个 500ms 的竞争窗口，每 40ms 核对一次 `GetForegroundWindow()`，
+  不是自己就再抢；连续三次是自己就提前收工（实际约 120ms），之后用户切窗口不会再被抢回。
+  一条有用的判据：**这个坑与双击快慢相关**（快 → 主窗口留焦点，慢 → 预览拿到焦点）——
+  那正是"某次激活排在后面"的特征，不是随机故障。
+  取证工具留在 `analyse\_zfix\`：`probe3.ps1` 连续开两次并比对 z 序/前台，`probe4.ps1`
+  验键盘（←/→ 翻页、Esc 关闭）没被焦点改动弄坏。
 - **构造期不能开设置对话框。** `--settings` 一开始直接调 `ShowSettingsAsync()`，
   而 `_cfg` 要等 `Initialize()`（挂在 `RootLoaded` 上）才赋值，于是构造函数里第一句
   取 `cfg.ApiBaseUrl` 就 NullReferenceException。改成延迟到 `Initialize()` 之后。
