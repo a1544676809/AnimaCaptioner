@@ -280,13 +280,25 @@ viewport=349`。
 
 ## 模型调用
 
+- **思考内容绝不进译文——那条「退回 reasoning」的兜底是错的。** `ParseResponse` 曾有
+  一条「content 为空就把 reasoning 当结果返回」，注释还写着"思考模式可能把答案塞进
+  `reasoning_content`"。**实测推翻了这个判断**：服务端配 `--reasoning-format deepseek`
+  时答案稳稳落在 `content`，`reasoning_content` 只有思考；当时看到 content 为空，
+  真实原因是 `max_tokens` 太小、模型还在思考就被截断（`finish_reason=length`）。
+  后果很重：开思考 + 预算不足时，700 多字中文思考过程会被当成译文写进 caption
+  （"好的，用户让我翻译……"），而界面上看不出任何异常。现在只有思考没有答案就如实报错。
+- **`max_tokens` 是「思考 + 答案」的总预算，不是答案自己的。** 实测同一句真实长描述：
+  预算 400 时思考就吃光了（`length`、content 空），1600 才正常。所以开思考时给思考
+  单独留一段余量（`ReasoningHeadroom`），用户设的额度仍完整地留给答案。
 - **关掉思考链后模型不会发出 `tool_calls`。** 实测同一提示词：`enable_thinking=false`
   时 `searched=False rounds=1`，模型把标签原样吐回来；开启时才 `searched=True rounds=2`。
-  而全局那个开关是给散文翻译设的（那边思考纯属浪费 token），两件事的正确取值相反，
-  所以 `ChatWithToolsAsync` 不跟全局走。
-- **思考链会先吃光 `max_tokens`。** 给 300 时第二轮直接 `finish_reason: "length"`，
-  既无正文也无 `tool_calls`，和「模型不想回答」表现一样但成因完全不同，所以单独报错。
-  工具循环给 1600。
+  所以 `ChatWithToolsAsync` 不跟全局走。散文翻译则两种都行——开与关实测质量相同，
+  只是慢 10–15 倍（12 个样本对照，见 `docs/05`）。
+- **尖括号字面量会被编辑工具链吃掉，而 `IndexOf("")` 恒返回 0。** 源码里直接内联写
+  Qwen3 那个 redacted_thinking 标记时，尖括号那截被吃掉了，代码变成 `t.IndexOf("")`
+  ——于是 `StripThinking` 把**整段文本**都截成了空串。它是被 `tests/Reasoning.cs` 的
+  假阳性守卫当场抓到的（9 条语料 + 53 个真实 caption 全被改动）。现在标记字面量是
+  拼出来的，源码里不存在完整的尖括号标记。
 - **把 `ApplyTo` 的内容误写进构造函数，会用控件默认值覆盖配置。** 搜索那段初值代码
   一度放错位置，构造时先读未勾选的复选框、把 `cfg.SearchEnabled` 写成了 `false`，
   再把它读回控件。界面与配置文件双双变错，而编译和运行都不报错。构造函数**只读不写**。

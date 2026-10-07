@@ -84,6 +84,7 @@ cd tests
 dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe parity      # clone 下来就能跑，不需要任何外部数据
 .\bin\Release\net8.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
+.\bin\Release\net8.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
 ```
 
 `parity` 与 Python 参考实现做 125 项对拍，只需要随仓库分发的 `tests/golden.json`。

@@ -118,7 +118,10 @@ internal static class Safety
             Check("扫描到 53 个 caption", total == 53, "实际 " + total);
             Check("有分歧时会被报出（当前基线 8 处）", diverge.Count == 8, "实际 " + diverge.Count);
             Check("只应有 1 处缺安全标签", missing.Count == 1, "实际 " + missing.Count);
-            Check("safe 一档已有样例（1 张）", dist.GetValueOrDefault("safe") == 1,
+            // 2026-10-07 晚：又从 1 涨到 2（052_02_Vanilla_19_white 也标了 safe）。
+            // 这条断言的本意是「safe 一档不再为空」，不是「恰好 1 张」——所以
+            // 写成 >= 1。钉死具体张数会让每次正常的标注都变成测试失败。
+            Check("safe 一档不再为空", dist.GetValueOrDefault("safe") >= 1,
                   "实际 " + dist.GetValueOrDefault("safe"));
         }
 

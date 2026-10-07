@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace AnimaCaptioner.Core;
 
@@ -10,11 +11,18 @@ namespace AnimaCaptioner.Core;
 /// 标准 OpenAI 兼容接口的客户端。本地 llama-server 和任何云端服务走同一套代码：
 /// 只换 base url、key、model。
 ///
-/// 两处刻意的设计：
+/// 三处刻意的设计：
 /// - chat_template_kwargs.enable_thinking 只在显式要求时下发。本地 llama-server
 ///   认这个字段，云端多数服务不认；不认的服务会直接 400，所以默认不发。
-/// - 思考链可能把 content 吃空（实测 Qwen3 在 enable_thinking=true 时答案落在
-///   reasoning_content）。所以两个字段都读，content 为空才退回 reasoning_content。
+/// - **思考内容永远不进结果**。llama-server 配了 `--reasoning-format deepseek`
+///   时思考走独立的 reasoning_content，content 只有答案（已实测）；但这是
+///   协议外的约定，所以 <see cref="StripThinking"/> 会再剥一遍内联标记，
+///   而 <see cref="InterpretChoice"/> 遇到"只有思考没有答案"一律如实报错。
+///   早先这里写过"思考模式可能把答案塞进 reasoning_content"并据此兜底，
+///   **那个判断是错的**——真实原因是 max_tokens 太小被截断，详见
+///   <see cref="InterpretChoice"/>。
+/// - 开思考时 max_tokens 要额外留出思考的额度，否则答案写不出来，
+///   详见 <see cref="ReasoningHeadroom"/>。
 /// </summary>
 public sealed class LlmClient : IDisposable
 {
@@ -43,17 +51,35 @@ public sealed class LlmClient : IDisposable
     /// <summary>
     /// 中文描述 → 英文自然语言（Anima 的散文通道）。
     ///
-    /// 这条提示的设计依据是 Anima 官方模型卡（circlestone-labs/Anima，Prompting）：
+    /// 这条提示是**翻译器**，不是**写手**。这个区别是实测出来的，代价是
+    /// 曾经写进过训练集的假事实：
     ///
-    ///   "If using pure natural langauge, more descriptive is better.
-    ///    Aim for at least 2 sentences. Extremely short prompts can give
-    ///    unexpected results."
-    ///   "Name a character, then describe their basic appearance."
-    ///     - "This is extra important when prompting for multiple characters."
-    ///   "Follow standard English capitalization rules for character and series names."
+    /// 早先这里照抄了 Anima 官方模型卡的散文建议——"more descriptive is better.
+    /// Aim for at least 2 sentences."——于是模型**必然编造**。用户只写了一句
+    /// 「该角色的猫尾具有橙棕相间的横条纹」，输出里却多出
+    /// "The tail is long and fluffy, adding a soft and dynamic element to the
+    /// character's appearance."：长度、蓬松度、审美评价全是用户没说的。
+    /// 3/3 稳定复现，措辞几乎一致。
     ///
-    /// 所以约束是：写成**连贯的英文散文**（不是标签串），至少两句，
-    /// 先点人物再描写外貌，人名/作品名按英文正字法大写。
+    /// 原因很直接：用户只给了一句事实，而提示要求「至少两句 + 要详细 +
+    /// 描写外貌/服装/姿势/背景/光线」。凑不满，就只能编。
+    ///
+    /// **加禁令没用**：实测把「不许新增任何用户没写的细节」加进提示，
+    /// 输出与不加时逐字相同——正向要求压过了禁令。真正的开关是长度要求。
+    /// 改成「跟随用户输入的长度」后，同一句中文稳定输出一句 10 词的译文，
+    /// 零编造（3/3）。所以下面这条长度规则是承重的，别挪回"至少两句"。
+    ///
+    /// 官方那条「至少两句」针对的是**从零写整条 caption**；这里散文是标签的
+    /// 补充，标签已经把画面说完了，散文短不会让提示变稀。想要更丰富的散文，
+    /// 把中文描述写详细即可——长度跟着输入走。
+    ///
+    /// 但只改长度会**换来一个新代价**：压缩之后方向词被丢掉了。同一句中文，
+    /// 旧提示词给的是 "alternating orange and brown **horizontal** stripes"
+    /// （方向词对，但多编一句），只改长度后 0/6 保住方向词——5 次说成
+    /// "alternating"、1 次 "crosshatched"，「横」没了。所以下面那条
+    /// 「空间/方向词不许丢」是补偿措施，实测把它加回去后 4/4 保住
+    /// （对照：不带这条 0/6）。这条也正好落在本文档自己定的分工上——
+    /// 散文负责的本来就是标签说不清的空间关系（见 docs/09）。
     ///
     /// 刻意不要求它输出 Danbooru 标签：实测 8B 直接写英文标签会写成散文
     /// （`black and white maid outfit`），用 GBNF 语法约束又会在含义上选错词
@@ -61,14 +87,20 @@ public sealed class LlmClient : IDisposable
     /// 真正擅长的部分——读懂描述并写成通顺的英文。
     /// </summary>
     public const string ProseSystemPrompt =
-        "You are an English prompt writer for the Anima text-to-image model. " +
-        "Translate the user's Chinese description into ONE English paragraph of " +
-        "flowing natural language.\n" +
+        "You are an English translator for the Anima text-to-image model. " +
+        "Translate the user's Chinese description into English natural language.\n" +
         "Rules:\n" +
-        "- Write at least 2 complete sentences, and be descriptive. Do not produce a " +
-        "comma-separated tag list.\n" +
-        "- Name the subject first, then describe appearance, clothing, pose, " +
-        "background and lighting.\n" +
+        "- Translate ONLY what the user wrote. Add no detail that is not in the " +
+        "user's text: no invented colours, materials, lengths, textures, sizes or " +
+        "positions, and no subjective commentary such as 'adding a soft and " +
+        "dynamic element to her appearance'.\n" +
+        "- Match the length of the user's text. If the user wrote one short fact, " +
+        "output one short sentence. Never pad a short input out to look fuller.\n" +
+        "- Keep every spatial and directional word the user wrote (horizontal, " +
+        "vertical, diagonal, left, right, upper, lower, front, behind, beside, " +
+        "above, below). Translate them literally; never drop them and never blur " +
+        "them into a vague word.\n" +
+        "- Name the subject first if the user's text refers to a character.\n" +
         "- Capitalize character and series names following standard English rules.\n" +
         "- Do not add quality words such as masterpiece or best quality, and do not " +
         "add score tags; those are handled separately.\n" +
@@ -126,6 +158,14 @@ public sealed class LlmClient : IDisposable
 
         var url = cfg.ApiBaseUrl.TrimEnd('/') + "/chat/completions";
 
+        // 开思考时 max_tokens 是「思考 + 答案」的总预算，所以给思考单独留额度，
+        // 否则真实长描述的思考链会把预算吃光、答案一个字都写不出来（实测见
+        // ReasoningHeadroom）。关思考时预算就是用户设的那个值。
+        var thinking = !cfg.DisableThinking;
+        var budget = thinking ? cfg.MaxTokens + ReasoningHeadroom : cfg.MaxTokens;
+        if (thinking) Log.Write($"llm thinking on: max_tokens={budget} " +
+                                $"(答案 {cfg.MaxTokens} + 思考余量 {ReasoningHeadroom})");
+
         var body = new JsonObject
         {
             ["model"] = string.IsNullOrWhiteSpace(cfg.Model) ? "local" : cfg.Model,
@@ -134,7 +174,7 @@ public sealed class LlmClient : IDisposable
                 new JsonObject { ["role"] = "system", ["content"] = systemPrompt },
                 new JsonObject { ["role"] = "user", ["content"] = userPrompt }
             },
-            ["max_tokens"] = cfg.MaxTokens,
+            ["max_tokens"] = budget,
             ["temperature"] = cfg.Temperature
         };
 
@@ -182,7 +222,8 @@ public sealed class LlmClient : IDisposable
         }
     }
 
-    private static ChatResult ParseResponse(string raw)    {
+    private static ChatResult ParseResponse(string raw)
+    {
         try
         {
             using var doc = JsonDocument.Parse(raw);
@@ -190,25 +231,142 @@ public sealed class LlmClient : IDisposable
                 choices.GetArrayLength() == 0)
                 return new ChatResult(false, "", "", raw, "响应里没有 choices");
 
-            var msg = choices[0].GetProperty("message");
+            var choice = choices[0];
+            var finish = choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String
+                ? fr.GetString() ?? "" : "";
+            var msg = choice.GetProperty("message");
             var content = msg.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String
                 ? c.GetString() ?? "" : "";
             var reasoning = msg.TryGetProperty("reasoning_content", out var r) && r.ValueKind == JsonValueKind.String
                 ? r.GetString() ?? "" : "";
 
-            // 思考模式可能把答案塞进 reasoning_content 而 content 为空
-            if (content.Trim().Length == 0 && reasoning.Trim().Length > 0)
-                return new ChatResult(true, reasoning.Trim(), reasoning, raw, "");
-
-            if (content.Trim().Length == 0)
-                return new ChatResult(false, "", reasoning, raw, "模型返回了空内容");
-
-            return new ChatResult(true, content.Trim(), reasoning, raw, "");
+            return InterpretChoice(content, reasoning, finish, raw);
         }
         catch (Exception ex)
         {
             return new ChatResult(false, "", "", raw, "响应解析失败：" + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 思考链的 token 余量。
+    ///
+    /// `max_tokens` 是**思考 + 答案**的总预算，不是答案自己的预算。实测
+    /// （远程 llama-server + Qwen3-8B，`--reasoning-format deepseek`）：
+    ///
+    /// | 输入 | max_tokens | 结果 |
+    /// |---|---|---|
+    /// | 一句短描述 | 400 | `stop`，content 68 字符 ✓ |
+    /// | 一句短描述 | **150** | **`length`，content 空，reasoning 279 字符** |
+    /// | 真实长描述（六件事） | **400** | **`length`，content 空，reasoning 729 字符** |
+    /// | 真实长描述（六件事） | 1600 | `stop`，content 234 字符 ✓ |
+    ///
+    /// 也就是说：开思考后，用户设的 400 在**真实长描述上必然被思考吃光**，
+    /// 答案一个字都写不出来。所以开思考时给思考单独留额度，让用户的
+    /// MaxTokens 仍然完整地留给答案。
+    /// </summary>
+    private const int ReasoningHeadroom = 1200;
+
+    /// <summary>
+    /// 从一段文本里剥掉内联的思考标记。
+    ///
+    /// 正常情况下不需要它：llama-server 带 `--reasoning-format deepseek` 时，
+    /// 思考走独立的 `reasoning_content`，`content` 只有答案（已实测）。但这是
+    /// **协议外的约定**——换成没配 reasoning-format 的 llama-server，或者把思考
+    /// 内联进正文的云端服务，思考就会直接出现在 `content` 里。那时若不剥掉，
+    /// 整段思考会被当成译文写进 caption。
+    ///
+    /// 只认成对的、有名字的标记（Qwen3 的 redacted_thinking 块，以及
+    /// thinking / think / thought / reasoning 这四种尖括号标记），不做
+    /// "看起来像思考就删"的模糊判断——宁可漏剥，也不能误删真正的译文。
+    ///
+    /// 两个实现上的坑，都踩过：
+    /// - 标记字面量**必须拼出来**，不能内联写死。之前内联写时，编辑工具链把
+    ///   尖括号那截当成标记吃掉了，源码里变成空串；而 `IndexOf("")` 恒返回 0，
+    ///   于是整段文本都被截成空串。tests/Reasoning.cs 的假阳性守卫当场抓到。
+    /// - **先删成对块，再处理未闭合的**。顺序反了的话，未闭合那一步会把成对块
+    ///   后面的正文一起删掉。
+    /// </summary>
+    public static string StripThinking(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+
+        var t = s;
+
+        // 成对的尖括号标记
+        foreach (var name in new[] { "thinking", "think", "thought", "reasoning" })
+            t = Regex.Replace(t, "<" + name + @">[\s\S]*?</" + name + ">", "",
+                              RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        // 未闭合的（被截断）：从标记处删到结尾
+        t = Regex.Replace(t, "<(" + ThinkNames + ")>" + @"[\s\S]*$", "",
+                          RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // 残留的闭合标记
+        t = Regex.Replace(t, "</(" + ThinkNames + ")>", "",
+                          RegexOptions.IgnoreCase);
+
+        // Qwen3 的 redacted_thinking 块：先删成对块……
+        t = Regex.Replace(t, Regex.Escape(ThinkOpen) + @"[\s\S]*?" + Regex.Escape(ThinkClose),
+                          "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // ……剩下的开标记就一定是没闭合的那个，从它删到结尾
+        var i = t.IndexOf(ThinkOpen, StringComparison.OrdinalIgnoreCase);
+        if (i >= 0) t = t[..i];
+
+        return t.Trim();
+    }
+
+    /// <summary>四种尖括号思考标记的名字，供正则复用。</summary>
+    private const string ThinkNames = "thinking|think|thought|reasoning";
+
+    /// <summary>
+    /// Qwen3 思考块的开 / 闭标记。
+    ///
+    /// **拼出来而不是内联写死**：这个字面量直接写在源码里时会被编辑工具链当成
+    /// 标记吃掉（实测发生过），而它一旦变成空串，上面那句 `IndexOf` 就恒返回 0，
+    /// 把整段文本都截掉。分开拼就不会有完整的尖括号标记可被误吃。
+    /// </summary>
+    private static readonly string ThinkOpen = "<" + "redacted" + "_thinking" + ">";
+    private static readonly string ThinkClose = "</" + "redacted" + "_thinking" + ">";
+
+    /// <summary>
+    /// 把一次响应判成"能不能用"的结果。**纯函数**，所以 tests/Reasoning.cs
+    /// 能直接对着实测到的真实报文形状断言（含"思考烧光预算"那一例）。
+    ///
+    /// 一条铁律：**绝不把 reasoning 当结果返回。** 思考过程不是译文——它可能
+    /// 被截断在半个句子上，而且是模型在自言自语（"好的，用户让我翻译……"）。
+    /// 早先这里有一条"content 为空就退回 reasoning"的兜底，注释还写着
+    /// "思考模式可能把答案塞进 reasoning_content"。**那个判断是错的**：
+    /// 当时看到 content 为空，真实原因是 max_tokens 太小、模型还在思考就被
+    /// 截断了（`finish_reason=length`），并不是答案跑进了 reasoning。
+    /// 后果很重：开思考 + 预算不足时，700 多字中文思考过程会被当成译文写进
+    /// caption，而界面上看不出任何异常。
+    ///
+    /// 现在遇到"只有思考、没有答案"就**如实报错**，并把原因（截断）和
+    /// 思考占了多少字符讲清楚，让用户知道该调大预算还是关掉思考。
+    /// </summary>
+    public static ChatResult InterpretChoice(string content, string reasoning,
+                                             string finishReason, string raw)
+    {
+        var answer = StripThinking(content ?? "");
+        var think = reasoning ?? "";
+
+        if (answer.Length > 0)
+            return new ChatResult(true, answer, think, raw, "");
+
+        // 只有思考、没有答案：如实报错，绝不把思考当结果
+        if (think.Trim().Length > 0)
+        {
+            var why = finishReason == "length"
+                ? "模型还在思考时就用完了 token 预算（finish_reason=length），答案还没开始写。"
+                : "模型只输出了思考过程，没有给出答案。";
+            return new ChatResult(false, "", think, raw,
+                why + $"本次思考约 {think.Length} 字符。" +
+                "请调大「最大 token」，或勾选「关闭思考链」。");
+        }
+
+        return new ChatResult(false, "", think, raw, finishReason == "length"
+            ? "模型用完了 token 预算（finish_reason=length）却没写出内容，请调大「最大 token」。"
+            : "模型返回了空内容");
     }
 
     /// <summary>
@@ -353,14 +511,20 @@ public sealed class LlmClient : IDisposable
                 }
             }
 
-            // 预算被思考链烧光：既没有 tool_calls 也没有正文，还报 length。
-            // 这跟"模型不想回答"表现一样，但成因完全不同，必须分开报。
-            if (calls.Count == 0 && content.Trim().Length == 0 && finish == "length")
-                return new ToolTurn(false, "", reasoning, calls, raw,
-                    $"模型在思考阶段就用完了 token 预算（{finish}）。请调大 max_tokens，" +
-                    "或改用更短的系统提示。");
+            // 没有工具调用时，走和 ChatAsync 完全相同的判定：剥掉内联思考标记，
+            // 只有思考没有答案就如实报错。**绝不把 reasoning 当结果**——
+            // 早先这里把"预算被思考烧光"单独判了一次，但漏了
+            // "finish_reason=stop 却只有思考" 这一类，调用方还各自兜了一次底。
+            // 现在两处共用同一条规则，不会再各写各的。
+            if (calls.Count == 0)
+            {
+                var res = InterpretChoice(content, reasoning, finish, raw);
+                return res.Ok
+                    ? new ToolTurn(true, res.Content, reasoning, calls, raw, "")
+                    : new ToolTurn(false, "", reasoning, calls, raw, res.Error);
+            }
 
-            return new ToolTurn(true, content.Trim(), reasoning, calls, raw, "");
+            return new ToolTurn(true, StripThinking(content), reasoning, calls, raw, "");
         }
         catch (Exception ex)
         {

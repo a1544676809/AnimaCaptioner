@@ -28,33 +28,35 @@ public static class Prose
 
         var fail = 0;
 
-        // ---------- 1. 现有 caption 必须全是标签 ----------
-        Console.WriteLine("=== 1. existing captions: tags only ===");
+        // ---------- 1. 现有 caption：解析后必须能逐字节拼回原文 ----------
+        //
+        // 这条断言原来是「现有 caption 必须全是标签」——那时训练集确实是纯标签。
+        // 2026-10-07 起训练集里合法地出现了散文尾巴（022 与 090），旧写法于是
+        // 把正常行为判成失败。改成真正的不变量：解析 → Rebuild 必须逐字节还原。
+        // 它对纯标签文件同样成立，而且比旧断言更强——散文边界切错会立刻暴露。
+        Console.WriteLine("=== 1. existing captions: parse -> rebuild is byte-exact ===");
         var files = Directory.EnumerateFiles(dir, "*.txt").OrderBy(x => x, StringComparer.Ordinal).ToList();
         var totalSegs = 0;
-        var leaked = 0;
-        var leakSamples = new List<string>();
+        var withProse = 0;
+        var badRt = new List<string>();
         foreach (var f in files)
         {
             string text;
             try { text = File.ReadAllText(f, Encoding.UTF8).Trim(); }
             catch { continue; }
-            var segs = PromptText.SplitTags(text).Count;
             var parts = PromptText.Parse(text, vocab);
-            totalSegs += segs;
-            if (parts.HasProse || parts.Tags.Count != segs)
-            {
-                leaked++;
-                if (leakSamples.Count < 5)
-                    leakSamples.Add($"{Path.GetFileName(f)} -> prose=\"{Trunc(parts.ProseTail)}\" " +
-                                    $"tags={parts.Tags.Count} (expected {segs})");
-            }
+            totalSegs += PromptText.SplitTags(text).Count;
+            if (parts.HasProse) withProse++;
+            var rebuilt = PromptText.Rebuild(parts.Tags, parts.ProseTail);
+            if (!string.Equals(rebuilt, text, StringComparison.Ordinal) && badRt.Count < 5)
+                badRt.Add($"{Path.GetFileName(f)}: rebuilt {rebuilt.Length} chars != original {text.Length}");
         }
-        Console.WriteLine($"  captions        : {files.Count}");
-        Console.WriteLine($"  comma segments  : {totalSegs}");
-        Console.WriteLine($"  with prose leak : {leaked}");
-        foreach (var s in leakSamples) Console.WriteLine("      " + s);
-        if (leaked == 0) Console.WriteLine("  PASS (identical to the current build)");
+        Console.WriteLine($"  captions            : {files.Count}");
+        Console.WriteLine($"  comma segments      : {totalSegs}");
+        Console.WriteLine($"  with prose tail     : {withProse}");
+        Console.WriteLine($"  byte-exact rebuilt  : {files.Count - badRt.Count} / {files.Count}");
+        foreach (var s in badRt) Console.WriteLine("      " + s);
+        if (badRt.Count == 0) Console.WriteLine("  PASS");
         else { Console.WriteLine("  FAIL"); fail++; }
 
         // ---------- 2. 逐字节还原 ----------

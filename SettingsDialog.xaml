@@ -56,7 +56,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <CheckBox x:Name="DisableThinkingBox" Content="关闭思考链 (enable_thinking=false)"
-                          ToolTipService.ToolTip="Qwen3 等混合推理模型默认会先输出思考过程，拆关键词时纯属浪费 token" />
+                          ToolTipService.ToolTip="混合推理模型会先输出思考过程。散文翻译开与关实测质量相同（只是开思考慢 10–15 倍）；开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文" />
                 <TextBlock Grid.Column="1" x:Name="TestResultText" FontSize="11" Margin="10,0"
                            VerticalAlignment="Center" TextWrapping="Wrap"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

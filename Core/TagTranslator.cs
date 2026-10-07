@@ -121,8 +121,10 @@ public sealed class TagTranslator
                 else
                 {
                     content = turn.Content;
-                    if (turn.Reasoning.Length > 0 && content.Length == 0)
-                        content = turn.Reasoning;
+                    // 刻意不退回 turn.Reasoning：思考过程不是译文（可能被截断在
+                    // 半个句子上，而且是模型的自言自语）。ChatWithToolsAsync
+                    // 已经在"只有思考没有答案"时返回失败并说明原因，这里照常
+                    // 走下面的空内容分支如实报错即可。
                 }
             }
             else

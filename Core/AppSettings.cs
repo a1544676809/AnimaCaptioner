@@ -91,7 +91,12 @@ public sealed class AppSettings
     /// <summary>回灌给模型的结果条数。8B 上下文有限，不宜过多。</summary>
     public int SearchMaxResults { get; set; } = 5;
 
-    /// <summary>关掉 Qwen3 的思考链。思考会占用大量 token 且对拆关键词无益。</summary>
+    /// <summary>
+    /// 关掉 Qwen3 的思考链。主要影响短任务（标签释义）；散文翻译两种都行——
+    /// 实测开与关质量相同（各 3 次采样、两类输入共 12 个样本全干净），
+    /// 只是开思考慢 10–15 倍。开思考时程序会自动给思考留 token 余量
+    /// （见 LlmClient.ReasoningHeadroom），且思考内容永不进译文。
+    /// </summary>
     public bool DisableThinking { get; set; } = true;
 
     public int MaxTokens { get; set; } = 400;
