@@ -85,6 +85,9 @@ public sealed partial class MainWindow : Window
     /// <summary>帮助窗口。同样是独立的顶层窗口，关闭后置回 null。</summary>
     private HelpWindow? _help;
 
+    /// <summary>标签搜索窗口。同样是独立的顶层窗口，关闭后置回 null。</summary>
+    private TagSearchWindow? _searchWin;
+
     /// <summary>程序性设置 SelectedIndex 时抑制 SelectionChanged，避免重复载入。</summary>
     private bool _selectGuard;
 
@@ -99,6 +102,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private bool _settingsAfterInit;
     private bool _helpAfterInit;
+    private bool _searchAfterInit;
 
     public MainWindow()
     {
@@ -139,6 +143,7 @@ public sealed partial class MainWindow : Window
             // 关掉主窗口后预览还留在屏幕上，进程也不会退出。帮助窗口同理。
             try { _preview?.Close(); } catch (Exception ex) { Log.Write("close preview failed: " + ex.Message); }
             try { _help?.Close(); } catch (Exception ex) { Log.Write("close help failed: " + ex.Message); }
+            try { _searchWin?.Close(); } catch (Exception ex) { Log.Write("close tag search failed: " + ex.Message); }
         };
 
         RootGrid.Loaded += (_, _) => Initialize();
@@ -235,6 +240,12 @@ public sealed partial class MainWindow : Window
         {
             _helpAfterInit = false;
             ShowHelp();
+        }
+
+        if (_searchAfterInit)
+        {
+            _searchAfterInit = false;
+            ShowTagSearch();
         }
     }
 
@@ -1216,7 +1227,35 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void AddTag(string text)
     {
-        if (_index < 0 || _index >= _items.Count) { _ = Info("没有选中图片", "先选一张图再添加标签。"); return; }
+        var (ok, msg) = AddTagCore(text, showDialog: true);
+        if (ok) AddTagBox.Text = "";
+        TranslateInfoText.Text = msg;
+    }
+
+    /// <summary>
+    /// 供标签搜索窗口调用。返回的消息由调用方显示——搜索窗口有自己的状态栏，
+    /// 写进 TranslateInfoText 的话用户正在看的那个窗口里什么都看不到。
+    /// </summary>
+    public (bool Ok, string Message) AddTagFromSearch(string tag) => AddTagCore(tag, showDialog: false);
+
+    /// <summary>
+    /// 添加标签的核心逻辑。
+    ///
+    /// <paramref name="showDialog"/> 只控制"没有选中图片"要不要弹对话框：
+    /// 主窗口里弹是对的（用户可能没意识到没选图），搜索窗口里弹会把主窗口
+    /// 盖住、且消息本身返回给调用方了，所以不弹。
+    ///
+    /// 返回值语义：<c>Ok</c> 表示"这个标签现在在图片里了"——新加进去和本来就有
+    /// 都算 true，只有"没有选中图片"才是 false。
+    /// </summary>
+    private (bool Ok, string Message) AddTagCore(string text, bool showDialog)
+    {
+        if (_index < 0 || _index >= _items.Count)
+        {
+            const string m = "先选一张图再添加标签。";
+            if (showDialog) _ = Info("没有选中图片", m);
+            return (false, m);
+        }
 
         var tag = text;
         var via = "";
@@ -1239,11 +1278,7 @@ public sealed partial class MainWindow : Window
         }
 
         if (_pendingTags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)))
-        {
-            TranslateInfoText.Text = $"「{tag}」已经在列表里了。";
-            AddTagBox.Text = "";
-            return;
-        }
+            return (true, $"「{tag}」已经在列表里了。");
 
         _pendingTags.Add(tag);
         // 加完立刻按大类归位：否则新加的标签会落在列表末尾，
@@ -1253,11 +1288,9 @@ public sealed partial class MainWindow : Window
         CommitPrompt();
         SelectTagRow(tag);
 
-        AddTagBox.Text = "";
         var kind = tag.StartsWith('@') ? "画师" : TagSections.Get(TagSections.Classify(tag, _vocab)).Title;
-        TranslateInfoText.Text = $"已添加「{tag}」（{kind} 段）" +
-                                 (via.Length > 0 ? $" · 词库 {via}" : "");
         Log.Write($"add tag: {tag} via={via} total={_pendingTags.Count}");
+        return (true, $"已添加「{tag}」（{kind} 段）" + (via.Length > 0 ? $" · 词库 {via}" : ""));
     }
 
     /// <summary>把某一行滚进视野并选中，方便确认刚加进去的标签在哪。</summary>
@@ -1582,6 +1615,48 @@ public sealed partial class MainWindow : Window
     }
 
     private void ShowHelp_Click(object sender, RoutedEventArgs e) => ShowHelp();
+
+    // ================= 菜单：标签搜索 =================
+
+    /// <summary>
+    /// 打开标签搜索窗口。
+    ///
+    /// 独立窗口而不是对话框：搜到标签之后要做的下一件事就是把它加进当前图片，
+    /// 模态会把主窗口锁住，恰好挡住要看的东西。
+    ///
+    /// 两个回调都是**实时**的，不是打开时的快照：词库可能在窗口开着的时候
+    /// 重新载入，标签列表也在随时变（用户可能一边搜一边在中间栏删标签）。
+    /// </summary>
+    private void ShowTagSearch()
+    {
+        try
+        {
+            if (_searchWin is null)
+            {
+                var w = new TagSearchWindow();
+                w.Closed2 += () =>
+                {
+                    try { w.SaveBounds(); }
+                    catch (Exception ex) { Log.Write("tag search save bounds failed: " + ex.Message); }
+                    _searchWin = null;
+                };
+                _searchWin = w;
+            }
+
+            _searchWin.Open(_cfg, _vocab,
+                            () => _pendingTags,
+                            AddTagFromSearch);
+            _searchWin.Activate();
+            Log.Write("tag search window opened");
+        }
+        catch (Exception ex)
+        {
+            Log.Write("tag search window FAILED: " + ex);
+            _ = Info("搜索窗口打不开", ex.Message);
+        }
+    }
+
+    private void TagSearch_Click(object sender, RoutedEventArgs e) => ShowTagSearch();
 
     private async void ShowAbout_Click(object sender, RoutedEventArgs e)
     {
@@ -2460,12 +2535,12 @@ public sealed partial class MainWindow : Window
                 if (!ReferenceEquals(box, _editingBox)) return;   // 已经换了一行在编辑
                 if (_editingRow is null || _editCancelled) return;
                 if (box.IsSuggestionListOpen) return;             // 列表又开了，说明焦点回来了
-                EndEdit(commit: true);
+                EndEdit(commit: true, lostFocus: true);
             });
             return;
         }
 
-        EndEdit(commit: true);
+        EndEdit(commit: true, lostFocus: true);
     }
 
     /// <summary>
@@ -2484,7 +2559,12 @@ public sealed partial class MainWindow : Window
         _editCancelled = false;
     }
 
-    private void EndEdit(bool commit)
+    /// <param name="lostFocus">
+/// true 表示这次结束是**失焦**造成的 —— 也就是"用户点了别处"的那一下。
+/// 那一下同时还在被 ListView 处理，所以列表重建必须推迟一轮，否则指针底下的
+/// 行会被换掉、这次点击落空（详见调用处的说明）。
+/// </param>
+private void EndEdit(bool commit, bool lostFocus = false)
     {
         var row = _editingRow;
         if (row is null) return;
@@ -2517,9 +2597,30 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        ApplyTagRename(row.Tag, res.Tag);
         TranslateInfoText.Text = $"已改名：{res.Message}";
         Log.Write($"edit commit: '{row.Tag}' -> '{res.Tag}' via={res.Status}");
+
+        // 失焦触发的改名必须**低优先级推迟**再落地（lostFocus=true）。
+        //
+        // 实测根因：失焦就是"点了别处"的那一下，而 ApplyTagRename → CommitPrompt →
+        // RefreshTagRows 会 _tagRows.Clear() 后**重建一批全新的 TagItem**。重建若落在
+        // PointerPressed 与 PointerReleased 之间，指针底下那一行的对象当场被销毁 ——
+        // 这次点击选中的是一个已经不存在的对象，界面表现就是"整行没反应"。挪一下
+        // 鼠标再点，指针位置变了、也没有编辑态，所以又正常了。
+        //
+        // 为什么是 Low 优先级而不是默认：WinUI 里一次点击的顺序是
+        // PointerPressed → LostFocus → PointerReleased → SelectionChanged。
+        // 默认优先级排进队列的任务仍可能抢在 PointerReleased 之前执行，重建就还在
+        // 这一帧里（实测推迟一轮只能把命中率从 3/3 提到 11/12）；Low 优先级会排到
+        // 输入处理之后，那一刻点击已经落地，重建只影响"之后"看到什么。
+        // 这个优先级在滚动跟随那轮验证过有效（见 RefreshTagRows 的 keepVisibleIndex）。
+        //
+        // 两种入口要分开：Enter / F2 / 右键菜单是**键盘/命令**触发的，没有"用户
+        // 正在点的这一下"，同步落地才对（早了一帧会让用户看到旧名字）。
+        // 所以只有失焦这一条走推迟。
+        if (!lostFocus) ApplyTagRename(row.Tag, res.Tag);
+        else DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            () => ApplyTagRename(row.Tag, res.Tag));
     }
 
     /// <summary>列表里除 <paramref name="tag"/> 之外的标签，用于防重。</summary>
@@ -3114,6 +3215,9 @@ public sealed partial class MainWindow : Window
 
     /// <summary>供 --help 启动开关请求打开帮助；真正的打开在 Initialize 之后。</summary>
     public void OpenHelpForTest() => _helpAfterInit = true;
+
+    /// <summary>供 --tagsearch 启动开关请求打开标签搜索；真正的打开在 Initialize 之后。</summary>
+    public void OpenTagSearchForTest() => _searchAfterInit = true;
 
     private async Task ShowSettingsAsync()
     {
