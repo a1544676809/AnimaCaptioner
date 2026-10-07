@@ -78,6 +78,12 @@ internal static class Harness
                 if (!Need(seed, "AC_SEED", "seed.json")) return 2;
                 return CoreCheck.Complete.Run(dataset!, vocabDb!, seed!);
 
+            case "search":
+                if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
+                if (!Need(vocabDb, "AC_VOCABDB", "词库文件")) return 2;
+                if (!Need(seed, "AC_SEED", "seed.json")) return 2;
+                return CoreCheck.Search.Run(dataset!, vocabDb!, seed!);
+
             case "parity":
                 // golden.json 随仓库分发，所以这一项 clone 下来即可运行
                 var golden = Arg(1) ?? Path.Combine(repo, "tests", "golden.json");
@@ -102,6 +108,7 @@ internal static class Harness
                       prose      <训练集> <词库> <seed>
                       edit       <训练集> <词库> <seed>
                       complete   <训练集> <词库> <seed>   输入框候选 / Tab 补全
+                      search     <训练集> <词库> <seed>   标签搜索窗口（复合查询 / 工具文本 / 幻觉核对）
                       safety     <训练集>
                       roundtrip  <训练集>          逐字节往返
                       richapi    <WinUI.dll>      反射查 API 是否存在

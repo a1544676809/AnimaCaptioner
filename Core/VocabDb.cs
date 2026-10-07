@@ -47,6 +47,29 @@ public sealed class VocabDb
     private readonly Dictionary<string, string> _animaCategory = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _seed = new(StringComparer.Ordinal);
 
+    /// <summary>Anima 原生但**不在 best 表里**的标签。见 <see cref="AnimaOnly"/> 的说明。</summary>
+    public readonly record struct AnimaEntry(string Name, int Posts, string Category);
+
+    /// <summary>
+    /// Anima 自带索引里有、合并表（best）里没有的标签，约 12,125 个。
+    ///
+    /// 这一批必须单独留着，否则**搜索窗口看不到它们**——而其中不乏用户真正要用的：
+    /// `female focus`(88 万帖)、`10s`(75 万)、`black footwear`(28 万)、
+    /// `see-through`(16 万)、`wink`(10.6 万)、`topless`(10.6 万)、
+    /// `cat smile`、`ass grab`(5.9 万)、`vertical stripes`(3.4 万)。
+    ///
+    /// 成因是数据源不同：best 来自 Danbooru 中英对照表，而 Anima 用的是自己那份
+    /// 标签索引（作者在 Danbooru 之外另立了一批类别词，如 `black footwear`
+    /// 对应 Danbooru 的 `black footwear` 根本不存在、`topless` 在 Danbooru 已被拆分）。
+    ///
+    /// 不补这一批会自相矛盾：程序里 `Status()` / `ResolveEnglish()` / `AuditTags()`
+    /// 都认这些标签（走 `_anima`），「校验」不会报它们，但搜索就是搜不出来。
+    /// </summary>
+    private readonly List<AnimaEntry> _animaOnly = new();
+
+    /// <summary>Anima 原生但不在合并表里的标签数（供状态栏/诊断）。</summary>
+    public int AnimaOnlyCount => _animaOnly.Count;
+
     /// <summary>中文键，按长度降序（再按序数升序保证确定性）。</summary>
     private string[] _cnKeys = Array.Empty<string>();
 
@@ -152,9 +175,29 @@ public sealed class VocabDb
 
         LoadSeed(seedPath);
         BuildCnKeys();
+        BuildAnimaOnly();
 
         Log.Write($"vocab loaded: tags={_byTag.Count} anima={_anima.Count} alias={_alias.Count} " +
-                  $"cn={_cnExact.Count} seed={_seed.Count} keys={_cnKeys.Length}");
+                  $"cn={_cnExact.Count} seed={_seed.Count} keys={_cnKeys.Length} " +
+                  $"anima-only={_animaOnly.Count}");
+    }
+
+    /// <summary>
+    /// 挑出 Anima 索引里有、合并表里没有的标签。**必须在 best 和 anima_index
+    /// 都读完、cnKeys 建好之后**再跑：它同时依赖 `_byTag` 和 `_anima`。
+    /// 一次算好存起来，搜索时就不用每次遍历 10.8 万条 anima_index。
+    /// </summary>
+    private void BuildAnimaOnly()
+    {
+        foreach (var kv in _anima)
+        {
+            if (_byTag.ContainsKey(kv.Key)) continue;
+            var cat = _animaCategory.TryGetValue(kv.Key, out var c) ? c : "";
+            _animaOnly.Add(new AnimaEntry(kv.Key, kv.Value, cat));
+        }
+        // 引用数降序：搜索是按引用数裁决平局的，预先排好可以让"只靠包含命中"
+        // 的那一档早点截断（Search 会 Take(limit)，但排序在最后）。
+        _animaOnly.Sort((a, b) => b.Posts.CompareTo(a.Posts));
     }
 
     private void LoadSeed(string seedPath)
@@ -201,15 +244,19 @@ public sealed class VocabDb
         foreach (var k in arr) if (k.Length > _maxKey) _maxKey = k.Length;
     }
 
+    /// <summary>
+    /// 是否是 CJK 字符。公开出来是为了让切词（<see cref="TagSearch.BuildTerms"/>）
+    /// 和这里的判断用同一套范围——两处各写一份迟早会不一致。
+    /// </summary>
+    public static bool IsCjk(char ch) =>
+        (ch >= 0x2E80 && ch <= 0x9FFF) ||    // 部首扩展 ~ 中日韩统一表意
+        (ch >= 0xF900 && ch <= 0xFAFF) ||    // 兼容表意
+        (ch >= 0xFF00 && ch <= 0xFFEF);      // 全角
+
     /// <summary>是否含 CJK 字符。纯 ASCII 的串里不可能包含中文键，先挡掉能省下整轮 32 万次比较。</summary>
     private static bool HasCjk(string s)
     {
-        foreach (var ch in s)
-        {
-            if (ch >= 0x2E80 && ch <= 0x9FFF) return true;   // 部首扩展 ~ 中日韩统一表意
-            if (ch >= 0xF900 && ch <= 0xFAFF) return true;   // 兼容表意
-            if (ch >= 0xFF00 && ch <= 0xFFEF) return true;   // 全角
-        }
+        foreach (var ch in s) if (IsCjk(ch)) return true;
         return false;
     }
 
@@ -512,7 +559,15 @@ public sealed class VocabDb
     public sealed record SearchHit(string Tag, string Cn, string Category, int PostCount,
                                    bool InAnima, bool Deprecated);
 
-    /// <summary>中英混合搜索，供 UI 的补全/查找使用。</summary>
+    /// <summary>
+    /// 中英混合搜索，供 UI 的补全/查找使用。
+    ///
+    /// 扫两个来源：合并表 <c>best</c>（33 万条，带中文释义）和
+    /// <see cref="_animaOnly"/>（1.2 万条 Anima 原生标签，没有中文释义）。
+    /// 只扫前者会让搜索窗口看不见 `female focus`、`black footwear`、`topless`、
+    /// `cat smile` 这类 Anima 真正要用的标签，而程序其他地方（校验、解析）
+    /// 都认它们——那种"校验说没问题、搜索却搜不到"的不一致比缺功能更难查。
+    /// </summary>
     public List<SearchHit> Search(string q, int limit = 60)
     {
         q = q.Trim();
@@ -520,22 +575,37 @@ public sealed class VocabDb
         var low = q.ToLowerInvariant();
         var hits = new List<(int Score, SearchHit Hit)>();
 
-        foreach (var r in _byTag.Values)
+        void Consider(string tag, string cn, string aliases, string category,
+                      int posts, bool inAnima, bool deprecated)
         {
             int score;
-            var tl = r.Tag.ToLowerInvariant();
-            if (tl == low || r.Cn == q) score = 0;
+            var tl = tag.ToLowerInvariant();
+            if (tl == low || (cn.Length > 0 && cn == q)) score = 0;
             else if (tl.StartsWith(low, StringComparison.Ordinal)) score = 1;
-            else if (r.Cn.StartsWith(q, StringComparison.Ordinal)) score = 2;
+            else if (cn.Length > 0 && cn.StartsWith(q, StringComparison.Ordinal)) score = 2;
             else if (tl.Contains(low, StringComparison.Ordinal)) score = 3;
-            else if (r.Cn.Contains(q, StringComparison.Ordinal)) score = 4;
-            else if (r.Aliases.Contains(q, StringComparison.Ordinal)) score = 5;
-            else continue;
+            else if (cn.Length > 0 && cn.Contains(q, StringComparison.Ordinal)) score = 4;
+            else if (aliases.Length > 0 && aliases.Contains(q, StringComparison.Ordinal)) score = 5;
+            else return;
 
-            // 废弃/无引用的排在后面并标出来，但保留可见性
-            if (r.Deprecated || r.PostCount == 0) score += 10;
-            hits.Add((score, new SearchHit(r.Tag, r.Cn, r.Category, r.PostCount, r.InAnima, r.Deprecated)));
+            // 废弃/无引用的排在后面并标出来，但保留可见性。
+            //
+            // **必须同时判 Anima 归属**，否则就和本类的头号规则自相矛盾：
+            // Anima 自己的索引优先于 Danbooru 的废弃标记（`ResolveEnglish`、
+            // `Status`、`AuditTags` 都是这么做的）。实测 `uniform`(Anima 15.9 万帖)、
+            // `presenting`(3.4 万)、`music`(2.5 万)、`thigh grab`(1 万) 都是
+            // best 里标了 deprecated、同时 in_anima=1 的标签——不判 InAnima 就惩罚，
+            // 会把它们压到 `uniform vest` 这种前缀匹配后面，于是"校验说没问题、
+            // 搜索却把它排在别人后面"。
+            if (!inAnima && (deprecated || posts == 0)) score += 10;
+            hits.Add((score, new SearchHit(tag, cn, category, posts, inAnima, deprecated)));
         }
+
+        foreach (var r in _byTag.Values)
+            Consider(r.Tag, r.Cn, r.Aliases, r.Category, r.PostCount, r.InAnima, r.Deprecated);
+
+        foreach (var a in _animaOnly)
+            Consider(a.Name, "", "", a.Category, a.Posts, true, false);
 
         return hits
             .OrderBy(h => h.Score)
@@ -543,6 +613,63 @@ public sealed class VocabDb
             .ThenBy(h => h.Hit.Tag, StringComparer.Ordinal)
             .Take(limit)
             .Select(h => h.Hit)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 多词覆盖搜索：计分 = 命中词数，再按 Anima 归属与引用数。
+    ///
+    /// 给**复合查询**兜底用。<see cref="Search"/> 是整串子串匹配，所以
+    /// 「白色蕾丝连衣裙」这种一口气写完的中文**一条都命中不了**（实测 0 条）——
+    /// 而它拆开是「白色 / 蕾丝 / 连衣裙」三个词，对应 `white dress`（46 万帖）
+    /// 和 `lace`（5 万帖）两个真实标签。模型和用户都习惯这么问，
+    /// 所以这条兜底不是锦上添花。
+    ///
+    /// 调用方负责切词（见 <see cref="TagSearch.BuildTerms"/>）并只在普通搜索
+    /// 落空时才调用——这一趟要比 <see cref="Search"/> 慢一个量级。
+    ///
+    /// <paramref name="minHits"/> 是"至少命中几个词才算候选"。调用方按词数过半来定，
+    /// 理由见 <see cref="TagSearch.QueryDetailed"/>：门槛放到 1 会让库里根本没有的
+    /// 查询返回一堆看似相关的噪声。
+    /// </summary>
+    public List<SearchHit> SearchTerms(IReadOnlyList<string> terms, int minHits = 1, int limit = 60)
+    {
+        var outp = new List<(int Score, SearchHit Hit)>();
+        if (terms.Count == 0) return new List<SearchHit>();
+        var need = Math.Clamp(minHits, 1, terms.Count);
+
+        foreach (var r in _byTag.Values)
+        {
+            var n = 0;
+            foreach (var t in terms)
+            {
+                if (r.Tag.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                    (r.Cn.Length > 0 && r.Cn.Contains(t, StringComparison.Ordinal)) ||
+                    (r.Aliases.Length > 0 && r.Aliases.Contains(t, StringComparison.Ordinal)))
+                    n++;
+            }
+            if (n < need) continue;
+            outp.Add((n, new SearchHit(r.Tag, r.Cn, r.Category, r.PostCount, r.InAnima, r.Deprecated)));
+        }
+
+        // 与 Search 同理：Anima 原生标签也要参与，否则 `black footwear` 这类
+        // 复合查询会漏掉它们。它们没有中文释义，只能拿标签名本身比对。
+        foreach (var a in _animaOnly)
+        {
+            var n = 0;
+            foreach (var t in terms)
+                if (a.Name.Contains(t, StringComparison.OrdinalIgnoreCase)) n++;
+            if (n < need) continue;
+            outp.Add((n, new SearchHit(a.Name, "", a.Category, a.Posts, true, false)));
+        }
+
+        return outp
+            .OrderByDescending(x => x.Score)
+            .ThenByDescending(x => x.Hit.InAnima)
+            .ThenByDescending(x => x.Hit.PostCount)
+            .ThenBy(x => x.Hit.Tag, StringComparer.Ordinal)
+            .Take(limit)
+            .Select(x => x.Hit)
             .ToList();
     }
 

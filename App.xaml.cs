@@ -52,6 +52,9 @@ public partial class App : Application
 
         if (HasFlag(cli, "--help"))
             MainWindow.OpenHelpForTest();
+
+        if (HasFlag(cli, "--tagsearch"))
+            MainWindow.OpenTagSearchForTest();
     }
 
     private static bool HasFlag(string[] cli, string flag) =>

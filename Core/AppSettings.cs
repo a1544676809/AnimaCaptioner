@@ -120,6 +120,13 @@ public sealed class AppSettings
     /// <summary>帮助窗口上次看的模块 id，下次打开回到这一页。</summary>
     public string HelpLastModuleId { get; set; } = "";
 
+    /// <summary>标签搜索窗口上次的尺寸（物理像素）。0 表示还没存过，用默认值。</summary>
+    public int TagSearchWidth { get; set; }
+    public int TagSearchHeight { get; set; }
+
+    /// <summary>标签搜索窗口上次用的模式："db"（词库搜索）或 "ai"（问模型）。</summary>
+    public string TagSearchMode { get; set; } = "db";
+
     /// <summary>左栏与中栏的宽度比例，供分隔条记忆。</summary>
     public double LeftStar { get; set; } = 2;
     public double MidStar { get; set; } = 2;

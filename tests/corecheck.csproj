@@ -29,12 +29,15 @@
     <Compile Include="..\Core\PromptText.cs" />
     <Compile Include="..\Core\TagEdit.cs" />
     <Compile Include="..\Core\TagComplete.cs" />
+    <Compile Include="..\Core\TagSearch.cs" />
+    <Compile Include="..\Core\TagSearchAgent.cs" />
     <Compile Include="..\Core\SafetyRating.cs" />
     <Compile Include="Sections.cs" />
     <Compile Include="RoundTrip.cs" />
     <Compile Include="Prose.cs" />
     <Compile Include="Edit.cs" />
     <Compile Include="Complete.cs" />
+    <Compile Include="Search.cs" />
     <Compile Include="Safety.cs" />
     <Compile Include="Defaults.cs" />
     <Compile Include="Models.cs" />
