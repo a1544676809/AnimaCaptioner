@@ -1,9 +1,14 @@
 # AnimaCaptioner
 
-给 Anima LoRA 训练集打标签的 Windows 桌面工具。
+给 Anima LoRA 训练集打标签、以及生图时写提示词的 Windows 桌面工具。
 
 三栏布局：左边图片列表，中间是按官方大类分段的标签，右边上半是写进 `.txt` 的提示词原文
 （标签 + 英文散文，按大类着色），下半是把中文描述译成英文散文的翻译器。
+
+还有一个**写标签模式**（`Ctrl+M` 切换）：同一个程序里的第二块界面，从零组装一段提示词、
+`Ctrl+S` 复制到剪贴板直接拿去生图，附带历史与预设库、token 预算和安全档位提示。
+它和标注模式共用中栏、右栏和全部词库能力，只换了左栏、菜单和「主操作」。
+详见 [写标签模式](docs/11-write-tag-mode.md)。
 
 全部在本机运行，词库、校验、翻译都不出局域网。
 
@@ -26,15 +31,17 @@ dotnet build -c Release
 .\bin\Release\net10.0-windows10.0.19041.0\win-x64\AnimaCaptioner.exe
 ```
 
-三个调试用的启动参数：
+五个调试用的启动参数：
 
 ```
 --settings     直接打开设置对话框
 --help         直接打开帮助窗口
+--tagsearch    直接打开标签搜索窗口
+--draft        直接以写标签模式启动
 --parity <f>   与 Python 参考实现对拍
 ```
 
-菜单在 UI 自动化下不太好点，所以留了前两个。
+菜单在 UI 自动化下不太好点，所以留了这几个。
 
 ## 它替你处理掉的事情
 
@@ -63,13 +70,15 @@ Core/            纯逻辑层，不引用 WinUI，所以能被 net8 回归程序
   VocabDb.cs       词库引擎（animatag.py 的 C# 移植）
   TagSections.cs   大类定义、归类规则、稳定排序
   PromptText.cs    提示词解析、着色区间、token 预算
+  PromptDoc.cs     两个模式的「当前文档」抽象（LabelDoc / DraftDoc）
+  PromptLibraryStore.cs  写标签模式的历史与预设库（独立 JSON）
   CaptionFile.cs   caption 读写，严格保字节
   ...
-MainWindow.xaml(.cs)      三栏主界面
+MainWindow.xaml(.cs)      主界面：标注模式 + 写标签模式（共用中栏与右栏）
 SettingsDialog.xaml(.cs)  设置
 HelpWindow.xaml(.cs)     帮助窗口
 MarkdownRenderer.cs      Markdig → WinUI 元素
-docs/                   帮助文档（10 个模块，随程序分发）
+docs/                   帮助文档（11 个模块，随程序分发）
 Assets/app.ico          应用图标（9 档尺寸 16–256px）
 tools/icon/             图标的 SVG 源文件与生成脚本
 ```
@@ -85,9 +94,10 @@ dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe parity      # clone 下来就能跑，不需要任何外部数据
 .\bin\Release\net8.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
 .\bin\Release\net8.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
+.\bin\Release\net8.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
 ```
 
-`parity` 与 Python 参考实现做 125 项对拍，只需要随仓库分发的 `tests/golden.json`。
+`parity` 与 Python 参考实现做 117 项对拍，只需要随仓库分发的 `tests/golden.json`。
 （条数会随训练集内容变化——`golden.json` 是参考实现对**当前数据集**的输出快照，
 改了 caption 就要用生成脚本重新出一份。）
 其余几项要用到你的训练集和词库，它们在仓库外，按参数或环境变量传入：
@@ -129,7 +139,7 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 ### 2. 自带文档：CC BY-NC-SA 4.0
 
-`docs/` 下的 10 个 `.md`（帮助窗口左侧目录的内容）采用
+`docs/` 下的 11 个 `.md`（帮助窗口左侧目录的内容）采用
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)：署名、**非商业**、
 相同方式共享。
 

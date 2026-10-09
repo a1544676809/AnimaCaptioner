@@ -60,6 +60,10 @@ internal static class Harness
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 return CoreCheck.Safety.Run(dataset!);
 
+            case "prompts":
+                // 纯逻辑 + 临时文件，不需要数据集或词库
+                return CoreCheck.Prompts.Run();
+
             case "prose":
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 if (!Need(vocabDb, "AC_VOCABDB", "词库文件")) return 2;
@@ -110,6 +114,7 @@ internal static class Harness
                       complete   <训练集> <词库> <seed>   输入框候选 / Tab 补全
                       search     <训练集> <词库> <seed>   标签搜索窗口（复合查询 / 工具文本 / 幻觉核对）
                       safety     <训练集>
+                      prompts                     提示词库（历史/预设/淘汰/标题派生）
                       roundtrip  <训练集>          逐字节往返
                       richapi    <WinUI.dll>      反射查 API 是否存在
 

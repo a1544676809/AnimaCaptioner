@@ -55,6 +55,11 @@ public partial class App : Application
 
         if (HasFlag(cli, "--tagsearch"))
             MainWindow.OpenTagSearchForTest();
+
+        // --draft：直接以写标签模式启动，用于验证那条路径（模式外壳、提示词库、
+        // 复制主操作）。和 --settings 一样，菜单在自动化下不好点。
+        if (HasFlag(cli, "--draft"))
+            MainWindow.OpenDraftModeForTest();
     }
 
     private static bool HasFlag(string[] cli, string flag) =>

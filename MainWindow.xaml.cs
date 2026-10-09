@@ -34,6 +34,35 @@ public sealed partial class MainWindow : Window
     private bool _loading;                      // 载入/程序性改写期间抑制 TextChanged 回灌
     private List<string> _pendingTags = new();
 
+    // ================= 模式与当前文档 =================
+    //
+    // 设计要点：中栏（标签装配）与右栏（提示词原文 + 翻译器）**两个模式共用同一份
+    // 控件和同一份 code-behind**，因为它们本来就不读当前图片——实测所有标签操作
+    // （上移 TagOrder.Move、删除、校验、规范、模型补译、粘贴）只吃
+    // _pendingTags + _vocab + _cfg，没有一处碰 _index / _items。
+    //
+    // 真正与图片耦合的原本只有三处：LoadCurrent（从 .txt 灌进 _pendingTags）、
+    // SaveCurrent（写回 .txt）、以及两个"_index < 0 就报错"的守卫。
+    // 把这两处按模式分派、把守卫改成"有没有文档"，写标签模式就自然成立。
+
+    private PromptMode _mode = PromptMode.Label;
+
+    /// <summary>
+    /// 当前编辑的文档身份。**内容不在这里**——内容始终以提示词框为准
+    /// （见 <see cref="PromptDoc"/> 的说明）。null 表示没有打开任何文档，
+    /// 这时标签操作要拒绝并说明，而不是静默改一个不存在的东西。
+    /// </summary>
+    private PromptDoc? _doc;
+
+    /// <summary>写标签模式的提示词库（历史 + 预设）。独立 JSON，不塞进 settings.json。</summary>
+    private PromptLibraryStore _lib = new();
+
+    /// <summary>写标签模式左栏的行对象。</summary>
+    private readonly ObservableCollection<PromptLibRow> _libRows = new();
+
+    /// <summary>列表重建期间抑制 SelectionChanged，避免程序性选中被当成用户点击。</summary>
+    private bool _libGuard;
+
     /// <summary>
     /// 提示词里那段英文自然语言（含它前面的 ". " 分隔符），没有则为空串。
     /// 单独保存是因为它不是标签：不参与段内排序、不进中间列表、不参与标签校验，
@@ -103,12 +132,14 @@ public sealed partial class MainWindow : Window
     private bool _settingsAfterInit;
     private bool _helpAfterInit;
     private bool _searchAfterInit;
+    private bool _draftAfterInit;
 
     public MainWindow()
     {
         InitializeComponent();
         TagList.ItemsSource = _tagRows;
         ImageList.ItemsSource = _imageItems;
+        PromptList.ItemsSource = _libRows;
 
         try
         {
@@ -119,8 +150,10 @@ public sealed partial class MainWindow : Window
 
         Title = "AnimaCaptioner";
 
+        // Ctrl+S 的主操作按模式分派（标注 = 写回 .txt，写标签 = 复制走）。
+        // 只挂一个加速键、在回调里分派，而不是按模式挂两个——挂两个会重复触发。
         AddAccel(Windows.System.VirtualKey.S, Windows.System.VirtualKeyModifiers.Control,
-                 () => SaveCurrent(showDialog: true));
+                 () => RunPrimaryAction(showDialog: true));
         AddAccel(Windows.System.VirtualKey.Left, Windows.System.VirtualKeyModifiers.Menu,
                  () => Navigate(-1));
         AddAccel(Windows.System.VirtualKey.Right, Windows.System.VirtualKeyModifiers.Menu,
@@ -131,11 +164,10 @@ public sealed partial class MainWindow : Window
         {
             try
             {
+                _cfg.LastMode = _mode == PromptMode.Draft ? "draft" : "label";
                 if (_index >= 0 && _index < _items.Count)
-                {
                     _cfg.LastFile = _items[_index].ImagePath;
-                    _cfg.Save();
-                }
+                _cfg.Save();
             }
             catch (Exception ex) { Log.Write("save last file failed: " + ex.Message); }
 
@@ -144,6 +176,9 @@ public sealed partial class MainWindow : Window
             try { _preview?.Close(); } catch (Exception ex) { Log.Write("close preview failed: " + ex.Message); }
             try { _help?.Close(); } catch (Exception ex) { Log.Write("close help failed: " + ex.Message); }
             try { _searchWin?.Close(); } catch (Exception ex) { Log.Write("close tag search failed: " + ex.Message); }
+
+            // 写标签模式里最后一次编辑的草稿要落库，否则关窗口就丢了。
+            try { FlushDraftToLibrary(); } catch (Exception ex) { Log.Write("flush draft failed: " + ex.Message); }
         };
 
         RootGrid.Loaded += (_, _) => Initialize();
@@ -206,6 +241,10 @@ public sealed partial class MainWindow : Window
         // 词库加载前读出来，列表首次构建时就能带上。
         _gloss = ModelGlossStore.Load();
 
+        // 提示词库同理：独立 sidecar，且**必须在 ApplyColumnRatios 之前**载入，
+        // 因为分栏比例要按模式取不同的一组值。
+        _lib = PromptLibraryStore.Load();
+
         // 分栏比例要等配置读出来才能设。放在 XAML 里只能写死，
         // 而它本来就是用户拖出来的、需要跨次启动记住的东西。
         ApplyColumnRatios();
@@ -229,6 +268,29 @@ public sealed partial class MainWindow : Window
             ? null : Path.GetFileNameWithoutExtension(_cfg.LastFile);
         LoadFolder(_cfg.DatasetDir, wantName);
 
+        // 恢复上次的模式。放在 LoadFolder 之后：标注模式下 LoadFolder 已经把
+        // 当前图开好了（_doc 是 LabelDoc），这时如果上次停在写标签模式，
+        // SwitchMode 会把它切过去。
+        //
+        // 必须在 _mode 还是初值时调用，否则 SwitchMode 的首个
+        // `if (_mode == mode) return;` 会让它直接返回、界面停在标注模式。
+        //
+        // saveCurrent: false 是**必须**的：那一步在标注侧会走 SaveCurrent，
+        // 而当前图如果还没有 .txt，它会凭空建一个空 caption 文件出来——
+        // 启动时用户什么都没做，不该产生这种副作用。
+        if (string.Equals(_cfg.LastMode, "draft", StringComparison.OrdinalIgnoreCase))
+        {
+            SwitchMode(PromptMode.Draft, saveCurrent: false);
+        }
+        else
+        {
+            // 标注模式是 XAML 里的初始状态，但标题和「主操作」文案仍要走一遍
+            // 同一套外壳逻辑——否则启动后菜单写着「保存」而 Ctrl+S 的提示
+            // 与实际行为是两个来源，改一处就会不一致。
+            RebuildLibraryList();   // 写标签模式还没进，但库列表先备好
+            ApplyModeChrome(PromptMode.Label);
+        }
+
         // 窗口与配置都就绪了，这时候才轮到 --settings / --help
         if (_settingsAfterInit)
         {
@@ -246,6 +308,14 @@ public sealed partial class MainWindow : Window
         {
             _searchAfterInit = false;
             ShowTagSearch();
+        }
+
+        // --draft 放在最后：它要覆盖"上次用的模式"（否则上次停在标注模式时
+        // 这个开关就永远无效）。
+        if (_draftAfterInit)
+        {
+            _draftAfterInit = false;
+            SwitchMode(PromptMode.Draft, saveCurrent: false);
         }
     }
 
@@ -292,6 +362,233 @@ public sealed partial class MainWindow : Window
             if (found >= 0) idx = found;
         }
         Select(idx);
+    }
+
+    // ================= 模式切换 =================
+    //
+    // 两个模式共用中栏与右栏，差异集中在四处：
+    //   1. 左栏显示谁（图片列表 / 提示词库）
+    //   2. 当前文档是谁（LabelDoc 绑 .txt / DraftDoc 绑内存草稿）
+    //   3. 主操作是什么（写盘 / 复制到剪贴板）
+    //   4. 哪些菜单项有意义
+    // 所以切换就是"换文档 + 刷界面"，没有第二套控件要维护。
+
+    /// <summary>
+    /// 切换模式。
+    ///
+    /// <paramref name="saveCurrent"/> 表示切换前要不要先把当前文档落定
+    /// （标注侧静默保存 .txt，写标签侧把草稿写进库）。启动时恢复模式要传 false：
+    /// 那时用户什么都没做，"保存"没有意义，而标注侧那条路会在当前图还没有
+    /// .txt 时**凭空建一个空文件**（见 SaveCurrent 里对空正文的处理）。
+    /// </summary>
+    private void SwitchMode(PromptMode mode, bool saveCurrent = true)
+    {
+        if (_mode == mode) return;
+
+        // 先把当前文档落定：切模式本身就是一次"离开"，
+        // 不落定会丢掉刚才的编辑。
+        if (saveCurrent) CommitCurrentDocument();
+
+        var draft = mode == PromptMode.Draft;
+
+        _mode = mode;
+
+        // 分栏比例按模式各存一套。必须在改可见性之前换，否则会先按旧比例排一次版。
+        ApplyColumnRatios();
+        ApplyModeChrome(mode);
+
+        // 打开目标模式的文档
+        if (draft)
+        {
+            // **必须先重建库列表**：OpenDraft 要在 _libRows 里按 id 找到当前那条
+            // 并把选中态标上去，列表还是空的就选不中（表现为"载入了提示词但左栏
+            // 一行都没高亮"）。启动直接进写标签模式时这里最容易漏——那条路上
+            // 没有任何别的地方会构建这个列表。
+            RebuildLibraryList();
+            OpenDraft(_cfg.DraftLastPromptId);
+        }
+        else
+        {
+            OpenLabelDocument();
+        }
+
+        _cfg.LastMode = draft ? "draft" : "label";
+        _cfg.Save();
+
+        // 状态栏与列表按新文档刷新
+        RefreshTagRows(resetScroll: true);
+        RefreshStatusBar();
+        Log.Write($"mode switched: {_mode} doc={_doc?.Identity ?? "(none)"}");
+    }
+
+    /// <summary>
+    /// 按模式切换界面外壳：哪些菜单/面板可见、窗口标题、提示词原文的去向说明。
+    ///
+    /// 抽成一个方法而不是在 SwitchMode 里内联，是因为启动恢复模式时也要走
+    /// 同一套——两处各写一份必然漂移，而漂移的表现是"启动时标题不对、
+    /// 或者该隐藏的菜单还露着"。
+    /// </summary>
+    private void ApplyModeChrome(PromptMode mode)
+    {
+        var draft = mode == PromptMode.Draft;
+
+        ImagePane.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+        PromptPane.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        BrowseMenu.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+        PromptMenu.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        OpenFolderItem.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+        StatsItem.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+        AutoArrangeItem.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        CopyPromptBtn.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        PrevBtn.Visibility = NextBtn.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+        PreviewBtn.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
+
+        // 单选菜单项要与实际模式一致：用户从 Ctrl+M 切过来时，
+        // 菜单里的勾选不会自己跟着走。
+        LabelModeItem.IsChecked = !draft;
+        DraftModeItem.IsChecked = draft;
+
+        Title = draft ? "AnimaCaptioner — 写标签" : "AnimaCaptioner — 标注";
+        CaptionTargetRun.Text = draft ? "（复制走）" : "（写入 .txt）";
+        PrimaryActionItem.Text = draft ? "复制提示词" : "保存";
+
+        if (draft) UpdatePinMenuItemState();
+    }
+
+    /// <summary>把当前文档落定。标注 = 静默保存；写标签 = 把草稿写进库。</summary>
+    private void CommitCurrentDocument()
+    {
+        if (_mode == PromptMode.Label) SaveCurrent(showDialog: false);
+        else FlushDraftToLibrary();
+    }
+
+    /// <summary>打开标注模式下当前选中的那张图。</summary>
+    private void OpenLabelDocument()
+    {
+        if (_index < 0 || _index >= _items.Count)
+        {
+            _doc = null;
+            _pendingTags = new List<string>();
+            _proseTail = "";
+            SetCaptionText("");
+            RefreshStatusBar();
+            return;
+        }
+
+        _doc = new LabelDoc { Item = _items[_index], Index = _index };
+        LoadCurrent();
+    }
+
+    /// <summary>
+    /// 打开写标签模式下的一条草稿。<paramref name="id"/> 为空或找不到时新建一份空的。
+    /// </summary>
+    private void OpenDraft(string? id)
+    {
+        var entry = id is { Length: > 0 } ? _lib.Get(id) : null;
+        var doc = DraftDoc.New();
+
+        _loading = true;
+        try
+        {
+            if (entry is not null)
+            {
+                doc.Id = entry.Id;
+                doc.Title = entry.Title;
+                // 库里的标题是既成事实（可能是用户起的，也可能是派生的），
+                // 都当作"已有名字"，不再被下一次 Flush 重新派生覆盖。
+                doc.HasCustomTitle = true;
+                var raw = entry.Body;
+                var parsed = PromptText.Parse(raw, _vocab);
+                _pendingTags = new List<string>(parsed.Tags);
+                _proseTail = parsed.ProseTail;
+                SetCaptionText(raw);
+
+                var row = _libRows.FirstOrDefault(r => r.Id == entry.Id);
+                _libGuard = true;
+                try { PromptList.SelectedItem = row; } catch { }
+                finally { _libGuard = false; }
+            }
+            else
+            {
+                // 新草稿：从"官方推荐前缀"起步，而不是全空。
+                // 依据是官方模型卡的推荐串 `masterpiece, best quality, score_7, safe`
+                // ——它是每一次生图都需要的那一段，空着反而每次都要手打。
+                var seed = "masterpiece, best quality, score_7, safe";
+                var parsed = PromptText.Parse(seed, _vocab);
+                _pendingTags = new List<string>(parsed.Tags);
+                _proseTail = "";
+                SetCaptionText(seed);
+                PromptList.SelectedItem = null;
+            }
+        }
+        finally { _loading = false; }
+
+        _doc = doc;
+        RefreshStatusBar();
+    }
+
+    /// <summary>
+    /// 把当前草稿写进提示词库（去重后更新）。正文为空则不写——
+    /// 库里堆一串空条目没有任何用处，而且会把真正的条目挤下去。
+    /// </summary>
+    private void FlushDraftToLibrary()
+    {
+        if (_mode != PromptMode.Draft) return;
+        if (_doc is not DraftDoc doc) return;
+
+        var body = GetCaptionText().Trim();
+        if (body.Length == 0) return;
+
+        // 只有用户真的命名过才把标题传下去，否则传 null 让库里派生。
+        // **不能把占位名当标题传**：Update 见到非空标题就会覆盖，
+        // 于是一条正文很具体的提示词会永远挂着「未命名草稿」这个名字
+        // （实测踩到：Uses 累加到 2，标题却还是占位串）。
+        var customTitle = doc.HasCustomTitle ? doc.Title : null;
+
+        var before = doc.Id;
+        var entry = doc.Id.Length > 0
+            ? _lib.Update(doc.Id, body, customTitle)
+            : null;
+        entry ??= _lib.Add(body, pinned: false, title: customTitle);
+
+        doc.Id = entry.Id;
+        // 库里派生出来的标题要回写到文档上，否则左栏高亮的那条与
+        // 窗口里显示的名字会不一致（重命名对话框也会带着占位串打开）。
+        if (!doc.HasCustomTitle && entry.Title.Length > 0) doc.Title = entry.Title;
+
+        if (before != entry.Id) _cfg.DraftLastPromptId = entry.Id;
+
+        _lib.Save();
+        RebuildLibraryList();
+
+        // 首次入库会拿到 id，菜单项文案也随之确定下来。不刷新的话，
+        // 正文恰好与一条**已钉住的**预设相同时，菜单仍写着「钉为预设」。
+        UpdatePinMenuItemState();
+    }
+
+    /// <summary>刷新写标签模式左栏的列表。</summary>
+    private void RebuildLibraryList()
+    {
+        var filter = LibFilterBox?.Text ?? "";
+        var items = filter.Trim().Length > 0 ? _lib.Search(filter) : _lib.Snapshot();
+
+        _libGuard = true;
+        try
+        {
+            _libRows.Clear();
+            foreach (var e in items) _libRows.Add(new PromptLibRow { Source = e, Vocab = _vocab });
+
+            // 选中当前文档对应的那一行
+            var current = (_doc as DraftDoc)?.Id;
+            PromptList.SelectedItem = current is { Length: > 0 }
+                ? _libRows.FirstOrDefault(r => r.Id == current)
+                : null;
+        }
+        finally { _libGuard = false; }
+
+        LibCountText.Text = _libRows.Count == 0
+            ? ""
+            : $"{_libRows.Count} 条 · 预设 {_lib.PinnedCount}";
     }
 
     /// <summary>
@@ -408,6 +705,15 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void UpdateStats()
     {
+        // 写标签模式的状态栏报的是 token 预算与安全档位，不是数据集统计。
+        // 目录扫描（LoadFolder）也可能在切模式后被触发，那时不该把写标签的
+        // 状态栏覆盖成数据集口径。
+        if (_mode != PromptMode.Label)
+        {
+            RefreshStatusBar();
+            return;
+        }
+
         var total = _imageItems.Count;
         var captioned = 0;
         var tags = 0;
@@ -426,13 +732,74 @@ public sealed partial class MainWindow : Window
             $"标签 {tags:N0} · 有校验问题 {issues}";
     }
 
+    /// <summary>
+    /// 按模式刷新底部状态栏。
+    ///
+    /// 两个模式要报的东西不同：标注关心"这个数据集标了多少"，写标签关心
+    /// "这段提示词能不能用"——即 token 预算与安全档位。后两项在生图时比在
+    /// 标注时更有用：超 512 训练侧会静默截断，安全词缺失/矛盾会让出图结果
+    /// 和预期差一档。
+    ///
+    /// 刻意复用同一套算法（<see cref="PromptText.EstimateTokens"/>、
+    /// <see cref="SafetyRating.Check"/>），而不是另写一份口径——两处口径不同
+    /// 必然出现"状态栏说没超、实际超了"。
+    /// </summary>
+    private void RefreshStatusBar()
+    {
+        if (_mode == PromptMode.Label)
+        {
+            // 标注模式的状态栏由 UpdateStats / LoadCurrent / Select 维护，
+            // 这里不插手，避免把它们的显示覆盖成写标签口径。
+            return;
+        }
+
+        var raw = GetCaptionText();
+        if (_doc is null || raw.Trim().Length == 0)
+        {
+            DatasetStatsText.Text = "没有提示词 · 从「提示词 → 新建提示词」(Ctrl+N) 开始";
+            SelectionText.Text = "";
+            return;
+        }
+
+        // 安全档位：既报"写了什么"，也报"按判据该是什么"。两者不一致时
+        // 正是要提醒的时刻——而这个判断在标注侧只有点「校验」才看得到。
+        var verdict = SafetyRating.Check(_pendingTags);
+        var declared = verdict.Declared ?? "缺安全词";
+        var safety = verdict.Notes.Count > 0
+            ? $"{declared} → 判据 {verdict.Expected} ⚠"
+            : declared;
+
+        var words = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        // token 那一节直接取自 PromptText.Summarize —— 它与左栏列表行同源，
+        // 免得两处各算一份、出现"列表说没超、状态栏说超了"。
+        // 标签数同理（Summarize 内部走 PromptText.Parse），所以右格不再重复报它，
+        // 免得出现"左边 3 tags、右边 4 tags"这种自相矛盾的显示（实测踩到）。
+        DatasetStatsText.Text = PromptText.Summarize(raw, _vocab) + $" · 安全 {safety}";
+        SelectionText.Text = $"{words} 词 · {raw.Length} 字符";
+    }
+
     // ================= 选择与载入 =================
 
     private void Select(int i)
     {
+        // 写标签模式下**不能**动当前文档：那个模式正在编辑一段内存草稿，
+        // 而 _index 只是数据集里的位置。_doc 若在这里被换成 LabelDoc（或置空），
+        // 用户正在写的那段提示词就被一张图片的 caption 顶掉了。
+        //
+        // 界面上图片列表与「打开训练集」都已隐藏，但"最近打开"仍在文件菜单里，
+        // 点它就会触发一次目录重载 —— 这条路必须挡住，所以守卫放在最前面，
+        // 连 _items.Count == 0 那个清空分支也一并跳过。
+        if (_mode != PromptMode.Label)
+        {
+            _index = _items.Count == 0 ? -1 : Math.Clamp(i, 0, _items.Count - 1);
+            SyncListSelection();
+            return;
+        }
+
         if (_items.Count == 0)
         {
             _index = -1;
+            _doc = null;
             // 不要设 ItemsSource = null：那会断开绑定，之后再也刷不出来。
             _tagRows.Clear();
             SetCaptionText("");
@@ -447,6 +814,10 @@ public sealed partial class MainWindow : Window
         }
 
         _index = Math.Clamp(i, 0, _items.Count - 1);
+
+        // _doc 必须跟着 _index 走：标签操作的门禁看的是 _doc，而不是 _index。
+        // 漏掉这一句的话，导航到第 2 张后 _doc 还指着第 1 张——身份对不上内容。
+        _doc = new LabelDoc { Item = _items[_index], Index = _index };
         LoadCurrent();
     }
 
@@ -920,6 +1291,10 @@ public sealed partial class MainWindow : Window
         if (PromptText.OverBudget(raw))
             CaptionStatusText.Text += $" · ⚠ 约 {PromptText.EstimateTokens(raw)} tokens，超过训练上限 512，末尾会被静默截断";
 
+        // 写标签模式的状态栏报 token 预算与安全档位。放在这里是因为每次标签
+        // 变动都会走到本方法，而这两项正是随标签变的。
+        RefreshStatusBar();
+
         // 列表是按大类分段显示的，但文件里的实际顺序可能不是。
         // 两者不一致时必须说出来：否则用户看到的是分好段的界面，存下去的却是
         // 另一个顺序，而界面上没有任何迹象。给一条提示和一个一键修好的入口。
@@ -1264,19 +1639,24 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// 添加标签的核心逻辑。
     ///
-    /// <paramref name="showDialog"/> 只控制"没有选中图片"要不要弹对话框：
-    /// 主窗口里弹是对的（用户可能没意识到没选图），搜索窗口里弹会把主窗口
+    /// <paramref name="showDialog"/> 只控制"没有打开文档"要不要弹对话框：
+    /// 主窗口里弹是对的（用户可能没意识到没打开），搜索窗口里弹会把主窗口
     /// 盖住、且消息本身返回给调用方了，所以不弹。
     ///
-    /// 返回值语义：<c>Ok</c> 表示"这个标签现在在图片里了"——新加进去和本来就有
-    /// 都算 true，只有"没有选中图片"才是 false。
+    /// 返回值语义：<c>Ok</c> 表示"这个标签现在在文档里了"——新加进去和本来就有
+    /// 都算 true，只有"没有打开文档"才是 false。
+    ///
+    /// 门禁从"选中了图片"改成"打开了文档"：写标签模式没有图片，但有草稿文档，
+    /// 而标签操作本来就不需要图片（只吃 _pendingTags + _vocab + _cfg）。
     /// </summary>
     private (bool Ok, string Message) AddTagCore(string text, bool showDialog)
     {
-        if (_index < 0 || _index >= _items.Count)
+        if (_doc is null)
         {
-            const string m = "先选一张图再添加标签。";
-            if (showDialog) _ = Info("没有选中图片", m);
+            var m = _mode == PromptMode.Draft
+                ? "先新建或载入一段提示词，再添加标签。"
+                : "先选一张图再添加标签。";
+            if (showDialog) _ = Info("没有打开文档", m);
             return (false, m);
         }
 
@@ -1365,6 +1745,11 @@ public sealed partial class MainWindow : Window
 
     private void Navigate(int delta)
     {
+        // 写标签模式没有"上一张/下一张"的概念。它的按钮已经隐藏了，但
+        // Alt+← / Alt+→ 是窗口级加速键，不挡住的话会在图片列表上乱走，
+        // 而那个模式的 Ctrl+S 已经变成复制——两套导航语义混着用会误改图片。
+        if (_mode != PromptMode.Label) return;
+
         if (_items.Count == 0) return;
         var next = _index + delta;
         if (next < 0 || next >= _items.Count) return;
@@ -1379,6 +1764,11 @@ public sealed partial class MainWindow : Window
 
     private bool SaveCurrent(bool showDialog)
     {
+        // 写标签模式绝不能走这条路：这里会往 item.CaptionPath 写 .txt，
+        // 而那个模式根本没有当前图片（_index 可能是上一次标注留下的残值）。
+        // 那样会**静默改掉训练集里的某个 caption**。
+        if (_mode != PromptMode.Label) return false;
+
         if (_index < 0 || _index >= _items.Count) return false;
         var item = _items[_index];
 
@@ -1394,6 +1784,25 @@ public sealed partial class MainWindow : Window
         {
             if (item.Caption is null)
             {
+                // 这张图还没有 .txt，而正文是空的：**不要落一个空文件**。
+                //
+                // 这条守卫修的是个真缺陷（不是为模式切换加的）：SaveCurrent 会在
+                // "切到别的图"时被静默调用，所以以前只要在一张未标注的图上停留过
+                // 再点下一张，就会凭空生成一个只有 CRLF 的 .txt。后果有三层——
+                // 左栏把这张图标成「已标注」（0 tags）、「跳到下一个未标注」
+                // 从此跳过它、而训练侧读到一个空白 caption。
+                //
+                // 注意只在"原本就没有文件"时跳过：已有文件的正文被用户清空是
+                // 另一回事，那时应当如实写下去（SaveBody 内部对内容未变也已短路）。
+                if (PromptText.Rebuild(tags, parsed.ProseTail, ", ").Trim().Length == 0)
+                {
+                    Log.Write($"skip creating empty caption for {Path.GetFileName(item.CaptionPath)}");
+                    if (showDialog)
+                        _ = Info("没有内容", "这一行还是空的，未创建 .txt。\n\n" +
+                                             "先加几个标签或写一段描述，再保存。");
+                    return false;
+                }
+
                 // 原本没有 .txt：新建时沿用训练集既有的字节风格
                 // （实测 53 个文件均为 无 BOM + CRLF + 结尾换行 + ", " 分隔）
                 item.Caption = new CaptionFile
@@ -1437,7 +1846,66 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void Save_Click(object sender, RoutedEventArgs e) => SaveCurrent(showDialog: true);
+    private void Save_Click(object sender, RoutedEventArgs e) => RunPrimaryAction(showDialog: true);
+
+    // ================= 主操作（按模式分派）=================
+
+    /// <summary>
+    /// 主操作。标注模式写回 .txt，写标签模式复制到剪贴板。
+    ///
+    /// 这是两个模式唯一真正"不同"的行为，所以 Ctrl+S、菜单项、底部按钮
+    /// 三处入口都收敛到这一个方法，而不是各自判断模式。
+    /// </summary>
+    private void RunPrimaryAction(bool showDialog)
+    {
+        if (_mode == PromptMode.Draft) CopyPromptToClipboard(showDialog);
+        else SaveCurrent(showDialog);
+    }
+
+    /// <summary>
+    /// 写标签模式的主操作：把整行提示词复制到剪贴板。
+    ///
+    /// 复制的是**提示词框里的原文**，不是重新拼一遍：用户在框里手改过的标点、
+    /// 空格权重之类必须原样带走。这也是这个模式存在的理由——出图时要的是
+    /// 一段可以直接粘进 ComfyUI 的文本。
+    /// </summary>
+    private void CopyPromptToClipboard(bool showDialog)
+    {
+        if (_doc is null)
+        {
+            TranslateInfoText.Text = "先新建或载入一段提示词。";
+            return;
+        }
+
+        var text = GetCaptionText().Trim();
+        if (text.Length == 0)
+        {
+            TranslateInfoText.Text = "提示词是空的，没有可复制的内容。";
+            if (showDialog) _ = Info("没有内容", "这一段提示词还是空的。先在中间加几个标签，或在右上写一段英文。");
+            return;
+        }
+
+        try
+        {
+            var dp = new DataPackage();
+            dp.SetText(text);
+            Clipboard.SetContent(dp);
+            Clipboard.Flush();   // 不 Flush 的话程序退出后剪贴板内容会丢
+
+            // 复制即入库：这是"我现在在用这段提示词"最可靠的信号。
+            FlushDraftToLibrary();
+
+            var tokens = PromptText.EstimateTokens(text);
+            TranslateInfoText.Text = $"已复制 {text.Length} 字符 · ≈{tokens} tokens。" +
+                (tokens > PromptText.MaxTokens ? " ⚠ 超过 512，训练侧会被截断。" : "");
+            Log.Write($"prompt copy: len={text.Length} tokens={tokens} doc={_doc.Identity}");
+        }
+        catch (Exception ex)
+        {
+            Log.Write("prompt copy failed: " + ex.Message);
+            TranslateInfoText.Text = "复制失败：" + ex.Message;
+        }
+    }
 
     // ================= 工具条 =================
 
@@ -1494,6 +1962,254 @@ public sealed partial class MainWindow : Window
             }
         }
         _ = Info("都标完了", $"这 {_items.Count} 张图都已有 caption。");
+    }
+
+    // ================= 菜单：模式 =================
+
+    private void LabelMode_Click(object sender, RoutedEventArgs e) => SwitchMode(PromptMode.Label);
+    private void DraftMode_Click(object sender, RoutedEventArgs e) => SwitchMode(PromptMode.Draft);
+
+    private void ToggleMode_Click(object sender, RoutedEventArgs e)
+        => SwitchMode(_mode == PromptMode.Draft ? PromptMode.Label : PromptMode.Draft);
+
+    private void PrimaryAction_Click(object sender, RoutedEventArgs e) => RunPrimaryAction(showDialog: true);
+
+    // ================= 菜单：提示词库 =================
+
+    private void NewPrompt_Click(object sender, RoutedEventArgs e)
+    {
+        // 新建前先把当前草稿落库，否则它会被这份新草稿顶掉。
+        FlushDraftToLibrary();
+
+        _cfg.DraftLastPromptId = "";
+        OpenDraft(null);
+        RebuildLibraryList();
+        RefreshTagRows(resetScroll: true);
+        RefreshStatusBar();
+
+        AddTagBox.Focus(FocusState.Programmatic);
+        TranslateInfoText.Text = "已新建提示词（起点是官方推荐前缀）。";
+        Log.Write("new prompt draft");
+    }
+
+    private void SavePromptToLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc is not DraftDoc)
+        {
+            TranslateInfoText.Text = "只有在写标签模式下才能存进提示词库。";
+            return;
+        }
+
+        var body = GetCaptionText().Trim();
+        if (body.Length == 0)
+        {
+            TranslateInfoText.Text = "提示词是空的，没有可保存的内容。";
+            return;
+        }
+
+        FlushDraftToLibrary();
+        RebuildLibraryList();
+        TranslateInfoText.Text = "已保存到提示词库。";
+    }
+
+    /// <summary>把当前草稿钉为预设 / 取消钉住。预设永不被历史上限清掉。</summary>
+    private void PinPrompt_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc is not DraftDoc doc || doc.Id.Length == 0)
+        {
+            TranslateInfoText.Text = "先保存到提示词库，再钉为预设。";
+            return;
+        }
+
+        var entry = _lib.Get(doc.Id);
+        if (entry is null) { TranslateInfoText.Text = "这条提示词已不在库里。"; return; }
+
+        _lib.SetPinned(doc.Id, !entry.Pinned);
+        _lib.Save();
+        RebuildLibraryList();
+        UpdatePinMenuItemState();
+        TranslateInfoText.Text = entry.Pinned ? "已取消钉住（会随历史上限被清理）。" : "已钉为预设。";
+    }
+
+    private void RenamePrompt_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc is not DraftDoc doc) { TranslateInfoText.Text = "先切到写标签模式。"; return; }
+        _ = RenameCurrentPromptAsync(doc);
+    }
+
+    private async Task RenameCurrentPromptAsync(DraftDoc doc)
+    {
+        var box = new TextBox { Text = doc.Title, PlaceholderText = "提示词名字" };
+        var dlg = new ContentDialog
+        {
+            Title = "重命名提示词",
+            Content = box,
+            PrimaryButtonText = "确定",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var name = box.Text.Trim();
+        if (name.Length == 0) return;
+
+        doc.Title = name;
+        doc.HasCustomTitle = true;   // 从此不再让库里的派生标题覆盖它
+        if (doc.Id.Length > 0)
+        {
+            _lib.Update(doc.Id, GetCaptionText().Trim(), name);
+            _lib.Save();
+            RebuildLibraryList();
+        }
+        TranslateInfoText.Text = $"已重命名为「{name}」。";
+    }
+
+    private void ClearPrompt_Click(object sender, RoutedEventArgs e)
+    {
+        if (_doc is null) return;
+        SetCaptionText("");
+        _pendingTags = new List<string>();
+        _proseTail = "";
+        RefreshTagRows(resetScroll: true);
+        RefreshStatusBar();
+        TranslateInfoText.Text = "已清空当前提示词。";
+    }
+
+    private void ClearHistory_Click(object sender, RoutedEventArgs e)
+    {
+        var n = _lib.ClearHistory();
+        _lib.Save();
+        RebuildLibraryList();
+        TranslateInfoText.Text = n > 0
+            ? $"已清空 {n} 条历史（预设保留）。"
+            : "没有可清空的历史（预设不会被清）。";
+    }
+
+    /// <summary>「钉为预设」菜单项的文案跟着当前条目走。</summary>
+    private void UpdatePinMenuItemState()
+    {
+        var pinned = (_doc as DraftDoc)?.Id is { Length: > 0 } id
+                     && _lib.Get(id)?.Pinned == true;
+        PinPromptItem.Text = pinned ? "取消钉住" : "钉为预设";
+    }
+
+    // ================= 写标签模式：左栏库列表 =================
+
+    private void LibFilterBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
+        RebuildLibraryList();
+    }
+
+    /// <summary>
+    /// 单击库里的一行就载入它。先落定当前草稿，否则刚改的内容会丢。
+    /// </summary>
+    private void PromptList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_libGuard) return;
+        if (PromptList.SelectedItem is not PromptLibRow row) return;
+        if ((_doc as DraftDoc)?.Id == row.Id) return;   // 已经在这条上
+
+        FlushDraftToLibrary();
+
+        _cfg.DraftLastPromptId = row.Id;
+        OpenDraft(row.Id);
+        RefreshTagRows(resetScroll: true);
+        RefreshStatusBar();
+        UpdatePinMenuItemState();
+        Log.Write($"prompt loaded: {row.Id} '{row.Title}'");
+    }
+
+    /// <summary>右键库列表：钉住/取消、重命名、删除。</summary>
+    private void PromptList_RightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        var row = (e.OriginalSource as FrameworkElement)?.DataContext as PromptLibRow;
+        if (row is null) return;
+
+        var menu = new MenuFlyout();
+
+        var pin = new MenuFlyoutItem { Text = row.Pinned ? "取消钉住" : "钉为预设" };
+        pin.Click += (_, _) =>
+        {
+            _lib.SetPinned(row.Id, !row.Pinned);
+            _lib.Save();
+            RebuildLibraryList();
+            UpdatePinMenuItemState();
+        };
+        menu.Items.Add(pin);
+
+        var rename = new MenuFlyoutItem { Text = "重命名…" };
+        rename.Click += (_, _) =>
+        {
+            var entry = _lib.Get(row.Id);
+            if (entry is null) return;
+            var doc = new DraftDoc { Id = entry.Id, Title = entry.Title };
+            _ = RenameCurrentPromptAsync(doc);
+        };
+        menu.Items.Add(rename);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+
+        var del = new MenuFlyoutItem { Text = "从库里删除", Icon = new SymbolIcon(Symbol.Delete) };
+        del.Click += (_, _) =>
+        {
+            _lib.Remove(row.Id);
+            _lib.Save();
+            // 删掉的正是当前这条时要开一份新草稿，否则界面停在一个已不存在的文档上
+            if ((_doc as DraftDoc)?.Id == row.Id)
+            {
+                _cfg.DraftLastPromptId = "";
+                OpenDraft(null);
+                RefreshTagRows(resetScroll: true);
+                RefreshStatusBar();
+            }
+            RebuildLibraryList();
+            TranslateInfoText.Text = $"已从库里删除「{row.Title}」。";
+        };
+        menu.Items.Add(del);
+
+        menu.ShowAt(PromptList, new FlyoutShowOptions { Position = e.GetPosition(PromptList) });
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// 按热度自动排段内顺序。**只该在写标签模式用**：标注侧的人在手动调
+    /// 段内顺序，Canonicalize 刻意保留人工顺序，自动重排会把调好的弄丢。
+    /// </summary>
+    private void AutoArrange_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingTags.Count == 0)
+        {
+            TranslateInfoText.Text = "没有标签可排。";
+            return;
+        }
+
+        var before = new List<string>(_pendingTags);
+        // Arrange 会按 prior 重排 body，并把头部控制词归到官方段序。
+        // rating / artist 不传：它们已经在 _pendingTags 里，传了会重复。
+        var after = VocabDb.Arrange(_pendingTags, _prior);
+
+        if (before.SequenceEqual(after, StringComparer.Ordinal))
+        {
+            TranslateInfoText.Text = "顺序已经是按热度排好的。";
+            return;
+        }
+
+        _undoPrompt = GetCaptionText();
+        _pendingTags = after;
+        CommitPrompt();
+        UndoTranslateBtn.IsEnabled = true;
+        UndoMenuItem.IsEnabled = true;
+
+        var moved = 0;
+        for (var i = 0; i < Math.Min(before.Count, after.Count); i++)
+            if (!string.Equals(before[i], after[i], StringComparison.Ordinal)) moved++;
+
+        TranslateInfoText.Text = $"已按热度重排段内顺序（{moved} 个标签换位，大类顺序按官方段序）。"
+            + (_prior.Count == 0 ? " 注意：当前训练集没有可用于统计的 caption。" : "");
+        Log.Write($"auto arrange: {before.Count} tags, {moved} moved, prior={_prior.Count}");
     }
 
     // ================= 菜单：工具 =================
@@ -2099,9 +2815,11 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async Task PasteTagsAsync()
     {
-        if (_index < 0 || _index >= _items.Count)
+        if (_doc is null)
         {
-            TranslateInfoText.Text = "先选一张图再粘贴标签。";
+            TranslateInfoText.Text = _mode == PromptMode.Draft
+                ? "先新建或载入一段提示词，再粘贴标签。"
+                : "先选一张图再粘贴标签。";
             return;
         }
 
@@ -2821,13 +3539,59 @@ private void EndEdit(bool commit, bool lostFocus = false)
     private static readonly double[] DefaultStars = { 2, 2, 3 };
 
     /// <summary>
-    /// 把配置里的分栏比例应用到三栏。
+    /// 写标签模式的默认比例。左栏是提示词库（只有标题和一行摘要），
+    /// 不需要标注模式给图片列表留的那么宽，所以左栏收到 1.4。
+    /// </summary>
+    private static readonly double[] DraftDefaultStars = { 1.4, 2, 3 };
+
+    /// <summary>当前模式对应的默认比例。</summary>
+    private double[] ModeDefaults => _mode == PromptMode.Draft ? DraftDefaultStars : DefaultStars;
+
+    /// <summary>
+    /// 读当前模式的那一组比例。**两个模式各存一套**：它们的分栏语义不同
+    /// （标注是图片 / 标签 / 提示词，写标签是提示词库 / 标签 / 提示词），
+    /// 共用一组值会让一个模式里拖过的布局把对方的布局改掉。
+    ///
+    /// 写标签那一组还没存过时（三个都是 0）回落到它自己的默认值，
+    /// 而不是回落到标注模式的比例——否则第一次进写标签模式会继承一个
+    /// 为图片列表调过的、偏宽的左栏。
+    /// </summary>
+    private double[] ReadColumnRatios()
+    {
+        if (_mode == PromptMode.Draft)
+        {
+            var d = new[] { _cfg.DraftLeftStar, _cfg.DraftMidStar, _cfg.DraftRightStar };
+            if (d[0] <= 0 && d[1] <= 0 && d[2] <= 0) return (double[])DraftDefaultStars.Clone();
+            return d;
+        }
+        return new[] { _cfg.LeftStar, _cfg.MidStar, _cfg.RightStar };
+    }
+
+    /// <summary>写当前模式的那一组比例。</summary>
+    private void WriteColumnRatios(double left, double mid, double right)
+    {
+        if (_mode == PromptMode.Draft)
+        {
+            _cfg.DraftLeftStar = left;
+            _cfg.DraftMidStar = mid;
+            _cfg.DraftRightStar = right;
+        }
+        else
+        {
+            _cfg.LeftStar = left;
+            _cfg.MidStar = mid;
+            _cfg.RightStar = right;
+        }
+    }
+
+    /// <summary>
+    /// 把当前模式的分栏比例应用到三栏。
     /// 存 * 比例而不是像素：换窗口大小、换显示器后仍是同一个布局意图。
     /// 越界或损坏的值直接回落默认——否则某栏可能被压成 0 宽且拖不回来。
     /// </summary>
     private void ApplyColumnRatios()
     {
-        var s = new[] { _cfg.LeftStar, _cfg.MidStar, _cfg.RightStar };
+        var s = ReadColumnRatios();
         var ok = true;
         foreach (var v in s)
             if (double.IsNaN(v) || double.IsInfinity(v) || v < 0.1 || v > 100) { ok = false; break; }
@@ -2835,7 +3599,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
         if (!ok)
         {
             Log.Write($"column ratios invalid ({string.Join(", ", s)}), using defaults");
-            s = (double[])DefaultStars.Clone();
+            s = ModeDefaults;
         }
 
         ColLeft.Width = new GridLength(s[0], GridUnitType.Star);
@@ -2868,21 +3632,17 @@ private void EndEdit(bool commit, bool lostFocus = false)
             {
                 // 归一到和 = 7，保持默认布局同一量级，避免数值随窗口大小漂移
                 var total = l + m + r;
-                _cfg.LeftStar = 7.0 * l / total;
-                _cfg.MidStar = 7.0 * m / total;
-                _cfg.RightStar = 7.0 * r / total;
+                WriteColumnRatios(7.0 * l / total, 7.0 * m / total, 7.0 * r / total);
             }
             else
             {
                 // 窗口还没布局完（ActualWidth 全为 0）时退回名义值
-                _cfg.LeftStar = ColLeft.Width.Value;
-                _cfg.MidStar = ColMid.Width.Value;
-                _cfg.RightStar = ColRight.Width.Value;
+                WriteColumnRatios(ColLeft.Width.Value, ColMid.Width.Value, ColRight.Width.Value);
             }
 
             _cfg.Save();
-            Log.Write($"column ratios saved " +
-                      $"{_cfg.LeftStar:F2}:{_cfg.MidStar:F2}:{_cfg.RightStar:F2}");
+            Log.Write($"column ratios saved [{_mode}] " +
+                      $"{ReadColumnRatios()[0]:F2}:{ReadColumnRatios()[1]:F2}:{ReadColumnRatios()[2]:F2}");
         }
         catch (Exception ex) { Log.Write("save column ratios failed: " + ex.Message); }
     }
@@ -2898,12 +3658,10 @@ private void EndEdit(bool commit, bool lostFocus = false)
     {
         try
         {
-            _cfg.LeftStar = stars[0];
-            _cfg.MidStar = stars[1];
-            _cfg.RightStar = stars[2];
+            WriteColumnRatios(stars[0], stars[1], stars[2]);
             _cfg.Save();
-            Log.Write($"column ratios saved (nominal) " +
-                      $"{_cfg.LeftStar:F2}:{_cfg.MidStar:F2}:{_cfg.RightStar:F2}");
+            Log.Write($"column ratios saved (nominal) [{_mode}] " +
+                      $"{stars[0]:F2}:{stars[1]:F2}:{stars[2]:F2}");
         }
         catch (Exception ex) { Log.Write("save nominal ratios failed: " + ex.Message); }
     }
@@ -2970,7 +3728,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
     private void LeftSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => ResetColumns();
     private void RightSplitter_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e) => ResetColumns();
 
-    private void ResetColumns() => ApplyColumns(DefaultStars, save: true, nominal: true);
+    private void ResetColumns() => ApplyColumns(ModeDefaults, save: true, nominal: true);
 
     /// <summary>菜单「视图 → 恢复默认布局」。和双击分隔条等效，只是入口更明显。</summary>
     private void ResetLayout_Click(object sender, RoutedEventArgs e) => ResetColumns();
@@ -3249,6 +4007,11 @@ private void EndEdit(bool commit, bool lostFocus = false)
         // 而绝大多数按键并不改变任何一段的归属。
         if (tagsChanged || proseChanged) ApplyPromptColors();
         if (tagsChanged) RefreshTagRows();
+
+        // 写标签模式的状态栏报 token 预算——它随**字数**变，而不只随标签变。
+        // 只挂在 RefreshTagRows 上的话，在右上写一段散文时（标签没动）预算就不会
+        // 更新，而超出 512 正是写散文最容易踩的坑。
+        if (tagsChanged || proseChanged) RefreshStatusBar();
     }
 
     // ================= 设置 =================
@@ -3266,6 +4029,9 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
     /// <summary>供 --tagsearch 启动开关请求打开标签搜索；真正的打开在 Initialize 之后。</summary>
     public void OpenTagSearchForTest() => _searchAfterInit = true;
+
+    /// <summary>供 --draft 启动开关请求以写标签模式启动；真正的切换在 Initialize 之后。</summary>
+    public void OpenDraftModeForTest() => _draftAfterInit = true;
 
     private async Task ShowSettingsAsync()
     {

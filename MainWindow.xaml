@@ -18,8 +18,33 @@
 
         <!-- 菜单栏 -->
         <MenuBar Grid.Row="0" x:Name="MainMenu">
+            <!-- 模式切换。用 RadioMenuFlyoutItem 而不是 ToggleMenuFlyoutItem：
+                 两个模式是互斥的选择，单选项能直接表达"当前在哪个模式"，
+                 而开关必须靠标题文字才能说清哪一边是"开"。
+                 也刻意不建两套 MenuBar——两套会把 Ctrl+S 这类加速键各挂一份，
+                 于是按一下触发两次。 -->
+            <MenuBarItem Title="模式">
+                <RadioMenuFlyoutItem x:Name="LabelModeItem" Text="标注模式"
+                                     GroupName="appmode" IsChecked="True"
+                                     Click="LabelMode_Click">
+                    <RadioMenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" /></RadioMenuFlyoutItem.Icon>
+                </RadioMenuFlyoutItem>
+                <RadioMenuFlyoutItem x:Name="DraftModeItem" Text="写标签模式"
+                                     GroupName="appmode"
+                                     Click="DraftMode_Click">
+                    <RadioMenuFlyoutItem.Icon><FontIcon Glyph="&#xE70F;" /></RadioMenuFlyoutItem.Icon>
+                </RadioMenuFlyoutItem>
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="切换模式" Click="ToggleMode_Click"
+                                KeyboardAcceleratorTextOverride="Ctrl+M">
+                    <MenuFlyoutItem.KeyboardAccelerators>
+                        <KeyboardAccelerator Key="M" Modifiers="Control" />
+                    </MenuFlyoutItem.KeyboardAccelerators>
+                </MenuFlyoutItem>
+            </MenuBarItem>
+
             <MenuBarItem Title="文件">
-                <MenuFlyoutItem Text="打开训练集…" Click="OpenFolder_Click">
+                <MenuFlyoutItem x:Name="OpenFolderItem" Text="打开训练集…" Click="OpenFolder_Click">
                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;" /></MenuFlyoutItem.Icon>
                     <MenuFlyoutItem.KeyboardAccelerators>
                         <KeyboardAccelerator Key="O" Modifiers="Control" />
@@ -27,14 +52,18 @@
                 </MenuFlyoutItem>
                 <MenuFlyoutSubItem x:Name="RecentMenu" Text="最近打开" />
                 <MenuFlyoutSeparator />
-                <MenuFlyoutItem Text="保存" Click="Save_Click"
+                <!-- 主操作。两个模式下是两件事，文案和动作都按模式分派：
+                     标注 = 写回同名 .txt；写标签 = 把整行复制到剪贴板。
+                     刻意共用一个菜单项而不是各建一个：Ctrl+S 是同一个键，
+                     两套并存会重复触发。 -->
+                <MenuFlyoutItem x:Name="PrimaryActionItem" Text="保存" Click="PrimaryAction_Click"
                                 KeyboardAcceleratorTextOverride="Ctrl+S">
                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;" /></MenuFlyoutItem.Icon>
                     <MenuFlyoutItem.KeyboardAccelerators>
                         <KeyboardAccelerator Key="S" Modifiers="Control" />
                     </MenuFlyoutItem.KeyboardAccelerators>
                 </MenuFlyoutItem>
-                <MenuFlyoutItem Text="重新载入" Click="Reload_Click"
+                <MenuFlyoutItem x:Name="ReloadItem" Text="重新载入" Click="Reload_Click"
                                 KeyboardAcceleratorTextOverride="F5">
                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE72C;" /></MenuFlyoutItem.Icon>
                     <MenuFlyoutItem.KeyboardAccelerators>
@@ -47,7 +76,36 @@
                 </MenuFlyoutItem>
             </MenuBarItem>
 
-            <MenuBarItem Title="浏览">
+            <!-- 提示词库：只在写标签模式有意义，整条菜单按模式隐藏。
+                 用 Visibility 而不是两套菜单，理由同上（避免加速键重复）。 -->
+            <MenuBarItem x:Name="PromptMenu" Title="提示词" Visibility="Collapsed">
+                <MenuFlyoutItem Text="新建提示词" Click="NewPrompt_Click"
+                                KeyboardAcceleratorTextOverride="Ctrl+N">
+                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE710;" /></MenuFlyoutItem.Icon>
+                    <MenuFlyoutItem.KeyboardAccelerators>
+                        <KeyboardAccelerator Key="N" Modifiers="Control" />
+                    </MenuFlyoutItem.KeyboardAccelerators>
+                </MenuFlyoutItem>
+                <!-- 刻意**不写** KeyboardAcceleratorTextOverride：Ctrl+Shift+S 已经被
+                     「标签 → 规整大类顺序」占了（那个是真挂上的），而写一个没接线的
+                     加速键提示比不写更糟——用户按了没反应，只会以为程序坏了。
+                     再说了，Ctrl+S（复制）本身就会入库，这个菜单项是给"只想存、不想复制"用的。 -->
+                <MenuFlyoutItem Text="保存到提示词库" Click="SavePromptToLibrary_Click">
+                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="重命名当前提示词…" Click="RenamePrompt_Click" />
+                <MenuFlyoutItem x:Name="PinPromptItem" Text="钉为预设" Click="PinPrompt_Click">
+                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE734;" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem Text="清空当前提示词" Click="ClearPrompt_Click" />
+                <MenuFlyoutItem Text="清空历史（保留预设）" Click="ClearHistory_Click" />
+            </MenuBarItem>
+
+            <!-- 浏览：整条菜单都是"上一张/下一张"这类图片导航，写标签模式下没有图片，
+                 整条隐藏（而不是禁用）。禁用会在菜单里留一排永远点不动的项。 -->
+            <MenuBarItem x:Name="BrowseMenu" Title="浏览">
                 <MenuFlyoutItem Text="上一张" Click="Prev_Click"
                                 KeyboardAcceleratorTextOverride="Alt+←">
                     <MenuFlyoutItem.KeyboardAccelerators>
@@ -154,6 +212,13 @@
                         <KeyboardAccelerator Key="S" Modifiers="Control,Shift" />
                     </MenuFlyoutItem.KeyboardAccelerators>
                 </MenuFlyoutItem>
+                <!-- 按热度自动排：只对写标签模式显示。
+                     标注模式刻意没有它——那边的人在手动调段内顺序，
+                     自动重排会把调好的顺序弄丢（Canonicalize 保留人工顺序正是为此）。 -->
+                <MenuFlyoutItem x:Name="AutoArrangeItem" Text="按热度自动排段内顺序"
+                                Click="AutoArrange_Click" Visibility="Collapsed">
+                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8CB;" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="校验整行" Click="TagAudit_Click" />
                 <MenuFlyoutSeparator />
@@ -172,7 +237,7 @@
                 <MenuFlyoutItem x:Name="UndoMenuItem" Text="撤销上次翻译" Click="UndoTranslate_Click"
                                 IsEnabled="False" />
                 <MenuFlyoutSeparator />
-                <MenuFlyoutItem Text="计算标签统计…" Click="ShowStats_Click" />
+                <MenuFlyoutItem x:Name="StatsItem" Text="计算标签统计…" Click="ShowStats_Click" />
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="设置…" Click="Settings_Click">
                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE713;" /></MenuFlyoutItem.Icon>
@@ -202,8 +267,14 @@
                 <ColumnDefinition x:Name="ColRight" Width="3*" MinWidth="260" />
             </Grid.ColumnDefinitions>
 
-            <!-- 左：图片列表。单击选中并读取对应 tag，双击开独立预览窗口。 -->
+            <!-- 左：按模式分成两个面板，同一时刻只显示一个。
+                 标注模式 = 图片列表；写标签模式 = 提示词库（历史 + 预设）。
+                 中栏与右栏两个模式共用同一份控件——它们本来就不读当前图片，
+                 只吃 _pendingTags + _vocab + _cfg。 -->
             <Grid Grid.Column="0">
+
+                <!-- ===== 标注模式：图片列表 ===== -->
+                <Grid x:Name="ImagePane">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
@@ -288,6 +359,86 @@
                            TextWrapping="Wrap"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                            Text="单击读取 tag，双击预览大图" />
+                </Grid>
+
+                <!-- ===== 写标签模式：提示词库（历史 + 预设）===== -->
+                <Grid x:Name="PromptPane" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Margin="2,0,0,6" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="提示词库" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" x:Name="LibCountText" FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <Button Grid.Column="2" x:Name="NewPromptBtn" Click="NewPrompt_Click"
+                                Padding="6,2" VerticalAlignment="Center"
+                                ToolTipService.ToolTip="新建提示词 (Ctrl+N)">
+                            <FontIcon Glyph="&#xE710;" FontSize="12" />
+                        </Button>
+                    </Grid>
+
+                    <!-- 过滤框：库会长大，没有过滤就只能靠翻。 -->
+                    <AutoSuggestBox x:Name="LibFilterBox" Grid.Row="1" Margin="0,0,0,6"
+                                    PlaceholderText="过滤提示词…"
+                                    QueryIcon="Find"
+                                    TextChanged="LibFilterBox_TextChanged" />
+
+                    <Border Grid.Row="2" CornerRadius="8" BorderThickness="1"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                        <ListView x:Name="PromptList" SelectionMode="Single"
+                                  SelectionChanged="PromptList_SelectionChanged"
+                                  RightTapped="PromptList_RightTapped"
+                                  IsItemClickEnabled="False">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="core:PromptLibRow">
+                                    <Grid ColumnSpacing="8" Padding="0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Border Width="8" CornerRadius="4"
+                                                Background="{x:Bind BadgeBrush}"
+                                                VerticalAlignment="Stretch" />
+
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{x:Bind Title}" FontSize="12"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTipService.ToolTip="{x:Bind Preview}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <Border CornerRadius="3" Padding="4,0"
+                                                        Background="{x:Bind BadgeBrush}">
+                                                    <TextBlock Text="{x:Bind Badge}" FontSize="10"
+                                                               Foreground="{x:Bind BadgeTextBrush}" />
+                                                </Border>
+                                                <TextBlock Text="{x:Bind SubText}" FontSize="10"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </Border>
+
+                    <TextBlock Grid.Row="3" x:Name="LibHintText" FontSize="11" Margin="2,6,0,0"
+                               TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="单击载入提示词，Ctrl+S 复制走，右键可钉为预设" />
+                </Grid>
             </Grid>
 
             <Thumb Grid.Column="1" Style="{StaticResource SplitterThumbStyle}"
@@ -514,7 +665,8 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock FontWeight="SemiBold" VerticalAlignment="Center">
                             <Run Text="提示词原文" />
-                            <Run Text="（写入 .txt）" FontSize="11"
+                            <!-- 括号里的去向按模式换：写标签模式下这句话指向 .txt 是错的。 -->
+                            <Run x:Name="CaptionTargetRun" Text="（写入 .txt）" FontSize="11"
                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                         </TextBlock>
                         <TextBlock Grid.Column="1" x:Name="CaptionStatusText" FontSize="11"
@@ -599,7 +751,8 @@
             </Grid>
         </Grid>
 
-        <!-- 底部状态栏 -->
+        <!-- 底部状态栏。左中两格按模式分派：标注模式报数据集统计与第几张，
+             写标签模式报 token 预算与安全分级——那两项在"要拿去出图"时才有意义。 -->
         <Grid Grid.Row="2" Padding="12,6,12,8" ColumnSpacing="10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -607,6 +760,7 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="DatasetStatsText" FontSize="11" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
             <TextBlock Grid.Column="1" x:Name="SelectionText" FontSize="11"
                        VerticalAlignment="Center"
@@ -614,6 +768,11 @@
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
                 <Button x:Name="PrevBtn" Content="◀" Click="Prev_Click" ToolTipService.ToolTip="上一张 (Alt+←)" />
                 <Button x:Name="NextBtn" Content="▶" Click="Next_Click" ToolTipService.ToolTip="下一张 (Alt+→)" />
+                <!-- 写标签模式的主操作放这里，和 Ctrl+S 是同一件事：
+                     它是这个模式存在的理由，不该只藏在菜单里。 -->
+                <Button x:Name="CopyPromptBtn" Content="复制提示词" Click="PrimaryAction_Click"
+                        Visibility="Collapsed" Padding="10,4"
+                        ToolTipService.ToolTip="把整行提示词复制到剪贴板 (Ctrl+S)" />
             </StackPanel>
         </Grid>
     </Grid>

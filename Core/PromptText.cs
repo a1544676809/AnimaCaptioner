@@ -76,6 +76,33 @@ public static class PromptText
     /// <summary>是否可能超过训练侧的 512 截断点。</summary>
     public static bool OverBudget(string? text) => EstimateTokens(text) > MaxTokens;
 
+    /// <summary>
+    /// 一段提示词的简短摘要，例如 <c>5 tags · ≈18 tokens</c>；超预算时附警告。
+    ///
+    /// 放在这里（而不是 UI 那一层）是为了让**列表行与状态栏共用同一个口径**：
+    /// 两处各算一份的话，迟早出现"列表说没超、状态栏说超了"。它也是纯逻辑，
+    /// 所以 net8 回归能直接测。
+    ///
+    /// 标签数走 <see cref="Parse"/>，与中栏列表、着色、校验**同一个解析器**。
+    /// 这里踩过一个坑：曾经用"含空格的逗号段不算标签"来排除散文，结果
+    /// `best quality` / `silver hair` 这类**合法的多词标签**被漏数，于是
+    /// 状态栏左边报 3 tags、右边报 4 tags。散文边界只有解析器判得准（它看的是
+    /// 句边界与已知标签），按空格猜一定会错。
+    /// </summary>
+    public static string Summarize(string? body, VocabDb? vocab = null)
+    {
+        var text = (body ?? "").Trim();
+        if (text.Length == 0) return "空";
+
+        var tags = Parse(text, vocab).Tags.Count;
+
+        var tokens = EstimateTokens(text);
+        var s = tags > 0 ? $"{tags} tags · " : "";
+        s += $"≈{tokens} tokens";
+        if (tokens > MaxTokens) s += $" ⚠ 超 {MaxTokens}";
+        return s;
+    }
+
     private static readonly char[] SentenceEnd = { '.', '!', '?', ';', '\u3002', '\uff01', '\uff1f' };
 
     private static readonly string[] InnerBoundaries = { ". ", "! ", "? ", "...", "\u3002" };

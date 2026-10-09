@@ -133,6 +133,27 @@ public sealed class AppSettings
     public double RightStar { get; set; } = 3;
 
     /// <summary>
+    /// 写标签模式下的一组比例。**必须与标注模式分开存**：两个模式的分栏语义
+    /// 不同（标注是三栏：图片 / 标签 / 提示词；写标签时左栏是提示词库），
+    /// 共用一组值会让一个模式里拖过的布局在切到另一个模式时把对方的布局改掉。
+    /// 0 表示还没存过，回落到 <see cref="DraftLeftStar"/> 等的默认值。
+    /// </summary>
+    public double DraftLeftStar { get; set; }
+    public double DraftMidStar { get; set; }
+    public double DraftRightStar { get; set; }
+
+    // ---- 写标签模式 ----
+
+    /// <summary>
+    /// 上次停在哪个模式。下次启动直接回到它。
+    /// 存字符串而不是枚举，避免枚举成员改名后旧配置反序列化失败。
+    /// </summary>
+    public string LastMode { get; set; } = "label";
+
+    /// <summary>上次编辑过的那条提示词库条目的 id。切回写标签模式时用它恢复。</summary>
+    public string DraftLastPromptId { get; set; } = "";
+
+    /// <summary>
     /// tag 列表里各大类的框线颜色，"#RRGGBB"。
     /// 键是 TagSections 里的大类 key（quality/meta/period/safety/count/
     /// character/series/artist/general）。
