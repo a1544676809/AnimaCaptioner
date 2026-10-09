@@ -27,6 +27,7 @@
     <Compile Include="..\Core\TagSections.cs" />
     <Compile Include="..\Core\TagOrder.cs" />
     <Compile Include="..\Core\PromptText.cs" />
+    <Compile Include="..\Core\TagEscape.cs" />
     <Compile Include="..\Core\TagEdit.cs" />
     <Compile Include="..\Core\TagComplete.cs" />
     <Compile Include="..\Core\TagSearch.cs" />
@@ -42,6 +43,7 @@
     <Compile Include="Search.cs" />
     <Compile Include="Safety.cs" />
     <Compile Include="Prompts.cs" />
+    <Compile Include="Escape.cs" />
     <Compile Include="Defaults.cs" />
     <Compile Include="Models.cs" />
     <Compile Include="Reasoning.cs" />

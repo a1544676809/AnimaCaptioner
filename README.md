@@ -6,7 +6,9 @@
 （标签 + 英文散文，按大类着色），下半是把中文描述译成英文散文的翻译器。
 
 还有一个**写标签模式**（`Ctrl+M` 切换）：同一个程序里的第二块界面，从零组装一段提示词、
-`Ctrl+S` 复制到剪贴板直接拿去生图，附带历史与预设库、token 预算和安全档位提示。
+`Ctrl+S` 复制到剪贴板直接拿去生图，附带历史与预设库、token 预算、安全档位提示，
+以及把标签里的圆括号转义成 `\(` `\)` 的开关——否则 ComfyUI 会把
+`210 (reverse:1999)` 的括号当权重语法吃掉、年份整个消失。
 它和标注模式共用中栏、右栏和全部词库能力，只换了左栏、菜单和「主操作」。
 详见 [写标签模式](docs/11-write-tag-mode.md)。
 
@@ -70,6 +72,7 @@ Core/            纯逻辑层，不引用 WinUI，所以能被 net8 回归程序
   VocabDb.cs       词库引擎（animatag.py 的 C# 移植）
   TagSections.cs   大类定义、归类规则、稳定排序
   PromptText.cs    提示词解析、着色区间、token 预算
+  TagEscape.cs     生图用的括号转义（只做 ( ) ，判据是词库认不认得）
   PromptDoc.cs     两个模式的「当前文档」抽象（LabelDoc / DraftDoc）
   PromptLibraryStore.cs  写标签模式的历史与预设库（独立 JSON）
   CaptionFile.cs   caption 读写，严格保字节
@@ -112,6 +115,7 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 .\bin\Release\net8.0\corecheck.exe prose       # 标签 vs 散文、保存不丢散文、token 预算
 .\bin\Release\net8.0\corecheck.exe edit        # 标签解析 / 改名 / 防重复 / 规范化收敛
 .\bin\Release\net8.0\corecheck.exe complete    # 输入框候选与 Tab 补全（含 679 个真实标签的抗性）
+.\bin\Release\net8.0\corecheck.exe escape      # 标签转义：与 ComfyUI 解析器对拍（给了词库会全量验 25,815 个标签）
 .\bin\Release\net8.0\corecheck.exe safety      # 安全标签档位核对
 .\bin\Release\net8.0\corecheck.exe roundtrip   # caption 逐字节往返
 .\bin\Release\net8.0\corecheck.exe defaults    # 默认路径解析

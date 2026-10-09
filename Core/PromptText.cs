@@ -89,14 +89,19 @@ public static class PromptText
     /// 状态栏左边报 3 tags、右边报 4 tags。散文边界只有解析器判得准（它看的是
     /// 句边界与已知标签），按空格猜一定会错。
     /// </summary>
-    public static string Summarize(string? body, VocabDb? vocab = null)
+    public static string Summarize(string? body, VocabDb? vocab = null, bool unescapeTags = false)
     {
         var text = (body ?? "").Trim();
         if (text.Length == 0) return "空";
 
-        var tags = Parse(text, vocab).Tags.Count;
+        var tags = Parse(text, vocab, unescapeTags).Tags.Count;
 
-        var tokens = EstimateTokens(text);
+        // token 预算要按**编码器实际看到**的文本算：ComfyUI 会先把 \( \) 的反斜杠
+        // 吃掉再送分词器（escape_important -> unescape_important），所以转义后的正文
+        // 直接拿去估算会凭空多算那些反斜杠。括号标签一多就会多出几个 token，
+        // 严重时误报「超 512」——而 512 是训练侧的硬上限，误报会让人白删标签。
+        var visible = unescapeTags ? TagEscape.Unescape(text) : text;
+        var tokens = EstimateTokens(visible);
         var s = tags > 0 ? $"{tags} tags · " : "";
         s += $"≈{tokens} tokens";
         if (tokens > MaxTokens) s += $" ⚠ 超 {MaxTokens}";
@@ -132,8 +137,15 @@ public static class PromptText
     ///    官方模型卡自己的例子就是这个形状）。
     /// 3. 段首字母大写、≥3 个词、且不是已知标签 —— 读起来就是句子。
     /// </summary>
-    private static int ProseStart(string text, VocabDb? vocab)
+    private static int ProseStart(string text, VocabDb? vocab, bool unescapeTags)
     {
+        // 转义过的正文里标签带着 \( \) 的反斜杠，直接查库查不到。所有词库查询都必须
+        // 走这个包装：**按原文定位、按字面量查库**——下标仍按原文算，所以着色与
+        // 切片不受影响。漏掉任何一处，被转义的标签就会因为"不是已知标签"而
+        // 掉进下面第 3 条（首字母大写 + ≥3 词）被判成散文，整行消失。
+        bool Known(string tag) =>
+            TagSections.IsKnownTag(unescapeTags ? TagEscape.Unescape(tag) : tag, vocab);
+
         var segStart = 0;
         while (true)
         {
@@ -155,7 +167,7 @@ public static class PromptText
                     if (i < 0) continue;
                     var head = seg[..i].TrimEnd();
                     // 句号前那截是标签 -> 边界落在句号上（标签区含句号，散文含其后空格）
-                    if (head.Length > 0 && TagSections.IsKnownTag(head, vocab)) return s + i;
+                    if (head.Length > 0 && Known(head)) return s + i;
                     // 否则整段都算散文
                     return s;
                 }
@@ -164,13 +176,13 @@ public static class PromptText
                 if (seg.EndsWith(SentenceEnd))
                 {
                     var head = seg[..^1].TrimEnd();
-                    if (head.Length > 0 && TagSections.IsKnownTag(head, vocab)) return s + seg.Length - 1;
+                    if (head.Length > 0 && Known(head)) return s + seg.Length - 1;
                     return s;
                 }
 
                 // 3. 句子形状且不是标签
                 if (char.IsUpper(seg[0]) && WordCountAtLeast(seg, 3)
-                    && !TagSections.IsKnownTag(seg, vocab))
+                    && !Known(seg))
                     return s;
             }
 
@@ -184,23 +196,30 @@ public static class PromptText
     /// （caption 是单行格式），但不改动传回的 <see cref="Parts.ProseTail"/>——
     /// 它按原文切片，保证还能逐字节拼回去。
     /// </summary>
-    public static Parts Parse(string? text, VocabDb? vocab)
+    /// <param name="unescapeTags">
+    /// 正文里的标签是否带着生图用的转义反斜杠（见 <see cref="TagEscape"/>）。
+    /// 为 true 时**词库查询与返回的标签都用去掉反斜杠的字面量**，而散文边界
+    /// 仍按原文下标计算——于是转义对解析、着色、校验完全透明。
+    /// 标注模式一律传 false（训练集里没有转义）。
+    /// </param>
+    public static Parts Parse(string? text, VocabDb? vocab, bool unescapeTags = false)
     {
         if (string.IsNullOrEmpty(text)) return new Parts(new List<string>(), "");
 
-        var p = ProseStart(text, vocab);
+        var p = ProseStart(text, vocab, unescapeTags);
         if (p < 0)
-            return new Parts(SplitTags(text), "");
+            return new Parts(SplitTags(text, unescapeTags), "");
 
-        var tags = SplitTags(text[..p]);
+        var tags = SplitTags(text[..p], unescapeTags);
         return new Parts(tags, text[p..]);
     }
 
-    /// <summary>只按逗号切标签，去空白、去空段。</summary>
-    public static List<string> SplitTags(string text) =>
+    /// <summary>只按逗号切标签，去空白、去空段。<paramref name="unescape"/> 见 <see cref="Parse"/>。</summary>
+    public static List<string> SplitTags(string text, bool unescape = false) =>
         text.Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(t => t.Trim())
             .Where(t => t.Length > 0)
+            .Select(t => unescape ? TagEscape.Unescape(t) : t)
             .ToList();
 
     /// <summary>
@@ -244,10 +263,10 @@ public static class PromptText
     /// 实测官方那段散文按逗号切是 13/13 全不是标签，一律染成 general
     /// 会把整段散文涂成标签色。
     /// </summary>
-    public static List<ColorSpan> ColorSpans(string? text, VocabDb? vocab)
+    public static List<ColorSpan> ColorSpans(string? text, VocabDb? vocab, bool unescapeTags = false)
     {
         var spans = new List<ColorSpan>();
-        var parts = Parse(text, vocab);
+        var parts = Parse(text, vocab, unescapeTags);
 
         // 标签区的长度 = 原文长度 - 尾巴长度。尾巴按原文切片，所以这个换算是准的。
         var tagRegionLength = text is null ? 0 : text.Length - parts.ProseTail.Length;
@@ -267,8 +286,11 @@ public static class PromptText
             if (e > s)
             {
                 var body = text[s..e];
-                if (TagSections.IsKnownTag(body, vocab))
-                    spans.Add(new ColorSpan(s, e - s, TagSections.Classify(body, vocab)));
+                // 查库与分类都用字面量，但着色区间仍按原文下标——转义只是插入了
+                // 反斜杠，区间本身没变，所以两者可以各取所需。
+                var lookup = unescapeTags ? TagEscape.Unescape(body) : body;
+                if (TagSections.IsKnownTag(lookup, vocab))
+                    spans.Add(new ColorSpan(s, e - s, TagSections.Classify(lookup, vocab)));
             }
 
             if (comma < 0 || comma >= tagRegionLength) break;

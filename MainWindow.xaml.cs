@@ -440,6 +440,12 @@ public sealed partial class MainWindow : Window
         StatsItem.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
         AutoArrangeItem.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
         CopyPromptBtn.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        // 转义开关只在写标签模式出现：标注模式的 caption 是直接喂给分词器训练的，
+        // 反斜杠会变成垃圾 token 污染训练集。
+        EscapeParensBox.Visibility = draft ? Visibility.Visible : Visibility.Collapsed;
+        // 勾选状态直接反映配置。事件挂在 Click 上（不是 Checked/Unchecked），
+        // 所以这里的程序性赋值不会回调、不会绕回来再重建一次。
+        EscapeParensBox.IsChecked = _cfg.EscapeTagParens;
         PrevBtn.Visibility = NextBtn.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
         PreviewBtn.Visibility = draft ? Visibility.Collapsed : Visibility.Visible;
 
@@ -453,6 +459,65 @@ public sealed partial class MainWindow : Window
         PrimaryActionItem.Text = draft ? "复制提示词" : "保存";
 
         if (draft) UpdatePinMenuItemState();
+    }
+
+    /// <summary>
+    /// 当前是否给标签里的圆括号转义（见 <see cref="TagEscape"/>）。
+    ///
+    /// **只在写标签模式生效，这一点不能松**：标注模式的 caption 是直接喂给分词器
+    /// 训练的（<c>truncation=True</c> 那条路径），反斜杠会被切成垃圾 token 污染训练集。
+    /// 转义是推理侧语法，不是训练侧。
+    /// </summary>
+    private bool EscapeEnabled => _mode == PromptMode.Draft && _cfg.EscapeTagParens;
+
+    /// <summary>词库认不认得这个标签——转义的唯一判据，见 <see cref="TagEscape.ShouldEscape"/>。</summary>
+    private bool IsKnownTag(string tag) => TagSections.IsKnownTag(tag, _vocab);
+
+    /// <summary>
+    /// 从提示词框读正文并按当前模式的转义设置解析。
+    ///
+    /// **所有"从文本框回读"的路径都必须走这里。** 转义只在写进框里时加，
+    /// 回读时不还原的话，反斜杠会进到标签列表，下一次提交再转义一遍就变成
+    /// 两层（<c>\\(</c>）——那时 ComfyUI 看到的是字面反斜杠。
+    /// </summary>
+    private PromptText.Parts ParseCaption(string text) =>
+        PromptText.Parse(text, _vocab, EscapeEnabled);
+
+    /// <summary>
+    /// 把正文规范成"送进模型的线上格式"：给该转义的标签补上括号转义。
+    ///
+    /// <para>复制时也走一遍，是为了兜住**直接往提示词框里打字/粘贴**这条路——
+    /// 那条路不经过标签列表，也就不会触发 <see cref="CommitPrompt"/>，
+    /// 于是开关看起来"没生效"。标签列表那条路（搜索、翻译、粘贴标签、上移下移）
+    /// 本来就会转义，走这里只是再确认一遍。</para>
+    ///
+    /// <para>**这一步是幂等的**：已经转义过的标签（<c>210 \(reverse:1999\)</c>）
+    /// 带着反斜杠，词库查不到它，<see cref="TagEscape.ShouldEscape"/> 返回 false，
+    /// 不会再加一层反斜杠。所以可以放心重复调用。</para>
+    /// </summary>
+    private string NormalizeEscapes(string text)
+    {
+        if (!EscapeEnabled) return text;
+        var parts = PromptText.Parse(text, _vocab, unescapeTags: true);
+        if (parts.Tags.Count == 0) return text;
+        return PromptText.Rebuild(TagEscape.EscapeAll(parts.Tags, IsKnownTag), parts.ProseTail);
+    }
+
+    /// <summary>
+    /// 转义开关。改完立刻按新设置重建正文——**关掉时要把已有的反斜杠收回来**，
+    /// 否则框里会留着上一次的转义。
+    ///
+    /// 不用动标签列表：<c>_pendingTags</c> 里存的**始终是字面量**（回读时已经还原过），
+    /// 所以重建一次就够。
+    /// </summary>
+    private void EscapeParensBox_Click(object sender, RoutedEventArgs e)
+    {
+        _cfg.EscapeTagParens = EscapeParensBox.IsChecked == true;
+        _cfg.Save();
+
+        CommitPrompt();
+        Log.Write($"escape parens: {_cfg.EscapeTagParens} " +
+                  $"affected={TagEscape.CountEscaped(_pendingTags, IsKnownTag)}");
     }
 
     /// <summary>把当前文档落定。标注 = 静默保存；写标签 = 把草稿写进库。</summary>
@@ -774,7 +839,7 @@ public sealed partial class MainWindow : Window
         // 免得两处各算一份、出现"列表说没超、状态栏说超了"。
         // 标签数同理（Summarize 内部走 PromptText.Parse），所以右格不再重复报它，
         // 免得出现"左边 3 tags、右边 4 tags"这种自相矛盾的显示（实测踩到）。
-        DatasetStatsText.Text = PromptText.Summarize(raw, _vocab) + $" · 安全 {safety}";
+        DatasetStatsText.Text = PromptText.Summarize(raw, _vocab, EscapeEnabled) + $" · 安全 {safety}";
         SelectionText.Text = $"{words} 词 · {raw.Length} 字符";
     }
 
@@ -999,7 +1064,11 @@ public sealed partial class MainWindow : Window
     /// 只有上移/下移需要传：其余操作改动的是行的内容而不是行的位置。</param>
     private void CommitPrompt(int keepVisibleIndex = -1)
     {
-        SetCaptionText(PromptText.Rebuild(_pendingTags, _proseTail));
+        // 转义只发生在**写进提示词框**这一步：_pendingTags 里始终存字面量，
+        // 于是标签列表显示干净的名字（`210 (reverse:1999)`），而框里是送进模型的
+        // 线上格式（`210 \(reverse:1999\)`）——两边各是各的用途，不互相污染。
+        var tags = EscapeEnabled ? TagEscape.EscapeAll(_pendingTags, IsKnownTag) : _pendingTags;
+        SetCaptionText(PromptText.Rebuild(tags, _proseTail));
         RefreshTagRows(keepVisibleIndex: keepVisibleIndex);
     }
 
@@ -1091,7 +1160,7 @@ public sealed partial class MainWindow : Window
                 if (text.Length > 0)
                 {
                     // 标签段：按大类上色
-                    foreach (var span in PromptText.ColorSpans(text, _vocab))
+                    foreach (var span in PromptText.ColorSpans(text, _vocab, EscapeEnabled))
                     {
                         var r = doc.GetRange(span.Start, span.Start + span.Length);
                         r.CharacterFormat.BackgroundColor = TagColors.TintOf(span.Section, _cfg, bg);
@@ -1099,7 +1168,7 @@ public sealed partial class MainWindow : Window
                     }
 
                     // 散文尾巴：整段一色，明确告诉用户"这块不是标签"
-                    var parts = PromptText.Parse(text, _vocab);
+                    var parts = ParseCaption(text);
                     if (parts.HasProse)
                     {
                         var start = text.Length - parts.ProseTail.Length;
@@ -1877,7 +1946,12 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var text = GetCaptionText().Trim();
+        var raw = GetCaptionText();
+        // 兜住"直接往提示词框里打字/粘贴"这条路（见 NormalizeEscapes）。
+        var text = NormalizeEscapes(raw).Trim();
+        // 写回框里，让"看到的"和"复制走的"始终是同一份。
+        if (text != raw) SetCaptionText(text);
+
         if (text.Length == 0)
         {
             TranslateInfoText.Text = "提示词是空的，没有可复制的内容。";
@@ -1895,7 +1969,10 @@ public sealed partial class MainWindow : Window
             // 复制即入库：这是"我现在在用这段提示词"最可靠的信号。
             FlushDraftToLibrary();
 
-            var tokens = PromptText.EstimateTokens(text);
+            // 预算按**编码器看到的**文本算：ComfyUI 会把 \( \) 的反斜杠吃掉再送分词器，
+            // 直接拿转义后的正文估算会多算那些反斜杠（与 PromptText.Summarize 同一口径）。
+            var visible = EscapeEnabled ? TagEscape.Unescape(text) : text;
+            var tokens = PromptText.EstimateTokens(visible);
             TranslateInfoText.Text = $"已复制 {text.Length} 字符 · ≈{tokens} tokens。" +
                 (tokens > PromptText.MaxTokens ? " ⚠ 超过 512，训练侧会被截断。" : "");
             Log.Write($"prompt copy: len={text.Length} tokens={tokens} doc={_doc.Identity}");
@@ -3863,7 +3940,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 // 默认：接到提示词末尾。官方 example.png 就是这个形状
                 // （标签区用句号收尾，后面接散文）。
                 SetCaptionText(PromptText.AppendProse(GetCaptionText(), prose));
-                var parsed = PromptText.Parse(GetCaptionText(), _vocab);
+                var parsed = ParseCaption(GetCaptionText());
                 _pendingTags = new List<string>(parsed.Tags);
                 _proseTail = parsed.ProseTail;
                 RefreshTagRows();
@@ -3966,7 +4043,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
         // 恢复整段提示词，而不只是标签：翻译动的是散文尾巴，
         // 只还原标签的话「撤销」看不出任何变化。
         SetCaptionText(_undoPrompt);
-        var parsed = PromptText.Parse(_undoPrompt, _vocab);
+        var parsed = ParseCaption(_undoPrompt);
         _pendingTags = new List<string>(parsed.Tags);
         _proseTail = parsed.ProseTail;
         _undoPrompt = null;
@@ -3990,7 +4067,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
         // 每敲一个字都重新解析：用户可能正在往提示词里打字，标签区和散文尾巴的
         // 边界会随之移动，中间列表要跟着变。
         var raw = GetCaptionText();
-        var parsed = PromptText.Parse(raw, _vocab);
+        var parsed = ParseCaption(raw);
 
         // 解析结果和上次一模一样就什么都不做。这一条很关键：改色本身会触发
         // TextChanged（RichEdit 的行为），没有这个提前返回就会一路重建列表。

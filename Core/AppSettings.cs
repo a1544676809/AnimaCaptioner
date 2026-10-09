@@ -154,6 +154,20 @@ public sealed class AppSettings
     public string DraftLastPromptId { get; set; } = "";
 
     /// <summary>
+    /// 写标签模式下，给标签里的圆括号转义（<c>(</c> → <c>\(</c>），让
+    /// <c>210 (reverse:1999)</c> 这类标签原样进编码器。
+    ///
+    /// <para>**只在写标签模式生效**，而且这一点不能松：标注模式的 caption 是直接喂给
+    /// 分词器训练的，反斜杠会变成垃圾 token 污染训练集——转义是推理侧语法，不是训练侧。</para>
+    ///
+    /// <para>默认开。Anima 自带索引 108,257 个标签里 <b>25,815 个含圆括号</b>、
+    /// 其中 25,813 个会被 ComfyUI 的提示词解析器改写；另有 104 个更糟——
+    /// <c>(reverse:1999)</c> 的 <c>:1999</c> 被当成权重，那个词直接消失。
+    /// 判定与依据见 <see cref="TagEscape"/>。</para>
+    /// </summary>
+    public bool EscapeTagParens { get; set; } = true;
+
+    /// <summary>
     /// tag 列表里各大类的框线颜色，"#RRGGBB"。
     /// 键是 TagSections 里的大类 key（quality/meta/period/safety/count/
     /// character/series/artist/general）。

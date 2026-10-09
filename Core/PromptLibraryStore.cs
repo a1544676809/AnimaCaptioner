@@ -286,7 +286,9 @@ public sealed class PromptLibraryStore
         }
 
         var tags = head.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                       .Select(t => t.Trim())
+                       // 标题是给人看的：正文可能带着生图用的括号转义（`210 \(reverse:1999\)`），
+                       // 不还原的话标题里会挂着反斜杠。
+                       .Select(t => TagEscape.Unescape(t.Trim()))
                        .Where(t => t.Length > 0)
                        .ToList();
 

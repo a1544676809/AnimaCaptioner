@@ -662,6 +662,7 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock FontWeight="SemiBold" VerticalAlignment="Center">
                             <Run Text="提示词原文" />
@@ -669,7 +670,13 @@
                             <Run x:Name="CaptionTargetRun" Text="（写入 .txt）" FontSize="11"
                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                         </TextBlock>
-                        <TextBlock Grid.Column="1" x:Name="CaptionStatusText" FontSize="11"
+                        <!-- 只在写标签模式出现。标注模式的 caption 是直接喂给分词器训练的，
+                             反斜杠会变成垃圾 token 污染训练集——转义是推理侧语法，不是训练侧。 -->
+                        <CheckBox Grid.Column="1" x:Name="EscapeParensBox" Visibility="Collapsed"
+                                  Content="转义 ( )" VerticalAlignment="Center"
+                                  Click="EscapeParensBox_Click"
+                                  ToolTipService.ToolTip="把标签里的圆括号转义成 \( \)，让「210 (reverse:1999)」这类标签原样送进模型——不转义的话 ComfyUI 会把括号当权重语法剥掉，那个 :1999 还会被当成权重、年份直接消失。只对词库里查得到的标签生效，手写的权重 (chibi:2) 和方括号 [ ] 都不动。" />
+                        <TextBlock Grid.Column="2" x:Name="CaptionStatusText" FontSize="11"
                                    VerticalAlignment="Center"
                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                     </Grid>
