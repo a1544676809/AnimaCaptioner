@@ -27,9 +27,9 @@
                        VerticalAlignment="Center" />
 
             <Button x:Name="ReloadBtn" Grid.Column="1" Content="重新载入" Click="Reload_Click"
-                    ToolTipService.ToolTip="重新读盘。改完 .md 不必重启程序，点这里即可（F5）" />
+                    ToolTipService.ToolTip="重新载入帮助内容（F5）" />
             <Button x:Name="OpenFolderBtn" Grid.Column="2" Content="打开文档目录" Click="OpenFolder_Click"
-                    ToolTipService.ToolTip="在资源管理器里打开 docs 目录，直接编辑里面的 .md" />
+                    ToolTipService.ToolTip="打开帮助文档所在的文件夹" />
         </Grid>
 
         <!-- 主体：左目录 + 右内容。左右比例固定，用不着分隔条——目录项都很短，

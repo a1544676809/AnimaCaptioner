@@ -78,7 +78,8 @@ MainWindow.xaml(.cs)      主界面：标注模式 + 写标签模式（共用中
 SettingsDialog.xaml(.cs)  设置
 HelpWindow.xaml(.cs)     帮助窗口
 MarkdownRenderer.cs      Markdig → WinUI 元素
-docs/                   帮助文档（11 个模块，随程序分发）
+docs/                   帮助文档（10 个模块，随程序分发）
+  dev/                  开发文档：架构取舍、文档格式、本训练集审计（不随程序分发）
 Assets/app.ico          应用图标（9 档尺寸 16–256px）
 tools/icon/             图标的 SVG 源文件与生成脚本
 ```
@@ -130,7 +131,8 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 | 内容 | 位置 | 许可 |
 |---|---|---|
 | **软件本体**（C# 源码、XAML、构建配置） | `*.cs` `*.xaml` `*.csproj` `app.manifest` `Assets/` | **GNU GPL v3.0**（见 [LICENSE](LICENSE)） |
-| **自带文档**（帮助窗口读的 Markdown） | `docs/*.md` | **CC BY-NC-SA 4.0** |
+| **自带文档**（帮助窗口读的 Markdown） | `docs/*.md`（顶层） | **CC BY-NC-SA 4.0** |
+| **开发文档**（不随程序分发） | `docs/dev/`、`NOTES.md` | **GNU GPL v3.0**（与软件本体一致） |
 | **标签数据** | 不在本仓库 | 遵循各自上游协议 |
 
 ### 1. 软件本体：GPL-3.0
@@ -139,7 +141,7 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 ### 2. 自带文档：CC BY-NC-SA 4.0
 
-`docs/` 下的 11 个 `.md`（帮助窗口左侧目录的内容）采用
+`docs/` **顶层**的 10 个 `.md`（帮助窗口左侧目录的内容）采用
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)：署名、**非商业**、
 相同方式共享。
 

@@ -111,62 +111,17 @@ Danbooru 自己的评级字段是 `rating:` 加四个值，与 Anima 的四个�
   拆成了四段，所以安全词落在**安全**段——在它前面是质量 / 元信息 / 年代三个段。
 - 官方推荐前缀是 `masterpiece, best quality, score_7, safe, `，安全词就在这一段的
   末尾、紧跟 `1girl` 之前。本工具的子序与它一致。
-- 本训练集现有 53 个 caption 都是**只有安全词、没有其他控制词**，所以它在文件里
-  实际仍排在第 0 位（实测 53/53 的 index 0）。加不加质量词由你决定，两种写法
-  工具都接受，段序也都不变。
+- 加不加质量词由你决定，两种写法工具都接受，段序都不变。
 - 模型卡的推荐前缀自带 `safe`；但**训练集不受此限**——训练集要如实反映图的内容。
 - 安全词写在**正向**提示词里。模型卡的负向串（`worst quality, low quality, ...`）是压制用的，
   不放安全词。
 
-## 本训练集的现状
+## 接吻这一档为什么从严
 
-对 `sayori-style-v1` 53 张图的实际统计：
-
-| 档位 | 数量 |
-|---|---|
-| `safe` | **0** |
-| `sensitive` | 18 |
-| `nsfw` | 9 |
-| `explicit` | 25 |
-| 缺失 | 1（`ingame_05`） |
-
-三件需要处理的事：
-
-1. **`safe` 一档是空的。** 53 张里没有任何一张标 `safe`，所以模型没有"安全样貌"的样例。
-   对风格 LoRA 未必是问题，但如果以后要生成 SFW 内容，这个词是没训过的。
-
-2. **`ingame_05` 完全缺安全标签。** 内容为面包房场景、端着托盘、穿着完整，按上面的流程
-   应打 `safe`。这是唯一一处空档，也正好是补上 `safe` 样例的位置。
-
-3. **现有标注比 Danbooru 标准整体保守一档。** 按上面这套判据逐条核对，53 张里 43 张一致、
-   9 张分歧，且分歧**方向一致**——都是标得比 Danbooru 更严：
-
-   | 文件 | 现标 | 按 Danbooru | 判据 |
-   |---|---|---|---|
-   | `090_04_Azuki_3_white` | nsfw | sensitive | `cleavage cutout` / `clothing cutout` |
-   | `112_05_Mapple_6_white` | nsfw | sensitive | `cleavage cutout` |
-   | `143_06_Cinnamon_17_white` | nsfw | sensitive | `cleavage` + `cleavage cutout` |
-   | `4_shigure` | nsfw | sensitive | `cleavage` + `clothing cutout` |
-   | `coconut` | nsfw | sensitive | `cleavage` / `midriff` / `navel` / `micro shorts` |
-   | `022_01_Chocola_20_white` | sensitive | safe | 无任何性化标签 |
-   | `ingame_10` | sensitive | safe | 无任何性化标签 |
-   | `1_chocola` | explicit | nsfw | `clothes removed`（无器裸露、无性行为） |
-   | `6_shigure` | explicit | nsfw | `bare ass` + `panty pull`（非器裸露） |
-
-   **这不是错误，是两套标准的选择问题。** 关键是**内部一致**：
-   如果一部分图按 Danbooru 判、一部分按更严的判，安全词在训练里就变成噪声，
-   模型学不到清晰边界。要么把上表 9 张改成 Danbooru 档位，要么沿用现有更严的惯例
-   并把分界线写下来（例如"镂空也算 nsfw"），但不能两者混用。
-
-   > 这 9 处可以用 `corecheck safety` 随时复核：它只**报告**分歧，不会自动改写任何文件。
-   > 改动上文任何词表都会让这个数字变化，所以它也是判据的回归测试。
-
-## 一处我必须说明的判据取舍
-
-上面「灰色地带」表里我写「接吻 → 非情欲的归 `safe`」，但代码里把 `kiss` 放在了
-`sensitive`。原因是官方那条兜底规则 —— *When in doubt, use `rating:sensitive`* ——
-插画里的接吻常带情欲语境，拿不准就该往上放一档。真正情欲的（`heavy kissing` /
-`french kiss`）在 `nsfw`。这是**有意的从严**，不是笔误。
+「灰色地带」表里写「非情欲的接吻 → `safe`」，但工具的判据把 `kiss` 归 `sensitive`。
+依据是官方那条兜底规则 —— *When in doubt, use `rating:sensitive`* —— 插画里的接吻
+常带情欲语境，拿不准就该往上放一档。真正情欲的（`heavy kissing` / `french kiss`）
+在 `nsfw`。这是**有意的从严**。
 
 ## 为什么以 Danbooru 为准
 
@@ -174,5 +129,4 @@ Danbooru 自己的评级字段是 `rating:` 加四个值，与 Anima 的四个�
 - Danbooru 的评级规范是**唯一有逐条原文边界**的公开标准（上面每一条判据都能在 `howto:rate` 里找到对应句子）；
 - 官方模型卡只列了词，没给判据，所以只能外部借标准。
 
-一点说明：本文件里的判据译自 Danbooru 官方 `howto:rate`（通过 Wayback 存档取得，
-直连被限流）。想看原文可在 `wiki_pages/howto:rate` 查询。
+本文件的判据译自 Danbooru 官方 `howto:rate`，原文可在 `wiki_pages/howto:rate` 查询。

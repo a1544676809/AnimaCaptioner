@@ -44,7 +44,7 @@
 |---|---|---|
 | 人数 / 人称 | `1girl` `2girls` `solo` | 官方第二节，有固定词表 |
 | 角色 / 作品 | `maomao (kusuriya no hitorigoto)` | 正典名唯一，散文写法模型认不出 |
-| 画师 | `@sayori style` | **必须带 `@`**，官方说否则"效果非常弱" |
+| 画师 | `@artist style` | **必须带 `@`**，官方说否则"效果非常弱" |
 | 外观 | `silver hair` `blue eyes` `twintails` | Danbooru 有正典标签，离散 |
 | 服装 / 道具 | `serafuku` `frilled apron` | 同上 |
 | 姿势 / 表情 | `standing` `sitting` `smile` | 单标签能稳定表达 |
@@ -94,7 +94,7 @@ else:
 
 还有第二重问题：官方模型卡的「Dataset tags」一节写明，`ye-pop` / `deviantart` 这两个数据集标签的格式就是**首行 + 换行**。所以 caption 里出现换行，除了被截断，还会让模型把首行误读成数据集标签。
 
-> 本程序已经防住了这一条：提示词框里按回车产生的段落标记会被折成空格（`GetCaptionText()`），实际写盘永远是单行。现有 53 个 caption 实测**含内部换行的 0 个**。
+> 本程序已经防住了这一条：提示词框里按回车产生的段落标记会被折成空格，实际写盘永远是单行。
 
 ### 2. 训练侧的 token 上限是 **512**，超长会**静默截断**
 
@@ -205,12 +205,10 @@ sky with clouds.
 
 标签更"贵"，因为短词多、标点多。**按标签密度（3.23）预算才是安全的一侧**——同样字符数下它算出的 token 更多。标签区 + 散文混排时用 3.23。
 
-**注意 512 在训练侧是硬上限，不是下限。** 推理端两个分词器都是 `max_length=99999999`（`if out.shape[1] < 512: pad` —— 那里 512 是补齐下限），但**训练器把 512 传给分词器时带 `truncation=True`，超出部分直接砍掉**（`strategy_anima.py:57-77`，两条路径都是）。本文档讲训练集，所以按**上限**对待。
-
-你现有 53 个 caption（实测）：**90–248 token，平均 164**，最长 248 —— 离上限有**一倍以上余量**，即使每张加 2–4 句散文也还在预算内（每张加 50 token 约到 300）。
+**注意 512 在训练侧是硬上限，不是下限。** 推理端不截断（512 那里只是补齐下限），但**训练器把 512 传给分词器时带 `truncation=True`，超出部分直接砍掉**（`strategy_anima.py:57-77`，两条路径都是）。本文档讲训练集，所以按**上限**对待。
 
 > 程序里已经加了这条提示：提示词原文超过约 1485 字符时，中栏底部会显示
-> `⚠ 约 N tokens，超过训练上限 512，末尾会被静默截断`。实测在 1431 token 的样例上正确触发。
+> `⚠ 约 N tokens，超过训练上限 512，末尾会被静默截断`。
 
 ## 关于 `", "` 的实测修正
 
@@ -228,8 +226,6 @@ sky with clouds.
 
 所以 **#184 的结论对（要用 `", "`），但机制说反了**——不是"不加空格会产生不同数量"，而是"不加空格会粘出另一种 token"。它自己也承认这是观察而非受控实验：*"I've observed that certain tags seem to lose some of their effectiveness when spaces are omitted."*
 
-你的数据集**这点已经是对的**：53 个文件里逗号后缺空格的 **0 处**。反倒是那个公开数据集有 **62.6%（499/797）** 犯了这毛病。
-
 ## 要不要做「多份 caption 变体」
 
 作者说基础模型用了六种变体。社区实践里 [HF #126](https://huggingface.co/circlestone-labs/Anima/discussions/126) 有人报：
@@ -240,102 +236,46 @@ sky with clouds.
 
 > I haven't tested yet, but I expect that **duplicating the images and captioning each duplicate in different styles** will help
 
-**我的判断：对 53 张的 style LoRA，不值得做。** 理由：作者说 LoRA 格式宽容度高；变体会让每张图重复训练，等于改变有效 epoch；而收益没人给出受控证据。**先把单一格式做对。**
+**我的判断：对规模不大、风格统一的 style LoRA，不值得做。** 理由：作者说 LoRA 格式宽容度高；变体会让每张图重复训练，等于改变有效 epoch；而收益没人给出受控证据。**先把单一格式做对。**
 
 > ⚠️ 如果你想试，**不能靠在一个 `.txt` 里写多行来实现**——训练器只读第一行（见上文源码），第二行起会被静默丢掉。作者那六种变体是在**他自己的 `diffusion-pipe` 管线**里做的，不是靠多行 caption。社区提到的做法是**复制图片、每份配一种格式**。
 
-## 一个真实的格式缺陷（公开数据集里发现的）
+> 反面教材：公开数据集里常见两种毛病——逗号后没空格，以及把 `, a black and gold choker`
+> 这类自然语言碎片混进标签区（逗号后紧跟冠词）。两者都踩了上面那条界线。
 
-那个 797 条的数据集还有两个毛病，写在这里是为了提醒你**别照抄它**：
+## style LoRA 的一条特有取舍
 
-- **62.6% 的 caption 逗号后没空格**（上述分词问题）
-- **28.5% 以标点结尾**，其中有不少是这种写法：`…, golden eyes,a black and gold choker, a white off-shoulder top…` —— 逗号后**紧跟冠词**（`a`/`an`/`the`，占 10.9%）。这不是 Danbooru 标签形式，而是自然语言碎片混进了标签区——正是本文要区分的那条界线被踩了。
-
-你的数据集比它干净：**散文 0 处、逗号缺空格 0 处、以标点结尾 0 处**。
-
-## 针对你这个 style LoRA 的建议
-
-你是 **style LoRA**（`@sayori style`），数据同风格。这带来两条 style LoRA 特有的取舍：
-
-### 1. 不要加风格类描述
-
-[HF #96](https://huggingface.co/circlestone-labs/Anima/discussions/96) 里 `Espamholding`：
+不要加风格类描述。[HF #96](https://huggingface.co/circlestone-labs/Anima/discussions/96) 里 `Espamholding`：
 
 > For a style lora, you might actually want to **avoid style-modifying captions** if the images are
 > all in the same style (other than your made up artist triggerword/s ofc) and just let the model learn.
 
-`Nuke1229` 同帖：*"for quality tags, I don't include them."* —— 你的 53 个 caption 现在**质量/年代/meta 标签全为 0**，这符合上面的建议。
+`Nuke1229` 同帖：*"for quality tags, I don't include them."*
 
-### 2. 你真正缺的是「多人 + 互动」的描述
+## 接触类内容为什么必须写清楚
 
-我统计了你的 53 个 caption。这里要分清两件事：
-
-| 类别 | 数量 |
-|---|---|
-| 只写 `2girls` / `multiple girls` 这类**多人数标签** | **7** |
-| 写 `1girl` + `1boy`（画面里也是两人，但没有多人数标签） | **10** |
-| **画面里实际有 2 人以上** | **17** |
-| 其中**存在互动**（接触或性行为） | **15** |
-
-> ⚠️ 只看 `2girls` 会漏掉一半。`1girl` + `1boy` 同样表示两个人——你的 `neko4_h10*` 系列 6 张都是这种写法。
-
-这 15 张正是**标签最不够用**的地方——`kiss`、`holding hands`、`hand on another's cheek` 这类标签说不清谁对谁、往哪个方向：
-
-| 文件 | 现有互动标签 |
-|---|---|
-| `neko4_cs04b_cut` | `kiss`、`hand on another's cheek`、`touching face` |
-| `neko4_h02c2d` | `holding hands` + `sex`/`hetero`/`vaginal` |
-| `neko4_h02l` | `holding hands` + `after sex`/`cum`/`facial` |
-| `neko4_h10c6e` | `hug` + `sex`/`hetero`/`vaginal` |
-| 其余 11 张 | 只有 `hetero`/`sex`/`vaginal`/`cum` 等行为标签，**没有任何说明谁对谁、姿势如何的标签** |
-
-按上表分工，它们该补的正是自然语言：
-
-```text
-（现有标签）… ,
-（补）Place the left girl leaning toward the right one, her hand cupped against the
-other's cheek. Keep both faces sharp and turned toward each other.
-```
-
-而其余 **36 张单人图保持纯标签就够**——它们的取景（35 处 `looking at viewer`、10 处 `full body`、10 处 `dutch angle`）用标签远比散文可靠。
-
-> 多人但**没有互动**的 2 张（`fanbox_003`、`neko4_cs04a`）也归这类：画面里两人各做各的，多人数标签已经够用，不必加散文。
-
-### 3. 一个只能靠图判断的点
-
-`neko4_cs04b_cut` 标的是 `sensitive`，但有 `kiss` + `hand on another's cheek`。**kiss 在官方判据里归 `sensitive`**（`heavy kissing` 才到 `nsfw`），所以这个标注是对的——但它同时说明：**接触类内容即使不升级档位，也必须描述清楚**，否则模型学不到"两个人在互动"。
+`kiss` 在判据里归 `sensitive`，但**接触类内容即使不升级安全档位，也必须描述清楚**——
+否则模型学不到"两个人在互动"。档位和描述是两件事。
 
 ## 触发词放哪：一处真实的分歧
 
-你的 `@sayori style` 该放哪？社区里有**两种都有实据**的做法：
+社区里有**两种都有实据**的做法：
 
 | 主张 | 出处 | 理由 |
 |---|---|---|
 | **放最前** | 多个 LoRA 训练指南；`Nana7mi0721` 的模板全部以 `@trigger` 开头 | 配合 `keep_tokens=N` 形成稳定锚点 |
 | **放官方 character 段**（即质量/人数之后） | `Rinne414` 指南 | 官方顺序里 character 就在那个位置，触发词本质上就是"角色/风格"位 |
 
-**我的判断：对你这种全数据集统一的情况，两种都合法，关键是别混用。**
+**两种都合法，关键是别混用。** 有一条实证让这个选择变得不那么重要：**`shuffle_caption` 在 Anima 标准配方下是关掉的**（源码断言，见上文），所以"置首 + `keep_tokens` 防打乱"这个原始理由**在这条链路上不成立**；而官方顺序里 `@artist` 本来就排在 general 之前，放在人数段之后同样合规。
 
-有一条实证让这个选择变得不那么重要：**`shuffle_caption` 在 Anima 标准配方下是关掉的**（源码断言，见上文），所以"置首 + `keep_tokens` 防打乱"这个原始理由**在这条链路上不成立**。而且官方顺序里 `@artist` 本来就排在 general 之前——你的 `@sayori style` 现在紧跟 `solo` 之后，位置是合规的。
-
-**所以：保持现状即可，不必改。** 但要保证 53 张**全都一样**——中途换位置会让模型把"位置"也当成一个变量。
-
-我核对了你的实际数据，**53/53 全部一致**：触发词始终紧跟人数段，前面只出现「安全词 + 人数词」，没有例外。
-
-```text
-sensitive, 1girl, @sayori style                     ← 位置 2
-sensitive, 1girl, solo, @sayori style               ← 位置 3（人数段多一个 solo）
-explicit, 1girl, 1boy, solo focus, @sayori style    ← 位置 4（两个人数词）
-```
-
-那个"位置 2/3/4"的差别**不是不一致**，而是人数段本身长度不同——这正符合官方顺序（`[…] [1girl/1boy…] [character] [series] [artist] [general]`）。
+**要紧的是整个数据集统一。** 中途换位置会让模型把"位置"也当成一个变量。
 
 ## 一句话总结
 
 | 情况 | 用什么 |
 |---|---|
-| 单人、可穷举、有正典标签 | **纯标签**（你的 38 张属于这类） |
-| 多人但有互动（接触/归属/空间/因果） | **标签 + 2–4 句散文**（你的 15 张属于这类） |
+| 单人、可穷举、有正典标签 | **纯标签** |
+| 多人但有互动（接触/归属/空间/因果） | **标签 + 2–4 句散文** |
 | 取景与机位 | **永远用标签**，别指望散文 |
 | 风格描述 | **style LoRA 不要写** |
 

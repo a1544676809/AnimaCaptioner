@@ -56,17 +56,17 @@
 
 所以下面这些**全都不存在**：
 
-| 不存在的写法 | 训练集里用了 | 正确写法 |
-|---|---|---|
-| `white hair bow` | 6 次 | `hair bow` + `white bow` |
-| `blue hair bow` | 3 次 | `hair bow` + `blue bow` |
-| `white back bow` | 6 次 | `back bow` + `white bow` |
-| `blue back bow` | 1 次 | `back bow` + `blue bow` |
-| `pink hair bow` | 1 次 | `hair bow` + `pink bow` |
-| `pink tail bow` | 1 次 | `tail bow` + `pink bow` |
-| `light blue hair bow` | 1 次 | `hair bow` + `blue bow` |
-| `light blue bow` | 1 次 | `blue bow` |
-| `polka dot hair bow` | 1 次 | `polka dot bow` |
+| 不存在的写法 | 正确写法 |
+|---|---|
+| `white hair bow` | `hair bow` + `white bow` |
+| `blue hair bow` | `hair bow` + `blue bow` |
+| `white back bow` | `back bow` + `white bow` |
+| `blue back bow` | `back bow` + `blue bow` |
+| `pink hair bow` | `hair bow` + `pink bow` |
+| `pink tail bow` | `tail bow` + `pink bow` |
+| `light blue hair bow` | `hair bow` + `blue bow` |
+| `light blue bow` | `blue bow` |
+| `polka dot hair bow` | `polka dot bow` |
 
 规律是：**位置标签负责"长在哪"，通用颜色标签负责"什么颜色"**，两个标签各管一件事。
 
@@ -88,6 +88,9 @@
 
 大小同理：`big bow` / `small bow` / `wide ribbon` / `thin ribbon` **都不存在**，
 只有 `large bow`（7,518）、`huge bow`（1,646）、`long ribbon`（1,328）。
+
+> 一处要留意：这类低频标签会被程序的「校验」判成**正常**——只要它在 Danbooru 表里有条目。
+> 但几十篇的引用数等于没训过。**「校验通过」不等于「这个词有用」。**
 
 ---
 
@@ -261,82 +264,7 @@ CivitAI 上的 Anima LoRA 训练指南（文章 31678）明确写着：
 
 ---
 
-# 五、本训练集的对账（逐个实测）
-
-以 Anima 索引（108,257 条）逐条核对。蝴蝶结 / 花边类标签共 **139 个实例**：
-
-- **117 个实例（44 个不同标签）索引里存在** → 不用动
-- **22 个实例（10 个不同标签）索引里不存在** → 建议改写
-
-| 现在写的 | 次数 | 建议 |
-|---|---|---|
-| `white back bow` | 6 | `back bow` + `white bow` |
-| `white hair bow` | 6 | `hair bow` + `white bow` |
-| `blue hair bow` | 3 | `hair bow` + `blue bow` |
-| `blue back bow` | 1 | `back bow` + `blue bow` |
-| `pink hair bow` | 1 | `hair bow` + `pink bow` |
-| `pink tail bow` | 1 | `tail bow` + `pink bow` |
-| `light blue hair bow` | 1 | `hair bow` + `blue bow` |
-| `light blue bow` | 1 | `blue bow`（`light blue` 不是标签） |
-| `polka dot hair bow` | 1 | `polka dot bow` |
-| `magenta bowtie` | 1 | `magenta` 不在索引里 → `purple bowtie` / `pink bowtie`，或写散文 |
-
-两个**边界情况**——索引里存在，但引用数低到基本没训过，建议也按上面拆开：
-
-| 标签 | post_count |
-|---|---|
-| `red hair bow` | 71 |
-| `white hair ribbon` | 55 |
-
-同一类型的问题还有两组，**不在上面这个 139 的统计里**（它们不含 bow/ribbon/frill），
-但都属于「颜色挂在一个没有颜色的家族上」：
-
-| 现在写的 | 次数 | 状态 | 说明 |
-|---|---|---|---|
-| `gold bell` | 12 | Danbooru 有 **222** 篇，**Anima 索引里没有** | `bell` 133,045 · `neck bell` 53,511 · `jingle bell` 44,712 在 Anima 索引里**都没有颜色变体**；`gold bell` 是唯一例外 |
-| `silver bell` | 6 | **完全不存在** | 同上。顺带一提 `@silver bell` 是画师名（184 篇），不是这个东西 |
-| {颜色} name tag | 9（8 个不同） | 全部不存在 | `name tag` 20,864 · `badge` 11,567，**都没有颜色变体** |
-
-> 一处要留意：`gold bell` 会被程序的「校验」判成**正常** —— 因为它在 Danbooru 表里
-> 确实有 222 篇。但 222 篇和 `red hair bow` 的 71 篇是同一量级，等于没训过。
-> **「校验通过」不等于「这个词有用」。**
-
-这三组的处理方式和蝴蝶结一样：**颜色没有标签可挂** → 写进散文，不要造标签。
-
-## 本训练集里「多实例」的文件
-
-同一个词族出现 2 次以上、而且属性不一样的文件。括号里是那一族实际写成了什么：
-
-| 文件 | 实际情况 | 处理 |
-|---|---|---|
-| `azuki.txt` | bow ×3：`yellow bow` + `white hair bow` + `white back bow` | 2 位置 × 2 颜色 = 4 种读法 → `hair bow` + `back bow` + `yellow bow` + `white bow`，**配对不写** |
-| `ingame_08.txt` | ribbon ×3：`white ribbon` + `neck ribbon` + `red ribbon` | 位置相同、两种颜色 → 三条都留，配对不写 |
-| `022_01_Chocola_20_white.txt` | bow ×4：`hair bow` + `black bow` + `polka dot hair bow` + `red hair bow` | 位置同、颜色两种、样式一种 → `hair bow` + `black bow` + `red bow` + `polka dot bow` |
-| `5_vanilla.txt` | bowtie/bow ×4 + belt ×3：`red belt` + `blue belt` + `gold belt buckle` | 腰带是两条不同颜色 → `red belt` + `blue belt` + `belt buckle` + `gold belt`（1,023） |
-| `fanbox_002.txt` | `blue hair bow` + `bow` + `ribbon` + `hair ribbon`，**以及 `blue thighhighs` + `purple thighhighs`** | 两腿不同色 → **用成对机制**：加 `asymmetrical legwear`（42,979），比散文可靠 |
-| `1_vannila.txt` | `light blue bow` + `white bow` + `hair ribbon` + `white ribbon` | 只改 `light blue bow` → `blue bow` |
-| `052_02_Vanilla_19_white.txt` | `blue hair bow` + `blue bow` + `blue bowtie` + `striped bow` | 颜色其实只有蓝一种 → 拆位置标签即可 |
-| `3_vanilla.txt` | `light blue hair bow` + `blue bowtie` + `tail bow` + `tail ornament` | 只改 `light blue hair bow` → `hair bow` + `blue bow` |
-| `neko4_h03o.txt` | tail ×5：`striped cat tail` + `tail` + `cat tail` + `striped tail` + `fluffy tail` | **不是配对问题**：同一根尾巴写了五遍，过度标注 → `cat tail` + `striped tail` 就够 |
-| `1_chocola.txt` | bow ×6：`hair bow` + `white bow` + `pink bow` + `pink bowtie` + `bow panties` + `bow bra` | **全部存在，一个字都不用改** |
-| `neko4_h02l.txt` | bow ×4：`bow` + `hair bow` + `blue bow` + `pink bow` | **全部存在**；只有裸词 `bow` 是父词，可留可删 |
-
-两句能直接对照的：**`fanbox_002.txt` 的腿袜有现成的成对机制**（`asymmetrical legwear`），
-**`azuki.txt` 的蝴蝶结没有** —— 所以前者不必写散文，后者只能接受配对缺失。
-
-顺带这一轮又查出几个不存在的写法（都不含 bow/ribbon/frill，所以不在这 139 的统计里）：
-
-| 现在写的 | 次数 | 建议 |
-|---|---|---|
-| `striped cat tail` | 3 | `cat tail` + `striped tail`（4,430） |
-| `orange fox tail` | 1 | `fox tail` + `orange tail`（945） |
-| `thin tail` | 1 | `thin` 不是标签 → `tail`，或写进散文 |
-| `white fishnet thighhighs` | 1 | `fishnet thighhighs` + `white thighhighs` |
-| `gold belt buckle` | 1 | `belt buckle` + `gold belt`（1,023） |
-
----
-
-# 六、写之前问自己三个问题
+# 五、写之前问自己三个问题
 
 1. **这个整体存在吗？** 把「颜色 + 名词」当成一个词去查（`white bow` ✅、`white hair bow` ❌）。
 2. **不存在的话，颜色该挂到哪个名词上？** 找一个同类别、有颜色的词

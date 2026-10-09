@@ -38,5 +38,3 @@ a smile. The background features some trees and blue sky with clouds.
 「提示词原文」输入框里的文字会**按大类着色**，和中栏的段颜色对应。打字时实时更新。
 
 着色开关和十个颜色都在**设置 → 标签大类配色**里。
-
-> 一个实测教训：清空底色不能把颜色的 alpha 设成 0——RichEdit 会当成不透明黑，正文直接变成黑底白字。所以底色用的是按主题背景算出的**不透明**淡色。

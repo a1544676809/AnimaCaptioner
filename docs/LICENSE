@@ -1,12 +1,15 @@
 # 自带文档的许可
 
-本目录（`docs/`）下的 Markdown 文件是 **AnimaCaptioner 的自带帮助文档**，
+本目录（`docs/`）**顶层**的 Markdown 文件是 **AnimaCaptioner 的自带帮助文档**，
 与软件本体（C# 源码）的许可**不同**。
+
+`docs/dev/` 是**开发文档**（架构取舍、文档格式、本训练集审计），不随程序分发，
+所以不在本许可范围内——它跟软件本体一致。
 
 | 内容 | 许可 |
 |---|---|
 | 软件本体（`*.cs` / `*.xaml` / `*.csproj` 等） | GNU GPL v3.0 — 见仓库根目录 [LICENSE](../LICENSE) |
-| **本目录的文档（`*.md`）** | **CC BY-NC-SA 4.0** |
+| **本目录顶层的文档（`*.md`）** | **CC BY-NC-SA 4.0** |
 
 ## CC BY-NC-SA 4.0
 
@@ -33,7 +36,8 @@
   **Anima 模型卡**（[circlestone-labs/Anima](https://huggingface.co/circlestone-labs/Anima)，
   CircleStone Labs × Comfy Org）与 Hugging Face 讨论区的公开内容，按引用使用；
   模型权重本身采用非商业许可，与本软件无关。
-- `09-tags-vs-prose.md` 的部分统计数字来自对本地训练集的实测，不含第三方内容。
+- `09-tags-vs-prose.md` 引用的公开数据集统计来自第三方数据集页面；针对**本训练集**的
+  实测数字已移到 `docs/dev/dataset-audit.md`（开发文档，不随程序分发）。
 
 ## 标签数据
 

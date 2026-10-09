@@ -65,8 +65,12 @@
     <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
     <!-- 帮助文档随程序分发：运行时直接读 <exe>\docs 里的 .md，
          所以改文档点「重新载入」即可生效，不必重新编译或重启程序。
-         （注意：重新构建会用仓库版本覆盖它——这是刻意的，仓库才是文档的源头。） -->
-    <Content Include="docs\**\*.md" CopyToOutputDirectory="PreserveNewest" />
+         （注意：重新构建会用仓库版本覆盖它——这是刻意的，仓库才是文档的源头。）
+         只收顶层：docs\dev\ 是开发文档，不进帮助窗口、也不随程序分发——
+         HelpDocs 只枚举 docs 顶层、不递归，这里与它保持一致。 -->
+    <Content Include="docs\*.md" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 自带文档的许可声明。不带 .md 后缀，所以不会被当成帮助模块加载。 -->
+    <Content Include="docs\LICENSE" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

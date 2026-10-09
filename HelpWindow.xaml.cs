@@ -139,10 +139,9 @@ public sealed partial class HelpWindow : Window
             NavList.SelectedIndex = idx;
             Show(idx);
 
-            // 状态栏：几个模块、有没有问题、怎么改
+            // 状态栏：几个模块、有没有问题
             var parts = new List<string> { $"{_modules.Count} 个模块" };
             if (warnings.Count > 0) parts.Add($"⚠ {warnings.Count} 处问题");
-            parts.Add("改完 docs 里的 .md 点「重新载入」即可生效");
             StatusText.Text = string.Join(" · ", parts);
         }
         catch (Exception ex)
@@ -166,9 +165,8 @@ public sealed partial class HelpWindow : Window
         var body = new StackPanel();
         body.Children.Add(Para("程序在这个目录里没找到 .md 文件："));
         body.Children.Add(Code(HelpDocs.Dir));
-        body.Children.Add(Para("docs 目录是随程序分发的。如果它是空的，多半是构建时没被复制到"
-                               + "输出目录——检查 AnimaCaptioner.csproj 里那条 "
-                               + "docs\\**\\*.md 的 Content 项。"));
+        body.Children.Add(Para("帮助文档随程序一起分发。如果这里是空的，多半是安装不完整"
+                               + "——重新安装一次，或从发布包里把 docs 目录复制过来。"));
 
         if (warnings.Count > 0)
         {
