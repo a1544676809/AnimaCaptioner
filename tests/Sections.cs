@@ -66,18 +66,27 @@ internal static class Sections
             Console.WriteLine($"    {s.Title,-18} {bySection[s.Key].Count,4}");
         Console.WriteLine($"    (of which unknown to both indexes: {fallback.Count})");
 
-        // ---- 3. the control tags MUST land in meta/count, not general ----
+        // ---- 3. the control tags MUST land in the head sections, not general ----
         Console.WriteLine("\n[3] control tags that must not fall into general:");
-        string[] must = { "masterpiece", "best quality", "score_7", "safe", "explicit",
-                          "nsfw", "sensitive", "year 2025", "newest", "highres",
-                          "1girl", "solo", "absurdres", "jpeg artifacts" };
+        // 官方第一段那个方括号里的四类现在各自成段，所以期望值也按类拆开了。
+        // 这一改动的依据见 Core/TagSections.cs 顶部注释。
+        var must = new (string Tag, string Want)[]
+        {
+            ("masterpiece", TagSections.Quality), ("best quality", TagSections.Quality),
+            ("score_7", TagSections.Quality), ("safe", TagSections.Safety),
+            ("explicit", TagSections.Safety), ("nsfw", TagSections.Safety),
+            ("sensitive", TagSections.Safety), ("year 2025", TagSections.Period),
+            ("newest", TagSections.Period), ("highres", TagSections.Meta),
+            ("1girl", TagSections.Count), ("solo", TagSections.Count),
+            ("absurdres", TagSections.Meta), ("jpeg artifacts", TagSections.Meta),
+        };
         var bad = 0;
-        foreach (var t in must)
+        foreach (var (t, want) in must)
         {
             var s = TagSections.Classify(t, v);
-            var ok = s is TagSections.Meta or TagSections.Count;
+            var ok = s == want;
             if (!ok) bad++;
-            Console.WriteLine($"    {(ok ? "ok  " : "BAD ")} {t,-18} -> {s}");
+            Console.WriteLine($"    {(ok ? "ok  " : "BAD ")} {t,-18} -> {s}{(ok ? "" : $" want {want}")}");
         }
         Console.WriteLine(bad == 0 ? "    all correct" : $"    {bad} WRONG");
 
@@ -268,6 +277,41 @@ internal static class Sections
         Console.WriteLine($"    move-down-then-up restores every caption: " +
                           $"{(rtBad == 0 ? "ok (all 53)" : $"{rtBad} BAD")}");
         if (rtBad > 0) ord++;
+
+        // ---- 8. 自动排序（Arrange）必须把元信息也当头部控制词 ----
+        //
+        // 这一条是**有意偏离 Python 参考实现**的地方，所以显式钉住：
+        // animatag.py 的 HEAD_GROUPS 只有 [QUALITY, SCORE, YEAR, RATINGS, COUNTS]
+        // 五组，**没有元信息组**，于是 highres / absurdres 会掉进 body、
+        // 按 prior 混进一般标签里排。C# 侧现在从 TagSections 派生，自动补上了
+        // 这一组，所以这里必须验证它们排在 general 之前。
+        //
+        // 注意 parity 的 golden 用例**没有**覆盖到这一点（那三个用例里一个
+        // 元信息词都没有），所以只能在这里测——这也是它之前能一直藏着的原因。
+        Console.WriteLine("\n[8] auto-arrange keeps meta tags in the head, before general:");
+        var noPrior = new Dictionary<string, double>(StringComparer.Ordinal);
+        var arrIn = new[] { "1girl", "highres", "absurdres", "smile", "safe", "masterpiece" };
+        var arrOut = VocabDb.Arrange(arrIn, noPrior);
+        Console.WriteLine("    in : " + string.Join(", ", arrIn));
+        Console.WriteLine("    out: " + string.Join(", ", arrOut));
+        var idxHigh = arrOut.IndexOf("highres");
+        var idxSmile = arrOut.IndexOf("smile");
+        var headOk = idxHigh >= 0 && idxSmile >= 0 && idxHigh < idxSmile
+                  && arrOut.IndexOf("absurdres") < idxSmile;
+        Console.WriteLine($"    highres/absurdres before general: {(headOk ? "ok" : "BAD")}");
+        if (!headOk) ord++;
+
+        // 官方推荐前缀的前四段必须按 quality -> safety 落位
+        var prefIn = new[] { "safe", "score_7", "masterpiece", "best quality", "year 2025", "1girl" };
+        var prefOut = VocabDb.Arrange(prefIn, noPrior);
+        Console.WriteLine("    prefix in : " + string.Join(", ", prefIn));
+        Console.WriteLine("    prefix out: " + string.Join(", ", prefOut));
+        var prefOk = prefOut.IndexOf("masterpiece") < prefOut.IndexOf("score_7")
+                  && prefOut.IndexOf("score_7") < prefOut.IndexOf("year 2025")
+                  && prefOut.IndexOf("year 2025") < prefOut.IndexOf("safe")
+                  && prefOut.IndexOf("safe") < prefOut.IndexOf("1girl");
+        Console.WriteLine($"    quality -> score -> year -> safety -> count: {(prefOk ? "ok" : "BAD")}");
+        if (!prefOk) ord++;
 
         return notIdempotent.Count == 0 && bad == 0 && badColor == 0 && ord == 0 ? 0 : 1;
     }

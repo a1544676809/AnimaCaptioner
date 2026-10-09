@@ -21,17 +21,41 @@ public sealed class TagSectionInfo
 ///
 ///   "Within each tag section, the tags can be in arbitrary order."
 ///
-/// 所以这里只固定**大类之间**的顺序；大类内部的顺序完全保留用户/翻译器给的
-/// 相对次序（用稳定排序，绝不按引用数之类的启发式重排）。见 <see cref="Canonicalize"/>。
+/// 第一段那个方括号里官方列了**四类**（quality / meta / year / safety），但它们被写成
+/// 同一个方括号，所以"这四类必须合成一段"和"必须拆成四段"都不是官方规定——官方只规定
+/// 它们整体排在数量段之前。本文件选择**拆成四段**，理由：
+///
+///   - 安全词本来就有独立的校验（<see cref="SafetyRating"/>），合成一段会让"这段里
+///     哪个是安全词"要靠额外标记才能看出来；
+///   - 官方自己的推荐前缀是 `masterpiece, best quality, score_7, safe`，正是
+///     quality → safety 这个子序，拆开后无需特判；
+///   - 四类的判据来源不同（quality/meta 来自模型卡逐条列举、safety 来自 Danbooru
+///     评级规范），耦合在一段里改一处会牵动另一处。
+///
+/// 注意官方模型卡**自相矛盾**：`## Tag order` 写 `quality/meta/year/safety`，而
+/// `## Full tag example` 却是 `year 2025, newest, normal quality, score_5, highres, safe`
+/// （year 在前）。因为 `arbitrary order` 授权我们自定，这里按 Tag order 那一行的顺序，
+/// 与官方推荐前缀一致。
 ///
 /// 这个文件刻意不引用任何 WinUI 类型，以便对拍/回归用的 net8 控制台程序
-/// 能直接编译同一份源码（见 tools\corecheck\Sections.cs）。
+/// 能直接编译同一份源码（见 tests\corecheck.csproj）。
 /// </summary>
 public static class TagSections
 {
     // ---- 大类定义（顺序即官方顺序，不要随意调换）----
 
+    /// <summary>质量：人类评分词 + PonyV7 的 score_* 审美分。官方第一段的第 1 类。</summary>
+    public const string Quality = "quality";
+
+    /// <summary>元信息：分辨率、截图来源、压缩伪影等。官方第一段的第 2 类。</summary>
     public const string Meta = "meta";
+
+    /// <summary>年代：具体年份与 newest/recent 这类时期词。官方第一段的第 3 类。</summary>
+    public const string Period = "period";
+
+    /// <summary>安全：safe / sensitive / nsfw / explicit 四档。官方第一段的第 4 类。</summary>
+    public const string Safety = "safety";
+
     public const string Count = "count";
     public const string Character = "character";
     public const string Series = "series";
@@ -49,15 +73,18 @@ public static class TagSections
 
     public static readonly TagSectionInfo[] All =
     {
-        new() { Key = Meta,      Index = 0, Title = "质量 / 元信息 / 安全", DefaultHex = "#E8A33D" },
-        new() { Key = Count,     Index = 1, Title = "人物数量",             DefaultHex = "#2FA39B" },
-        new() { Key = Character, Index = 2, Title = "角色",                 DefaultHex = "#9B6BD6" },
-        new() { Key = Series,    Index = 3, Title = "作品 / 系列",           DefaultHex = "#4A90D9" },
-        new() { Key = Artist,    Index = 4, Title = "画师",                 DefaultHex = "#E0607E" },
-        new() { Key = General,   Index = 5, Title = "一般标签",             DefaultHex = "#7A8B99" },
+        new() { Key = Quality,   Index = 0, Title = "质量",        DefaultHex = "#E8A33D" },
+        new() { Key = Meta,      Index = 1, Title = "元信息",      DefaultHex = "#B0A8B9" },
+        new() { Key = Period,    Index = 2, Title = "年代",        DefaultHex = "#5FB3C4" },
+        new() { Key = Safety,    Index = 3, Title = "安全",        DefaultHex = "#D9534F" },
+        new() { Key = Count,     Index = 4, Title = "人物数量",    DefaultHex = "#2FA39B" },
+        new() { Key = Character, Index = 5, Title = "角色",        DefaultHex = "#9B6BD6" },
+        new() { Key = Series,    Index = 6, Title = "作品 / 系列",  DefaultHex = "#4A90D9" },
+        new() { Key = Artist,    Index = 7, Title = "画师",        DefaultHex = "#E0607E" },
+        new() { Key = General,   Index = 8, Title = "一般标签",    DefaultHex = "#7A8B99" },
     };
 
-    /// <summary>设置页里的全部配色项：六个大类 + 自然语言。</summary>
+    /// <summary>设置页里的全部配色项：九个大类 + 自然语言。</summary>
     public static readonly TagSectionInfo[] Colorable =
         All.Append(new TagSectionInfo
         {
@@ -68,7 +95,13 @@ public static class TagSections
         }).ToArray();
 
     /// <summary>
-    /// 按 key 取大类定义。只认六个真大类——<see cref="Prose"/> 不是大类
+    /// 官方第一段那四类 + 数量段：它们按官方规定整体排在 character 之前，
+    /// 所以自动排序（<see cref="VocabDb.Arrange"/>）把它们当"头部"处理。
+    /// 顺序就是 <see cref="All"/> 里的顺序。
+    /// </summary>
+    public static readonly string[] HeadKeys = { Quality, Meta, Period, Safety, Count };
+
+    /// <summary>按 key 取大类定义。只认九个真大类——<see cref="Prose"/> 不是大类
     /// （它不占官方顺序里的位置），传进来会落到 general，因为调用方拿它做的是
     /// "这段文字属于哪个大类"的归类，而散文的答案就是"没有大类"。
     /// 配色要取散文色请用 <see cref="ColorOf"/>。
@@ -76,7 +109,7 @@ public static class TagSections
     public static TagSectionInfo Get(string key) =>
         All.FirstOrDefault(s => s.Key == key) ?? All[^1];
 
-    /// <summary>配色用：六个大类之外还认自然语言。</summary>
+    /// <summary>配色用：九个大类之外还认自然语言。</summary>
     public static TagSectionInfo ColorOf(string key) =>
         Colorable.FirstOrDefault(s => s.Key == key) ?? All[^1];
 
@@ -93,33 +126,80 @@ public static class TagSections
     public static string TitleOf(int sectionIndex) =>
         sectionIndex >= ProseIndex ? ColorOf(Prose).Title : All[sectionIndex].Title;
 
-    // ---- 归类 ----
+    // ---- 控制词表：**唯一定义**，全部是有序数组 ----
 
-    /// <summary>官方列出的 quality 标签（人类评分那一套）。</summary>
-    private static readonly HashSet<string> QualityTags = new(StringComparer.OrdinalIgnoreCase)
+    /*
+     * 这些数组是分类与排序的唯一真源：
+     *   - 各段专用的 HashSet 由它们派生；
+     *   - 段内次序也由数组下标给出。
+     *
+     * 之所以要合并成一份：此前 VocabDb.HeadGroups 与本文件各写了一套控制词表，
+     * 结果两边的成员已经不一致（HeadGroups 压根没有元信息那一组，导致 highres
+     * 被当成普通标签按热度排进正文），而安全词表也在本文件和 SafetyRating 里
+     * 各写了一份、成员不同（一个有 questionable 没 general，另一个反过来）。
+     * 数组 + 派生集合从根上杜绝再次分叉。
+     */
+
+    /// <summary>
+    /// 质量词。官方模型卡 `## Quality tags` 一节：
+    /// Human score based（人类评分）+ PonyV7 aesthetic model based（score_9…score_1）。
+    ///
+    /// 数组顺序沿用 Python 参考实现（animatag.py 的 QUALITY），因为自动排序的
+    /// 段内次序要与它逐字节一致；分类只看成员、与顺序无关。
+    /// </summary>
+    public static readonly string[] QualityWords =
     {
-        "masterpiece", "best quality", "good quality", "normal quality",
-        "low quality", "worst quality", "very aesthetic",
+        "masterpiece", "best quality", "very aesthetic", "good quality",
+        "normal quality", "worst quality", "low quality",
     };
 
-    /// <summary>官方列出的 meta 标签，以及负面提示里那几个。</summary>
-    private static readonly HashSet<string> MetaTags = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>官方 `## Meta tags`：highres, absurdres, anime screenshot, jpeg artifacts,
+    /// official art, etc。后半是官方推荐负向串里的词——它们同样是控制词，
+    /// 不该被当成一般标签按热度排。</summary>
+    public static readonly string[] MetaWords =
     {
-        "highres", "absurdres", "anime screenshot", "jpeg artifacts", "official art",
+        "highres", "absurdres", "anime screenshot", "official art", "jpeg artifacts",
         "blurry", "chromatic aberration", "artist name",
     };
 
-    /// <summary>官方列出的 time period 标签。</summary>
-    private static readonly HashSet<string> PeriodTags = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>官方 `## Time period tags`：Specific year（year 2025…）+ Period。
+    /// 官方列的时期词是 newest, recent, mid, early, old；oldest 是 Danbooru 侧
+    /// 常见写法，一并认。</summary>
+    public static readonly string[] PeriodWords =
     {
         "newest", "recent", "mid", "early", "old", "oldest",
     };
 
-    /// <summary>官方列出的 safety 标签。questionable 是 Danbooru 的对应档，一并收进来。</summary>
-    private static readonly HashSet<string> SafetyTags = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>
+    /// 官方 `## Safety tags`：safe, sensitive, nsfw, explicit（四个词、没有判据，
+    /// 边界见 <see cref="SafetyRating"/>）。questionable 是 Danbooru 的对应档，
+    /// 词库里会见到，识别出来免得被当成普通标签。
+    ///
+    /// **数组次序刻意沿用 Python 参考实现（animatag.py 的 RATINGS）**，因为
+    /// <see cref="VocabDb.Arrange"/> 的段内次序由下标给出，要与它逐字节一致。
+    /// 分类只看成员，与次序无关；四个档位互斥（只该写一个），所以这个次序
+    /// 实际只影响"万一同时出现多个"时的排列。
+    /// 档位强弱的比较用 <see cref="SafetyRating.Ladder"/>，那是另一回事。
+    /// </summary>
+    public static readonly string[] SafetyWords =
     {
-        "safe", "sensitive", "questionable", "nsfw", "explicit",
+        "safe", "sensitive", "questionable", "explicit", "nsfw",
     };
+
+    /// <summary>官方第二节：1girl / 1boy / 1other 这类数量与人称标签。</summary>
+    public static readonly string[] CountWords =
+    {
+        "1girl", "2girls", "3girls", "4girls", "5girls", "6+girls", "multiple girls",
+        "1boy", "2boys", "3boys", "4boys", "5boys", "6+boys", "multiple boys",
+        "1other", "2others", "multiple others",
+        "solo", "solo focus", "male focus", "female focus", "other focus", "no humans",
+    };
+
+    private static readonly HashSet<string> QualityTags = new(QualityWords, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> MetaTags = new(MetaWords, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> PeriodTags = new(PeriodWords, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> SafetyTags = new(SafetyWords, StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> CountTags = new(CountWords, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 这个字符串是否是一个"能认出来的标签"。
@@ -154,19 +234,9 @@ public static class TagSections
         return vocab?.Status(t) is "anima" or "valid" or "retired";
     }
 
-    /// <summary>官方第二节：1girl / 1boy / 1other 这类数量与人称标签。</summary>
-    private static readonly HashSet<string> CountTags = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "1girl", "2girls", "3girls", "4girls", "5girls", "6+girls", "multiple girls",
-        "1boy", "2boys", "3boys", "4boys", "5boys", "6+boys", "multiple boys",
-        "1other", "2others", "multiple others",
-        "solo", "solo focus", "male focus", "female focus", "other focus", "no humans",
-    };
-
     /// <summary>词库里用的中文大类名，映射到官方大类。</summary>
-    private static readonly Dictionary<string, string> CnCategoryMap = new(StringComparer.Ordinal)
-    {
-        ["质量"] = Meta,
+    private static readonly Dictionary<string, string> CnCategoryMap = new(StringComparer.Ordinal)    {
+        ["质量"] = Quality,
         ["负面词"] = Meta,
         ["Anima控制词"] = Meta,
         ["画面风格"] = Meta,
@@ -184,8 +254,61 @@ public static class TagSections
         && int.TryParse(low.AsSpan(5), NumberStyles.None, CultureInfo.InvariantCulture, out var y)
         && y >= 1900 && y <= 2200;
 
+    private static int YearOf(string low) =>
+        int.TryParse(low.AsSpan(5), NumberStyles.None, CultureInfo.InvariantCulture, out var y) ? y : 1900;
+
     /// <summary>
-    /// 把标签归到官方六个大类之一。
+    /// 头部控制词的判定 + **段内次序**，供自动排序使用。
+    ///
+    /// 这是分类与排序共用的唯一入口：<see cref="Classify"/> 判"属于哪一段"，
+    /// 这里在同一份词表上再给出"段内排第几"。两者共用 <see cref="QualityWords"/>
+    /// 等数组，所以不可能各自漂移。
+    ///
+    /// <paramref name="order"/> 在段内单调：静态词用数组下标，动态词
+    /// （score_N / year N）按数值排在静态词之后。
+    /// </summary>
+    public static bool TryHeadSection(string tag, out string section, out int order)
+    {
+        section = General;
+        order = 0;
+        if (string.IsNullOrWhiteSpace(tag)) return false;
+        var low = tag.Trim().ToLowerInvariant();
+
+        static int At(string[] words, string low) =>
+            Array.FindIndex(words, w => string.Equals(w, low, StringComparison.OrdinalIgnoreCase));
+
+        var i = At(QualityWords, low);
+        if (i >= 0) { section = Quality; order = i; return true; }
+        if (IsScore(low))
+        {
+            section = Quality;
+            order = QualityWords.Length + (low[6] - '1');
+            return true;
+        }
+
+        i = At(MetaWords, low);
+        if (i >= 0) { section = Meta; order = i; return true; }
+
+        i = At(PeriodWords, low);
+        if (i >= 0) { section = Period; order = i; return true; }
+        if (IsYear(low))
+        {
+            section = Period;
+            order = PeriodWords.Length + (YearOf(low) - 1900);
+            return true;
+        }
+
+        i = At(SafetyWords, low);
+        if (i >= 0) { section = Safety; order = i; return true; }
+
+        i = At(CountWords, low);
+        if (i >= 0) { section = Count; order = i; return true; }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 把标签归到官方九个大类之一。
     ///
     /// 判断顺序有讲究：先认官方在模型卡里逐条列出的控制词。这些词在 Danbooru
     /// 上要么没有条目、要么归类与 Anima 的用法不一致（`sensitive` 在 Danbooru
@@ -198,10 +321,11 @@ public static class TagSections
         var t = tag.Trim();
         var low = t.ToLowerInvariant();
 
-        if (QualityTags.Contains(low) || MetaTags.Contains(low) ||
-            PeriodTags.Contains(low) || SafetyTags.Contains(low) ||
-            IsScore(low) || IsYear(low))
-            return Meta;
+        // 官方第一段的四类，按官方 Tag order 那一行的次序判定
+        if (QualityTags.Contains(low) || IsScore(low)) return Quality;
+        if (MetaTags.Contains(low)) return Meta;
+        if (PeriodTags.Contains(low) || IsYear(low)) return Period;
+        if (SafetyTags.Contains(low)) return Safety;
 
         if (CountTags.Contains(low)) return Count;
 
@@ -231,6 +355,9 @@ public static class TagSections
     /// 要求大类内部可调，任何"顺手优化"都会把手工调好的顺序弄丢。而且稳定
     /// 排序意味着：对已经合规的 caption 调用它是恒等变换（实测训练集 53/53
     /// 都是恒等变换，这条被当成回归测试）。
+    ///
+    /// 需要"按热度自动排"的是生图侧，那条路径用 <see cref="VocabDb.Arrange"/>：
+    /// **分类共用本文件，段内策略不同**——这是有意的分工，不是重复实现。
     /// </summary>
     public static List<string> Canonicalize(IEnumerable<string> tags, VocabDb? vocab)
     {

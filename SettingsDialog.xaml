@@ -177,9 +177,9 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <!-- 六个大类的行由代码生成：写死在 XAML 里的话，
-                     TagSections.All 一改就两边不同步了。
-                     取色器放在弹出层里而不是直接铺在页面上——六个 ColorPicker
+                <!-- 九个大类 + 自然语言的行由代码生成：写死在 XAML 里的话，
+                     TagSections.Colorable 一改就两边不同步了。
+                     取色器放在弹出层里而不是直接铺在页面上——十个 ColorPicker
                      平铺会把对话框撑到屏幕外，底部的保存按钮都够不到。 -->
             </Grid>
 

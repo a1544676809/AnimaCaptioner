@@ -29,7 +29,7 @@
 
 | 套件 | 验什么 |
 |---|---|
-| `parity` | 126 项与已验证的 Python 实现对拍 |
+| `parity` | 117 项与已验证的 Python 实现（`animatag.py`）对拍 |
 | `roundtrip` | 53 个 caption **逐字节**往返一致 |
 | `sections` | 分类规则对现有 caption 是恒等变换（53/53） |
 | `prose` | 标签 / 散文切分规则，含保存不丢散文的反例 |

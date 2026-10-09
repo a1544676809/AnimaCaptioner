@@ -134,10 +134,51 @@ public sealed class AppSettings
 
     /// <summary>
     /// tag 列表里各大类的框线颜色，"#RRGGBB"。
-    /// 键是 TagSections 里的大类 key（meta/count/character/series/artist/general）。
-    /// 缺失的键回落到 TagSections 的默认色，所以这里不需要预填全部六个。
+    /// 键是 TagSections 里的大类 key（quality/meta/period/safety/count/
+    /// character/series/artist/general）。
+    /// 缺失的键回落到 TagSections 的默认色，所以这里不需要预填全部九个。
     /// </summary>
     public Dictionary<string, string> SectionColors { get; set; } = new();
+
+    /// <summary>
+    /// 配色表的版本号，用于迁移旧配置。0/缺失 = 拆分前的六段方案。
+    ///
+    /// 为什么需要它：拆分前 quality/meta/year/safety 合成一段、共用一个 "meta" 键；
+    /// 拆开后 "meta" 变成了「元信息」这一段的真 key。不迁移的话，旧配置里存的
+    /// 那个颜色会被当成元信息的颜色读出来，而它很可能等于质量段的默认色
+    /// （旧默认正是 #E8A33D），于是两段同色、看上去像没生效。
+    /// </summary>
+    public int ColorSchema { get; set; }
+
+    /// <summary>当前配色表版本。改成大于 0 时请同时更新 <see cref="MigrateColorSchema"/>。</summary>
+    public const int CurrentColorSchema = 2;
+
+    /// <summary>
+    /// 把旧的六段配色迁移到九段。返回是否真的动过配置（调用方据此决定要不要落盘）。
+    ///
+    /// 迁移规则：旧的 "meta" 是四类共用的颜色，把它挪给**质量**段——它是四类里的
+    /// 第一段，也是官方推荐前缀的开头（`masterpiece, best quality, score_7, safe`）。
+    /// 元信息/年代/安全三段回落到各自的新默认色，这样拆分的意义才看得出来。
+    /// 已经显式设过 "quality" 的不覆盖。
+    /// </summary>
+    private bool MigrateColorSchema()
+    {
+        if (ColorSchema >= CurrentColorSchema) return false;
+        var changed = false;
+
+        if (!SectionColors.ContainsKey(TagSections.Quality)
+            && SectionColors.TryGetValue("meta", out var legacy)
+            && !string.IsNullOrWhiteSpace(legacy))
+        {
+            SectionColors[TagSections.Quality] = legacy;
+            changed = true;
+        }
+        // 旧 key 必须移除：它现在指的是「元信息」，留着会让元信息继承四类共用的旧色
+        if (ColorSchema < 2 && SectionColors.Remove("meta")) changed = true;
+
+        ColorSchema = CurrentColorSchema;
+        return changed;
+    }
 
     /// <summary>取某个大类的颜色十六进制值；没有配置过时返回空串（调用方回落默认）。</summary>
     public string GetSectionColor(string key) =>
@@ -149,12 +190,14 @@ public sealed class AppSettings
     /// <summary>把某个大类恢复成默认色。</summary>
     public void ResetSectionColor(string key) => SectionColors.Remove(key);
 
-    /// <summary>六大类是否都还是默认色（设置页据此决定"恢复默认"要不要可点）。</summary>
+    /// <summary>九个大类是否都还是默认色（设置页据此决定"恢复默认"要不要可点）。</summary>
     [JsonIgnore]
     public bool SectionColorsAreDefault =>
         SectionColors.Count == 0 ||
         SectionColors.All(kv =>
-            string.Equals(kv.Value, TagSections.Get(kv.Key).DefaultHex,
+            // 用 ColorOf 而不是 Get：配色表比大类多一项「自然语言」，
+            // 而 Get(Prose) 会回落到 general 的默认色，把散文色判成"等于默认"。
+            string.Equals(kv.Value, TagSections.ColorOf(kv.Key).DefaultHex,
                           StringComparison.OrdinalIgnoreCase));
 
     /// <summary>把一个目录记到最近列表头部（去重，最多 8 个）。</summary>
@@ -230,6 +273,9 @@ public sealed class AppSettings
                 var s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts);
                 if (s is not null)
                 {
+                    // 旧配置的配色键要迁移（六段 -> 九段）。迁移只在内存里做，
+                    // 下次任何一次 Save() 会把结果写回去。
+                    if (s.MigrateColorSchema()) Log.Write("settings: colour schema migrated to v" + CurrentColorSchema);
                     Log.Write("settings loaded from " + FilePath);
                     return s;
                 }

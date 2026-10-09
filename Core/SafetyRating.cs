@@ -31,12 +31,15 @@ public static class SafetyRating
     /// <summary>Danbooru 的四个评级值（与 Ladder 一一对应，仅用于显示）。</summary>
     public static readonly string[] DanbooruLadder = { "general", "sensitive", "questionable", "explicit" };
 
-    private static readonly HashSet<string> SafetyWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "safe", "sensitive", "nsfw", "explicit",
-        // 下面两个不是 Anima 的用词，但词库里会见到，识别出来免得被当成普通标签
-        "questionable", "general",
-    };
+    /// <summary>
+    /// 安全词表**以 <see cref="TagSections.SafetyWords"/> 为唯一真源**，这里只额外
+    /// 认 Danbooru 自己的写法 `general`（Anima 用的是 `safe`）。
+    ///
+    /// 此前两边各写了一份、成员还不一致：TagSections 那份有 questionable 没 general，
+    /// 这份反过来。改一处忘另一处时，"归类"和"校验"就会对同一个标签给出不同判断。
+    /// </summary>
+    private static readonly HashSet<string> SafetyWords = new(
+        TagSections.SafetyWords.Append("general"), StringComparer.OrdinalIgnoreCase);
 
     public static bool IsSafetyWord(string? tag) =>
         !string.IsNullOrWhiteSpace(tag) && SafetyWords.Contains(tag.Trim());

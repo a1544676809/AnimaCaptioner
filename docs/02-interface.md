@@ -87,16 +87,25 @@
 
 ## 配色
 
-七个大类各自有一个颜色，可在**设置 → 标签大类配色**里改：
+十项各自有一个颜色，可在**设置 → 标签大类配色**里改：
 
 | 大类 | 含义 |
 |---|---|
-| 质量 / 元信息 / 年 / 安全 | `masterpiece`、`score_7`、`safe`、`explicit` 这类 |
+| 质量 | `masterpiece`、`best quality`、`score_7` 这类 |
+| 元信息 | `highres`、`absurdres`、`jpeg artifacts` |
+| 年代 | `year 2025`、`newest`、`recent` |
+| 安全 | `safe`、`sensitive`、`nsfw`、`explicit` |
 | 人物数量 | `1girl`、`solo`、`2boys` |
 | 角色 | 具体角色名 |
 | 作品 | 系列 / 作品名 |
 | 画师 | 画师标签（带 `@` 前缀） |
 | 一般标签 | 其余全部 |
 | 自然语言 | 提示词里那段英文散文 |
+
+> 官方模型卡把前四类写成同一个方括号 `[quality/meta/year/safety tags]`，
+> 并说段内顺序任意。本工具把它们拆成四段显示与着色，理由是安全词有自己独立的
+> 档位校验、且官方推荐前缀 `masterpiece, best quality, score_7, safe` 正是这个
+> 子序。拆段**不改变**任何已有标注的字节（实测 53/53 恒等），详见
+> [标签顺序与分段](04-tag-order.md)。
 
 配色存在 `settings.json` 里，改完立刻反映到列表。

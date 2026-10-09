@@ -100,7 +100,7 @@ internal static class Harness
                 Console.WriteLine("""
                     用法: corecheck <模式> [参数]
 
-                      parity                      与 Python 实现 126 项对拍（只需 golden.json）
+                      parity                      与 Python 实现 117 项对拍（只需 golden.json）
                       defaults                    默认路径解析
                       models                      /models 响应解析（不联网）
                       reasoning   [训练集]         思考内容不许进译文（不联网）

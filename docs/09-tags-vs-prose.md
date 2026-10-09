@@ -50,7 +50,7 @@
 | 姿势 / 表情 | `standing` `sitting` `smile` | 单标签能稳定表达 |
 | 取景 / 机位 | `upper body` `from below` `dutch angle` | **这类必须用标签，见下方警告** |
 | 场景元素 | `classroom` `cherry blossoms` | 离散名词 |
-| 质量 / 年代 / 安全 | `masterpiece` `year 2025` `sensitive` | 官方控制词 |
+| 质量 / 元信息 / 年代 / 安全 | `masterpiece` `highres` `year 2025` `sensitive` | 官方控制词，各自成段 |
 
 ### 用自然语言（连续、有因果、有归属）
 

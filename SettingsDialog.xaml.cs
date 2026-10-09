@@ -81,10 +81,10 @@ public sealed partial class SettingsDialog : ContentDialog
 
     /// <summary>
     /// 按 TagSections.Colorable 生成配色控件：色块按钮 + 名称 + 当前色号。
-    /// Colorable 是六个大类 +「自然语言」——散文也要能配色，才能和标签区分开。
+    /// Colorable 是九个大类 +「自然语言」——散文也要能配色，才能和标签区分开。
     /// 行由代码生成而不是写死在 XAML 里，这样配色项增删时两边不会脱节。
     ///
-    /// 取色器放在 Flyout 里，页面上只留一个色块：六个 ColorPicker 平铺会把
+    /// 取色器放在 Flyout 里，页面上只留一个色块：十个 ColorPicker 平铺会把
     /// 对话框撑到屏幕外（实测底部「保存」按钮都够不到），而这个对话框本身
     /// 已经很长了。
     /// </summary>

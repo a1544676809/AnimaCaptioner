@@ -412,20 +412,23 @@ public sealed class VocabDb
 
     // ---------------- 排序 ----------------
 
-    private static readonly string[][] HeadGroups =
-    {
-        new[] { "masterpiece", "best quality", "very aesthetic", "good quality",
-                "normal quality", "worst quality", "low quality" },
-        Enumerable.Range(1, 9).Select(i => $"score_{i}").ToArray(),
-        new[] { "newest", "recent", "mid", "old", "oldest" }
-            .Concat(Enumerable.Range(2015, 12).Select(y => $"year {y}")).ToArray(),
-        new[] { "safe", "sensitive", "questionable", "explicit", "nsfw" },
-        new[] { "1girl", "2girls", "3girls", "4girls", "5girls", "6+girls", "multiple girls",
-                "1boy", "2boys", "multiple boys", "solo", "solo focus", "male focus",
-                "other focus", "no humans" }
-    };
+    /*
+     * 头部控制词的**分类**不再在这里定义，而是向 TagSections 要——那段方括号里的
+     * 四类（quality/meta/year/safety）加数量段，一共五个"头部段"，它们的成员表和
+     * 段间次序都由 TagSections.All 决定。
+     *
+     * 原先这里另抄了一份 HeadGroups，结果是两套分类各自漂移：这一份压根没有
+     * 元信息那一组，于是 highres / absurdres 找不到归属、掉进 body 被按热度
+     * 排进一般标签里。现在分类只有一份真源，那边加一个词这边自动跟上。
+     *
+     * 仍然属于本类的只有**段内策略**：Arrange 按 prior（训练集里的平均相对位置）
+     * 重排 body，而界面用的 TagSections.Canonicalize 刻意保留人工段内顺序。
+     * 两者服务不同场景（生图从零组装 vs 标注改已有文件），所以这个差异是
+     * 有意保留的，不是重复实现。
+     */
 
-    public static readonly string[] Ratings = { "safe", "sensitive", "questionable", "explicit", "nsfw" };
+    /// <summary>安全词表与 TagSections 同源，只额外认 Danbooru 的写法。</summary>
+    public static readonly string[] Ratings = TagSections.SafetyWords;
 
     public static List<string> Arrange(IEnumerable<string> tags, IReadOnlyDictionary<string, double> prior,
                                        string? rating = null, string? artist = null)
@@ -437,19 +440,21 @@ public sealed class VocabDb
         foreach (var t in tags)
         {
             if (t.Length == 0) continue;
-            var low = t.ToLowerInvariant();
-            if (HeadGroups.Any(g => g.Any(x => x.ToLowerInvariant() == low))) head.Add(t);
+            // 分类统一向 TagSections 要：头部五个段（质量/元信息/年代/安全/数量）
+            // 的成员表只有那一份定义，这里不再另抄一套。
+            if (TagSections.TryHeadSection(t, out _, out _)) head.Add(t);
             else if (t.StartsWith('@')) artists.Add(t);
             else body.Add(t);
         }
 
+        // 头部次序 = 段序 * 1000 + 段内次序。段内 order 不会到 1000
+        // （最大是 year 2200：PeriodWords.Length 6 + (2200-1900) = 306），
+        // 所以段与段之间不会串位。
         int HeadKey(string t)
         {
-            var low = t.ToLowerInvariant();
-            for (var gi = 0; gi < HeadGroups.Length; gi++)
-                for (var i = 0; i < HeadGroups[gi].Length; i++)
-                    if (HeadGroups[gi][i].ToLowerInvariant() == low) return gi * 1000 + i;
-            return 99000;
+            if (!TagSections.TryHeadSection(t, out var sec, out var ord)) return 99000;
+            var gi = Array.IndexOf(TagSections.HeadKeys, sec);
+            return gi < 0 ? 99000 : gi * 1000 + ord;
         }
 
         head.Sort((a, b) => HeadKey(a).CompareTo(HeadKey(b)));
