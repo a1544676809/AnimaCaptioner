@@ -36,6 +36,7 @@
     <Compile Include="..\Core\PromptDoc.cs" />
     <Compile Include="..\Core\PromptLibraryStore.cs" />
     <Compile Include="..\Core\PromptHistory.cs" />
+    <Compile Include="..\Core\PromptHistoryStore.cs" />
     <Compile Include="Sections.cs" />
     <Compile Include="RoundTrip.cs" />
     <Compile Include="Prose.cs" />

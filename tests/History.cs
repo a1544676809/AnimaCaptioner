@@ -223,6 +223,212 @@ internal static class History
             Check("重做到底后栈空", !h.CanRedo);
         }
 
+        // ================= 12. 分桶：两份文档互不干扰 =================
+        Console.WriteLine("\n=== 12. 按文档身份分桶 ===");
+        {
+            var s = new PromptHistoryStore();
+            var a = s.Attach("img:a", Tags("1girl"), "");
+            var b = s.Attach("img:b", Tags("1boy"), "");
+
+            Check("两份文档各有一个桶", s.DocumentCount == 2, $"count={s.DocumentCount}");
+            Check("初始都不可撤销", !a.CanUndo && !b.CanUndo);
+            Check("不同身份拿到不同的栈", !ReferenceEquals(a, b));
+
+            a.Push(Tags("1girl"), "", "添加标签");
+            Check("a 记了撤销点", a.CanUndo);
+            Check("b 完全不受影响", !b.CanUndo, $"undo={b.UndoCount}");
+            Check("同一身份复用同一个桶",
+                  ReferenceEquals(s.Attach("img:a", Tags("1girl"), ""), a));
+        }
+
+        // ================= 13. 离开再回来，历史还在 =================
+        Console.WriteLine("\n=== 13. 回到同一份文档，撤销能力还在 ===");
+        {
+            var s = new PromptHistoryStore();
+
+            // 编辑 a，然后离开（离开时记下内容，供下次校验）
+            var liveA = s.Attach("img:a", Tags("1girl"), "");
+            liveA.Push(Tags("1girl"), "", "添加标签");
+            var afterA = Tags("1girl", "solo");
+            s.Remember("img:a", afterA, "");
+
+            // 翻到 b 编辑，再回到 a —— 盘上内容与离开时一致
+            var liveB = s.Attach("img:b", Tags("x"), "");
+            liveB.Push(Tags("x"), "", "添加标签");
+            s.Remember("img:b", Tags("x", "y"), "");
+
+            var backA = s.Attach("img:a", afterA, "");
+            Check("回到 a 撤销栈还在", backA.CanUndo && backA.UndoCount == 1, $"undo={backA.UndoCount}");
+            Check("回到 a 拿到的是原来那个栈", ReferenceEquals(backA, liveA));
+
+            var undone = backA.Undo(afterA, "");
+            Check("撤销真的退回改动前",
+                  undone is not null && undone.Tags.SequenceEqual(Tags("1girl")),
+                  undone is null ? "null" : string.Join(",", undone.Tags));
+
+            var backB = s.Attach("img:b", Tags("x", "y"), "");
+            Check("b 的历史各自保留", backB.CanUndo && ReferenceEquals(backB, liveB));
+        }
+
+        // ================= 14. 内容被外部改过 → 丢掉历史 =================
+        Console.WriteLine("\n=== 14. 文档被外部改过时丢掉历史 ===");
+        {
+            var s = new PromptHistoryStore();
+            var live = s.Attach("img:a", Tags("1girl"), "");
+            live.Push(Tags("1girl"), "", "添加标签");
+            s.Remember("img:a", Tags("1girl", "solo"), "");
+
+            // 盘上多了一个词：别的编辑器（或脚本）改过这个 caption
+            var back = s.Attach("img:a", Tags("1girl", "solo", "external"), "");
+            Check("历史被丢弃", !back.CanUndo && back.UndoCount == 0, $"undo={back.UndoCount}");
+            Check("保留的是同一个桶", ReferenceEquals(back, live));
+            Check("文档数没变", s.DocumentCount == 1, $"count={s.DocumentCount}");
+
+            back.Push(Tags("1girl", "solo", "external"), "", "添加标签");
+            Check("丢弃之后重新编辑照样能撤销", back.CanUndo);
+        }
+
+        // ================= 15. 只有尾随空白不同不算外部改动 =================
+        Console.WriteLine("\n=== 15. 尾随空白不算外部改动 ===");
+        {
+            var s = new PromptHistoryStore();
+            var live = s.Attach("draft:x", Tags("1girl"), "");
+            live.Push(Tags("1girl"), "", "添加标签");
+            // 草稿入库时正文会被 Trim，重新解析回来可能少一个尾随空白
+            s.Remember("draft:x", Tags("1girl", "solo"), " A girl. ");
+
+            var back = s.Attach("draft:x", Tags("1girl", "solo"), "A girl.");
+            Check("只差尾随空白仍保留历史", back.CanUndo, $"undo={back.UndoCount}");
+        }
+
+        // ================= 16. 只浏览不编辑的文档不占桶 =================
+        Console.WriteLine("\n=== 16. 只浏览不编辑的文档不占桶 ===");
+        {
+            var s = new PromptHistoryStore();
+            s.Remember("img:never", Tags("a"), "");
+            Check("没有桶时 Remember 不创建桶", s.DocumentCount == 0, $"count={s.DocumentCount}");
+
+            var h = s.Attach("img:seen", Tags("a"), "");
+            Check("Attach 会建桶", s.DocumentCount == 1, $"count={s.DocumentCount}");
+            Check("但没编辑过就不可撤销", !h.CanUndo);
+        }
+
+        // ================= 17. 新草稿的共用身份必须迁移 =================
+        Console.WriteLine("\n=== 17. 首次入库时把历史搬离共用键 ===");
+        {
+            var s = new PromptHistoryStore();
+            var live = s.Attach(DraftDoc.NewIdentity, Tags("seed"), "");
+            live.Push(Tags("seed"), "", "添加标签");
+            s.Remember(DraftDoc.NewIdentity, Tags("seed", "chibi"), "");
+
+            s.Migrate(DraftDoc.NewIdentity, DraftDoc.IdentityOf("abc123"));
+
+            var back = s.Attach(DraftDoc.IdentityOf("abc123"), Tags("seed", "chibi"), "");
+            Check("历史搬到了新身份上", back.CanUndo && ReferenceEquals(back, live),
+                  $"undo={back.UndoCount}");
+
+            // 关键：下一份全新草稿拿到的是**空**历史，不会继承上一份的撤销栈
+            var fresh = s.Attach(DraftDoc.NewIdentity, Tags("seed"), "");
+            Check("下一份新草稿的历史是空的", !fresh.CanUndo, $"undo={fresh.UndoCount}");
+            Check("空身份常量与空 id 一致", DraftDoc.IdentityOf("") == DraftDoc.NewIdentity);
+        }
+
+        // ================= 18. 迁移不覆盖已存在的目标桶 =================
+        Console.WriteLine("\n=== 18. 迁移不覆盖已存在的桶 ===");
+        {
+            var s = new PromptHistoryStore();
+            var from = s.Attach("from", Tags("a"), "");
+            from.Push(Tags("a"), "", "op-from");
+
+            var to = s.Attach("to", Tags("b"), "");
+            to.Push(Tags("b"), "", "op-to");
+
+            s.Migrate("from", "to");
+            Check("目标桶保持原样",
+                  ReferenceEquals(s.Attach("to", Tags("b"), ""), to) && to.UndoLabel == "op-to",
+                  $"'{to.UndoLabel}'");
+            Check("来源桶被丢掉", !s.Attach("from", Tags("a"), "").CanUndo);
+
+            var keep = s.Attach("keep", Tags("k"), "");
+            keep.Push(Tags("k"), "", "op-keep");
+            s.Migrate("keep", "keep");
+            Check("同键迁移不丢历史",
+                  ReferenceEquals(s.Attach("keep", Tags("k"), ""), keep) && keep.CanUndo);
+
+            var before = s.DocumentCount;
+            s.Migrate("", "x");
+            s.Migrate("x", "");
+            Check("空身份迁移是空操作", s.DocumentCount == before, $"count={s.DocumentCount}");
+        }
+
+        // ================= 19. LRU 淘汰：优先丢只浏览过的 =================
+        Console.WriteLine("\n=== 19. 超过上限时优先淘汰只浏览过的 ===");
+        {
+            var s = new PromptHistoryStore { MaxDocuments = 2 };
+            var edited = s.Attach("edited", Tags("a"), "");
+            edited.Push(Tags("a"), "", "添加标签");
+            s.Remember("edited", Tags("a", "b"), "");
+
+            s.Attach("browse1", Tags("x"), "");   // 只点开过
+            s.Attach("browse2", Tags("x"), "");   // 只点开过 → 超上限
+
+            Check("文档数受上限约束", s.DocumentCount == 2, $"count={s.DocumentCount}");
+            Check("真正编辑过的那份没被挤掉",
+                  s.Attach("edited", Tags("a", "b"), "") is { CanUndo: true });
+
+            s.Attach("browse3", Tags("x"), "");
+            Check("继续淘汰的仍是只浏览过的", s.DocumentCount == 2, $"count={s.DocumentCount}");
+            Check("编辑过的历史依然在",
+                  s.Attach("edited", Tags("a", "b"), "") is { CanUndo: true });
+        }
+
+        // ================= 20. 步数上限设在仓库上 =================
+        Console.WriteLine("\n=== 20. 仓库上的步数上限作用于每一桶 ===");
+        {
+            var s = new PromptHistoryStore { MaxSteps = 2 };
+            var a = s.Attach("a", Tags("t0"), "");
+            var b = s.Attach("b", Tags("t0"), "");
+            for (var i = 1; i <= 3; i++)
+            {
+                a.Push(Tags("t" + (i - 1)), "", "op" + i);
+                b.Push(Tags("t" + (i - 1)), "", "op" + i);
+            }
+            Check("a 被裁到上限", a.UndoCount == 2, $"undo={a.UndoCount}");
+            Check("b 也被裁到上限", b.UndoCount == 2, $"undo={b.UndoCount}");
+
+            s.MaxSteps = 5;
+            Check("调大不会补出历史", a.UndoCount == 2, $"undo={a.UndoCount}");
+
+            var c = s.Attach("c", Tags("z"), "");
+            Check("新建的桶沿用当前上限", c.MaxSteps == 5, $"max={c.MaxSteps}");
+            Check("无文档时的空栈也沿用上限", s.NewDetached().MaxSteps == 5);
+            Check("空身份每次都拿到新栈",
+                  !ReferenceEquals(s.Attach(null, Tags("z"), ""), s.Attach(null, Tags("z"), "")));
+            Check("空身份不入桶", s.DocumentCount == 3, $"count={s.DocumentCount}");
+        }
+
+        // ================= 21. Drop / Clear =================
+        Console.WriteLine("\n=== 21. Drop 与 Clear ===");
+        {
+            var s = new PromptHistoryStore();
+            var a = s.Attach("a", Tags("x"), "");
+            a.Push(Tags("x"), "", "op-a");
+            var b = s.Attach("b", Tags("y"), "");
+            b.Push(Tags("y"), "", "op-b");
+            Check("两个桶", s.DocumentCount == 2, $"count={s.DocumentCount}");
+
+            s.Drop("a");
+            Check("Drop 后只剩一个", s.DocumentCount == 1, $"count={s.DocumentCount}");
+            Check("Drop 掉的历史真的没了", !s.Attach("a", Tags("x"), "").CanUndo);
+            Check("另一个桶不受影响", b.CanUndo && b.UndoLabel == "op-b", $"'{b.UndoLabel}'");
+
+            s.Clear();
+            Check("Clear 后清空全部桶", s.DocumentCount == 0, $"count={s.DocumentCount}");
+            // 调用方手上还握着 _history 这个引用，所以 Clear 必须连它一起清，
+            // 否则菜单会停在一份没人管的历史上。
+            Check("Clear 也清空已发出的栈引用", !b.CanUndo, $"undo={b.UndoCount}");
+        }
+
         Console.WriteLine(fail == 0 ? "\nhistory: 全部通过" : $"\nhistory: {fail} 项失败");
         return fail == 0 ? 0 : 1;
     }

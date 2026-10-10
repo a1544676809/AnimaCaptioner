@@ -85,9 +85,23 @@ public sealed class DraftDoc : PromptDoc
     /// </summary>
     public bool HasCustomTitle { get; set; }
 
+    /// <summary>
+    /// 尚未入库的新草稿共用的身份。
+    ///
+    /// 它是个**共用键**，所以按身份分桶的撤销历史必须特别对待
+    /// （见 <see cref="PromptHistoryStore.Migrate"/>）：首次入库拿到 id 时要把历史
+    /// 搬走，否则那份草稿从库里重新打开时历史凭空消失，而下一份全新草稿会继承
+    /// 它的撤销栈——按 Ctrl+Z 会把上一份草稿的标签退进来。
+    /// </summary>
+    public const string NewIdentity = "draft:(new)";
+
+    /// <summary>由库条目 id 得到文档身份；空 id 即"尚未入库"。</summary>
+    public static string IdentityOf(string? id) =>
+        string.IsNullOrEmpty(id) ? NewIdentity : "draft:" + id;
+
     public override PromptMode Mode => PromptMode.Draft;
     public override string DisplayName => Title.Length > 0 ? Title : DefaultTitle;
-    public override string Identity => Id.Length > 0 ? "draft:" + Id : "draft:(new)";
+    public override string Identity => IdentityOf(Id);
     public override string PrimaryActionText => "复制提示词";
 
     /// <summary>新建一份空草稿。</summary>

@@ -124,14 +124,29 @@ public sealed partial class MainWindow : Window
     private string? _undoPrompt;
 
     /// <summary>
-    /// 标签编辑的撤销 / 重做栈。**每个会改动文档的命令在动手之前记一笔**
-    /// （见 <see cref="PushUndo"/>），撤销就是退回上一个状态。
+    /// 撤销历史的**分桶仓库**：训练集里每张图、提示词库里每条草稿各有一条
+    /// 独立的撤销 / 重做记录，所以换文档不再丢撤销能力（见
+    /// <see cref="PromptHistoryStore"/>）。
+    /// </summary>
+    private readonly PromptHistoryStore _histories = new();
+
+    /// <summary>
+    /// 当前文档的撤销 / 重做栈 = <see cref="_histories"/> 里当前身份那一桶。
+    /// **每个会改动文档的命令在动手之前记一笔**（见 <see cref="PushUndo"/>），
+    /// 撤销就是退回上一个状态。没有打开文档时它是一份不入桶的空栈。
     ///
     /// 与 <see cref="_undoPrompt"/> 的分工：「撤销翻译」是"跳回上次翻译之前"，
     /// 即使中间又做了别的操作也照样能跳；这个栈是"一步一步往回退"。
     /// 两条路都保留——前者是翻译专用的一键后悔，后者是通用的。
     /// </summary>
-    private readonly PromptHistory _history = new();
+    private PromptHistory _history = new();
+
+    /// <summary>
+    /// 当前撤销历史所属的训练集根目录。换了一个数据集就清空历史：桶是按
+    /// **绝对路径**分的，上一个数据集的那些实例在这个工作集里没有意义。
+    /// 同一个数据集"重新载入"（Reload）不清——那正是要保住历史的场景。
+    /// </summary>
+    private string _historyRoot = "";
 
     /// <summary>
     /// --settings 启动开关请求的延迟动作。
@@ -282,8 +297,9 @@ public sealed partial class MainWindow : Window
         Log.Write("initialize: dataset=" + _cfg.DatasetDir + " vocab=" + _cfg.VocabDbPath);
 
         // 撤销步数是用户配置，越界值由 setter 收敛（0 = 关闭撤销）。
-        _history.MaxSteps = _cfg.UndoMaxSteps;
-        UpdateUndoMenuState();
+        // 设在仓库上：它会把已经建好的每个桶都裁一遍，之后新建的桶也按这个值。
+        _histories.MaxSteps = _cfg.UndoMaxSteps;
+        DetachHistory();
 
         // 模型补译的缓存：它是数据不是配置，所以独立 sidecar 文件。
         // 词库加载前读出来，列表首次构建时就能带上。
@@ -388,6 +404,19 @@ public sealed partial class MainWindow : Window
 
     private void LoadFolder(string dir, string? selectName = null)
     {
+        // 换了训练集就清空历史。**必须在 Select 之前**：Select 会调
+        // RememberCurrentDocument()，而 Remember 只改已有的桶（不新建），
+        // 所以清完不会又被那份旧文档填回来。
+        if (!string.Equals(_historyRoot, dir, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Write($"history cleared: dataset changed {_historyRoot} -> {dir}");
+            _histories.Clear();
+            _historyRoot = dir;
+            // 写标签模式下 Select 会提前返回（不动当前草稿），所以"摘栈"不能只靠它；
+            // 否则 _history 还指着刚被清空的旧桶，菜单状态会停在旧文案上。
+            DetachHistory();
+        }
+
         _items = Dataset.Scan(dir);
         _prior = VocabDb.OrderFromDir(dir);
 
@@ -580,14 +609,21 @@ public sealed partial class MainWindow : Window
     {
         if (_index < 0 || _index >= _items.Count)
         {
+            // 没有当前图片：把栈摘下来（撤销点属于某一张具体的图，不能留给"下一张"）
+            RememberCurrentDocument();
             _doc = null;
             _pendingTags = new List<string>();
             _proseTail = "";
             SetCaptionText("");
             RefreshStatusBar();
-            ResetHistory();
+            DetachHistory();
             return;
         }
+
+        // 换文档前先记下这一份"离开时的内容"，供下次打开时校验历史是否还有效。
+        // 位置很讲究：调用方（Next/Prev/JumpFirst）都是**先** SaveCurrent 再过来，
+        // 所以此时 _pendingTags 正是刚写进盘里的那份内容。
+        RememberCurrentDocument();
 
         _doc = new LabelDoc { Item = _items[_index], Index = _index };
         LoadCurrent();
@@ -601,6 +637,21 @@ public sealed partial class MainWindow : Window
         var entry = id is { Length: > 0 } ? _lib.Get(id) : null;
         var doc = DraftDoc.New();
 
+        // 同 OpenLabelDocument：先记下离开时那份草稿的内容。
+        RememberCurrentDocument();
+
+        // 新建草稿前必须丢掉共用键上残留的历史。
+        //
+        // "尚未入库"这个身份是**所有新草稿共用**的，所以桶里可能躺着上一份草稿的
+        // 撤销栈。正常路径上它已经随入库搬走了（FlushDraftToLibrary 里的 Migrate），
+        // 但被放弃的那份（建了又没入库）只能在这里清。判断条件带上"当前文档不是
+        // 新草稿"：否则会把**正在编辑的**这份新草稿的历史清掉。
+        if (entry is null &&
+            !string.Equals(_doc?.Identity, DraftDoc.NewIdentity, StringComparison.Ordinal))
+        {
+            _histories.Drop(DraftDoc.NewIdentity);
+        }
+
         _loading = true;
         try
         {
@@ -612,7 +663,11 @@ public sealed partial class MainWindow : Window
                 // 都当作"已有名字"，不再被下一次 Flush 重新派生覆盖。
                 doc.HasCustomTitle = true;
                 var raw = entry.Body;
-                var parsed = PromptText.Parse(raw, _vocab);
+                // 库里的正文存的是**线上格式**（带 \( \) 转义），和提示词框同一个口径，
+                // 所以回读必须走 ParseCaption 还原成字面量。用裸 Parse 的话：
+                //   1. 标签列表显示 `210 \(reverse:1999\)`，和"列表显示干净名字"的约定不符；
+                //   2. 按身份分桶的撤销历史会因为"内容和离开时对不上"被当成外部修改丢掉。
+                var parsed = ParseCaption(raw);
                 _pendingTags = new List<string>(parsed.Tags);
                 _proseTail = parsed.ProseTail;
                 SetCaptionText(raw);
@@ -639,8 +694,8 @@ public sealed partial class MainWindow : Window
 
         _doc = doc;
         RefreshStatusBar();
-        // 换文档 = 换历史。撤销点里存的是上一份草稿的标签，留着会被退进当前这份。
-        ResetHistory();
+        // 挂到这条草稿自己的撤销历史上（与 LoadCurrent 同理）。
+        AttachHistory();
     }
 
     /// <summary>
@@ -672,7 +727,15 @@ public sealed partial class MainWindow : Window
         // 窗口里显示的名字会不一致（重命名对话框也会带着占位串打开）。
         if (!doc.HasCustomTitle && entry.Title.Length > 0) doc.Title = entry.Title;
 
-        if (before != entry.Id) _cfg.DraftLastPromptId = entry.Id;
+        // 首次入库会拿到 id，**文档身份随之改变**，所以撤销历史必须跟着搬过去
+        // （_history 本身不用换：搬的是桶，栈对象还是同一个）。
+        // 不搬的两个后果：那条草稿从库里重新打开时历史凭空消失；
+        // 而"尚未入库"是个**共用键**，下一份全新草稿会继承这份的撤销栈。
+        if (before != entry.Id)
+        {
+            _histories.Migrate(DraftDoc.IdentityOf(before), DraftDoc.IdentityOf(entry.Id));
+            _cfg.DraftLastPromptId = entry.Id;
+        }
 
         _lib.Save();
         RebuildLibraryList();
@@ -912,6 +975,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // 换文档前记下这一份"离开时的内容"。**必须在 _doc 被替换之前**，
+        // 而且位置正好：调用方（Next / Prev / JumpFirst / 首张）都是先
+        // SaveCurrent 再 Select，所以此刻 _pendingTags 就是刚写进盘里的那份内容。
+        RememberCurrentDocument();
+
         if (_items.Count == 0)
         {
             _index = -1;
@@ -926,7 +994,7 @@ public sealed partial class MainWindow : Window
             PreviewBtn.IsEnabled = false;
             SelectionText.Text = "0 / 0";
             SyncListSelection();
-            ResetHistory();
+            DetachHistory();
             return;
         }
 
@@ -972,9 +1040,10 @@ public sealed partial class MainWindow : Window
 
         SyncListSelection();
 
-        // 换图片 = 换历史：撤销点存的是上一张图的标签，跨图撤销会把那些标签
-        // 显示在当前这张图的编辑区里，用户接着一保存就写错了文件。
-        ResetHistory();
+        // 挂到这张图自己的撤销历史上。它上次离开时记的内容如果和刚读到的
+        // 对得上，撤销栈就接着用（回到改错的那张图还能 Ctrl+Z）；
+        // 对不上说明 .txt 被外部改过，Attach 会丢掉那份已经失效的历史。
+        AttachHistory();
 
         // 预览窗口开着就跟着走，避免两个窗口显示不同的图
         _preview?.GoTo(_index);
@@ -2000,7 +2069,9 @@ public sealed partial class MainWindow : Window
         // 从输入框重新解析（用户可能直接改过正文）。必须用 PromptText 而不是
         // 只切逗号：提示词里可能带一段自然语言尾巴，那些段不是标签，
         // 不能写进 _pendingTags，也不能在保存时被当成标签重排。
-        var parsed = PromptText.Parse(GetCaptionText(), _vocab);
+        // 走 ParseCaption 是为了和"所有从提示词框回读的路径"同一个口径
+        // （标注模式下转义恒为关，所以这里与裸 Parse 等价，但规则只有一处）。
+        var parsed = ParseCaption(GetCaptionText());
         var tags = parsed.Tags;
         _proseTail = parsed.ProseTail;
         _pendingTags = new List<string>(tags);
@@ -2392,6 +2463,8 @@ public sealed partial class MainWindow : Window
         {
             _lib.Remove(row.Id);
             _lib.Save();
+            // 条目没了，它那份撤销历史也该丢——留着既没人能用，又占着 LRU 名额。
+            _histories.Drop(DraftDoc.IdentityOf(row.Id));
             // 删掉的正是当前这条时要开一份新草稿，否则界面停在一个已不存在的文档上
             if ((_doc as DraftDoc)?.Id == row.Id)
             {
@@ -4294,13 +4367,39 @@ private void EndEdit(bool commit, bool lostFocus = false)
     }
 
     /// <summary>
-    /// 换文档时清空历史。撤销点里存的是**上一份文档**的标签，而撤销只改内存
-    /// 不写盘——跨文档撤销会让上一张图的标签出现在当前文档里，用户接着一保存
-    /// 就把那个文件写错了。所以宁可让用户丢掉跨文档的撤销能力。
+    /// 记下当前文档"离开时的内容"，供下次打开时校验它的撤销历史还有没有效。
+    ///
+    /// <para>**只需要在离开这一刻记**：盘上 / 库里的内容正是这一刻写下去的，
+    /// 所以它就是唯一正确的基线。位置也必须在这里——各调用方都是先
+    /// <see cref="CommitCurrentDocument"/> 或 SaveCurrent 再换文档，
+    /// 所以此刻 _pendingTags 才等于刚存下去的那份内容。</para>
     /// </summary>
-    private void ResetHistory()
+    private void RememberCurrentDocument() =>
+        _histories.Remember(_doc?.Identity, _pendingTags, _proseTail);
+
+    /// <summary>
+    /// 把撤销栈挂到当前文档那一桶上（打开文档后调）。
+    ///
+    /// 桶里记的"离开时的内容"和刚读到的对不上时，<see cref="PromptHistoryStore.Attach"/>
+    /// 会丢掉那份已经失效的历史：撤销点指向的是已经不存在的内容，
+    /// 留着会让 Ctrl+Z 把外部改动退掉，而离开时的自动保存又会把它写死。
+    /// </summary>
+    private void AttachHistory()
     {
-        _history.Clear();
+        _history = _histories.Attach(_doc?.Identity, _pendingTags, _proseTail);
+        UpdateUndoMenuState();
+    }
+
+    /// <summary>
+    /// 摘下撤销栈（当前没有文档时：图片列表为空、数据集刚清空）。
+    ///
+    /// 替代的是原来"换文档就清空"的做法：现在每份文档各有一条独立历史，
+    /// 所以既没有跨文档撤销的风险（一份快照只能被它自己的文档取用），
+    /// 也不必丢掉"回到改错过的那张图还能撤销"这条能力。
+    /// </summary>
+    private void DetachHistory()
+    {
+        _history = _histories.NewDetached();
         UpdateUndoMenuState();
     }
 
@@ -4394,9 +4493,9 @@ private void EndEdit(bool commit, bool lostFocus = false)
             dlg.ApplyTo(_cfg);
             _cfg.Save();
 
-            // 撤销步数改小要立刻生效（栈会被裁到新上限）。放在 LoadFolder 之前：
-            // 那次重载会清空历史，顺序反了也不会错，但这样读起来是"先定规则再换文档"。
-            _history.MaxSteps = _cfg.UndoMaxSteps;
+            // 撤销步数改小要立刻生效：仓库会把**每一份文档的桶**都裁到新上限。
+            // （每个实例各有一条独立历史，所以这里设的是仓库而不是当前那一桶。）
+            _histories.MaxSteps = _cfg.UndoMaxSteps;
             UpdateUndoMenuState();
             Log.Write("settings applied: api=" + _cfg.ApiBaseUrl + " model=" + _cfg.Model +
                       " key=" + (string.IsNullOrEmpty(_cfg.ApiKey) ? "(none)" : "(set)") +
