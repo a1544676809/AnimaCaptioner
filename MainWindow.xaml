@@ -509,6 +509,7 @@
                               DragOver="TagList_DragOver" Drop="TagList_Drop"
                               RightTapped="TagList_RightTapped"
                               DoubleTapped="TagList_DoubleTapped"
+                              ContainerContentChanging="TagList_ContainerContentChanging"
                               PreviewKeyDown="TagList_PreviewKeyDown">
                         <!-- 打字时的按键不能被全局加速键吃掉（Del 会在编辑标签时删掉整个标签）。
                              F2 进编辑、Ctrl+C/V 复制粘贴，都挂在列表上而不是全局：

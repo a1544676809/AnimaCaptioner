@@ -1584,6 +1584,74 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 收掉一个 AutoSuggestBox 的候选弹层。
+    ///
+    /// **必须在宿主控件离开可视树（或折叠）之前调用**：弹层是 AutoSuggestBox
+    /// 模板里的 Popup，而 WinUI 3 的 Popup 是独立的顶层窗口
+    /// （Microsoft.UI.Content.PopupWindowSiteBridge）。宿主被移出可视树之后，
+    /// 那个顶层窗口**不会被隐藏**，就留下一个看不见、却仍然吃掉鼠标的窗口。
+    ///
+    /// 实测（2026-10-10）：一次就地编辑之后，候选弹层的 HWND 在标签列表上方
+    /// 存活了 6 分钟；`WindowFromPoint` 命中的是它而不是列表——那一带的行点
+    /// 不动、鼠标移上去也没反应，正是这个原因。窗口枚举确认会话里留下了三个
+    /// 这样的窗口。用同一套手法也锤出过一次复现：残留窗口一旦出现，之后连续
+    /// 8 次采样都还在（它不会自己消失，只能重启程序）。
+    ///
+    /// 这个竞态很窄（看起来只在弹层**首次展开**的那一瞬），锤出那一次之后
+    /// 无法按需重放。所以这里是按机制兜底——凡是"丢弃/折叠候选弹层宿主"的
+    /// 地方都先收干净——而不是依赖某一条能稳定复现的路径。
+    /// </summary>
+    private static void CloseSuggestions(AutoSuggestBox? box)
+    {
+        if (box is null) return;
+        ForceClose(box);
+
+        // 再补一跳：关闭可能正好落在弹层展开的中间，展开那一半随后才落地，
+        // 弹层就留在屏幕上。这一跳排在当前这轮消息之后，能盖住控件自己的
+        // Enter 处理与布局收尾。
+        var q = box.DispatcherQueue;
+        if (q is null) return;
+        q.TryEnqueue(() =>
+        {
+            try { ForceClose(box); }
+            catch { /* 宿主已被丢弃，弹层随之销毁 */ }
+        });
+    }
+
+    /// <summary>
+    /// 真正把候选弹层收掉。
+    ///
+    /// 只设 <c>IsSuggestionListOpen = false</c> 不够稳：那是控件级属性，它的
+    /// 状态机在弹层展开的过程中可能吃掉这一下（展开随后落地，弹层就留在屏幕
+    /// 上）。所以再补一手：把模板里那个 Popup 的 <c>IsOpen</c> 直接置 false
+    /// ——它收的是窗口本身，不看控件的中间态。
+    /// </summary>
+    private static void ForceClose(AutoSuggestBox box)
+    {
+        box.IsSuggestionListOpen = false;
+        box.ItemsSource = null;
+        FindSuggestionsPopup(box)?.IsOpen = false;
+    }
+
+    /// <summary>模板里那个候选弹层。名字对不上就退回子树里的第一个 Popup。</summary>
+    private static Microsoft.UI.Xaml.Controls.Primitives.Popup? FindSuggestionsPopup(DependencyObject root)
+    {
+        Microsoft.UI.Xaml.Controls.Primitives.Popup? first = null;
+        var n = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Microsoft.UI.Xaml.Controls.Primitives.Popup p)
+            {
+                if (p.Name == "SuggestionsPopup") return p;
+                first ??= p;
+            }
+            if (FindSuggestionsPopup(child) is { } found) return found;
+        }
+        return first;
+    }
+
+    /// <summary>
     /// Shift 有没有按着。Shift+Tab 要往回切，而 KeyRoutedEventArgs 里只有
     /// 一个 VirtualKey，修饰键状态得另外问。
     /// </summary>
@@ -1642,8 +1710,7 @@ public sealed partial class MainWindow : Window
         if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
         {
             if (_completing) return;          // 是我们自己填的候选，列表留着别动
-            sender.ItemsSource = null;
-            sender.IsSuggestionListOpen = false;
+            CloseSuggestions(sender);
             return;
         }
 
@@ -3156,6 +3223,20 @@ public sealed partial class MainWindow : Window
     /// <summary>Esc 取消时回到这个值，避免"改了一半又反悔"变成提交。</summary>
     private bool _editCancelled;
 
+    /// <summary>
+    /// 容器被回收去显示另一行时，收掉它里面那个行内编辑框的候选弹层。
+    ///
+    /// 兜底用的第三条路：正在编辑的行被滚出视口时，ListView 会直接回收它的
+    /// 容器，不走 EndEdit / AbandonEdit——那时弹层的宿主被移出可视树，同样会
+    /// 留下一个吃掉鼠标的孤儿窗口（见 <see cref="CloseSuggestions"/>）。
+    /// 不回收容器（首屏）时这个事件也会来，所以只在 InRecycleQueue 时动手。
+    /// </summary>
+    private void TagList_ContainerContentChanging(ListViewBase sender,
+                                                  ContainerContentChangingEventArgs args)
+    {
+        if (args.InRecycleQueue) CloseSuggestions(FindEditBox(args.ItemContainer));
+    }
+
     private void TagList_DoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
         var row = RowOf(e.OriginalSource);
@@ -3209,8 +3290,7 @@ public sealed partial class MainWindow : Window
 
         _editingBox = box;
         _editCycle.Reset();
-        box.ItemsSource = null;
-        box.IsSuggestionListOpen = false;
+        CloseSuggestions(box);
         box.Text = row.Tag;          // 每次进编辑都从当前值开始，不吃上次的半成品
 
         // 焦点和全选都落到模板里的内部 TextBox 上：AutoSuggestBox 自己没有
@@ -3272,8 +3352,7 @@ public sealed partial class MainWindow : Window
         if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
         {
             if (_completing) return;
-            sender.ItemsSource = null;
-            sender.IsSuggestionListOpen = false;
+            CloseSuggestions(sender);
             return;
         }
 
@@ -3380,6 +3459,8 @@ public sealed partial class MainWindow : Window
         if (_editingRow is null) return;
         Log.Write($"edit abandoned ({why}): '{_editingRow.Tag}'");
 
+        // 同 EndEdit：折叠输入框之前先收弹层，否则留下孤儿弹层窗口
+        CloseSuggestions(_editingBox);
         _editingRow.IsEditing = false;
         _editingRow = null;
         _editingBox = null;
@@ -3400,6 +3481,11 @@ private void EndEdit(bool commit, bool lostFocus = false)
         // 用存下来的引用读内容，而不是重新去可视树里找：行被虚拟化回收后
         // 容器就找不到了，那时用户已经敲进去的内容会被读成 null 而丢掉。
         var typed = _editingBox?.Text ?? row.Tag;
+
+        // 收候选弹层要赶在 row.IsEditing = false 之前：那一下会把输入框折叠，
+        // 宿主一离开可视树，弹层的顶层窗口就再也没人收，变成一个吃掉鼠标的
+        // 孤儿窗口（见 CloseSuggestions 里的实测记录）。
+        CloseSuggestions(_editingBox);
         _editingBox = null;
         row.IsEditing = false;
 
