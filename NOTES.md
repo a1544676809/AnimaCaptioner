@@ -72,6 +72,17 @@
   主题前景色。
 - `TextChanged` 的委托类型是 `RoutedEventHandler`，不是 `TextChangedEventHandler`
   （后者是 `TextBox` 的）。签名写错编译期直接报「没有与委托匹配的重载」。
+- **它自己的原生撤销会被"改色"污染。** 实测：往空框里打 `alpha beta` 再按 `Ctrl+Z`，
+  前两次按下去界面上什么都没变，第 3 次才退成 `alpha bet`——**每退一个字符要按两三次**。
+  原因是 `ApplyPromptColors` 的 `CharacterFormat` 改动也被 RichEdit 记进了同一个撤销栈，
+  `Ctrl+Z` 先退掉那些看不见的格式操作。
+  这是**既有行为**（早于撤销/重做功能），不是新引入的；`Windows.UI.Text.ITextDocument`
+  没有"暂停记录撤销"的 API，所以没在那一版里处理。要修的话方向是给改色套
+  `BeginEditCollection`/`EndEditCollection`（把格式改动并进同一个撤销单元），
+  但没验证过副作用。
+- **它会先吃掉 `Ctrl+Z` 并置 Handled。** 把 `Ctrl+Z` 挂在 `RootGrid` 上当加速键、
+  回调里再判断"该不该我管"是**不生效的**——探针日志在提示词框里一行都没打。
+  换句话说"焦点在输入框里就归输入框"是框架保证的，自己那层判断只是第二道防线。
 
 ---
 
@@ -167,6 +178,21 @@ viewport=349`。
 - **构造期不能开设置对话框。** `--settings` 一开始直接调 `ShowSettingsAsync()`，
   而 `_cfg` 要等 `Initialize()`（挂在 `RootLoaded` 上）才赋值，于是构造函数里第一句
   取 `cfg.ApiBaseUrl` 就 NullReferenceException。改成延迟到 `Initialize()` 之后。
+- **`AutoSuggestBox` 内部的 `TextBox` 会吞掉 `Ctrl+Z`，冒泡阶段收不到。**
+  给「添加标签」框加 `KeyDown="AddTagBox_KeyDown"` 处理 `Ctrl+Z` 是无效的——事件在
+  内部那个 `TextBox` 就被处理并标记 Handled 了，压根不上浮。必须用
+  `PreviewKeyDown`（隧道，从根往下先经过外层）。`Tab` 能走冒泡那条路是因为
+  焦点切换不由内部 `TextBox` 处理。
+  同一处的判据也必须挑对时机：**只在框里空着时**才把 `Ctrl+Z` 让给标签历史，
+  框里有字时归输入框自己（那是用户在改刚打的字）。
+- **UIA `SetFocus()` 在容器元素上会抛「目标元素无法接收焦点」。** `AutoSuggestBox`、
+  `ListView` 都是这样，能接收键盘焦点的是它们的子元素（内部 `Edit`、`ListItem`）。
+  写自动化脚本时要先试元素本身、失败再往下找 `Edit`/`ListItem`，否则一整条
+  键盘驱动的用例会全部失败，而失败原因看着像产品缺陷。
+- **UIA 看不到滚动视口之外的元素。** 设置对话框的内容高约 1790 DIP、视口只有 420 DIP，
+  放在下半部分的控件在 `TreeWalker` 里根本不存在（`FindFirst` 返回 null），
+  截图里也看不到。要断言它得先用 `ScrollPattern.SetScrollPercent` 滚过去。
+  这一条排查起来很像"控件没生成"。
 
 ---
 

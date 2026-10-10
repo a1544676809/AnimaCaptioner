@@ -124,6 +124,16 @@ public sealed partial class MainWindow : Window
     private string? _undoPrompt;
 
     /// <summary>
+    /// 标签编辑的撤销 / 重做栈。**每个会改动文档的命令在动手之前记一笔**
+    /// （见 <see cref="PushUndo"/>），撤销就是退回上一个状态。
+    ///
+    /// 与 <see cref="_undoPrompt"/> 的分工：「撤销翻译」是"跳回上次翻译之前"，
+    /// 即使中间又做了别的操作也照样能跳；这个栈是"一步一步往回退"。
+    /// 两条路都保留——前者是翻译专用的一键后悔，后者是通用的。
+    /// </summary>
+    private readonly PromptHistory _history = new();
+
+    /// <summary>
     /// --settings 启动开关请求的延迟动作。
     /// 不能在构造期直接开设置对话框：_cfg 要等 Initialize() 才赋值，
     /// 而 Initialize() 挂在 RootGrid.Loaded 上。构造期就开的话 _cfg 还是 null，
@@ -159,6 +169,17 @@ public sealed partial class MainWindow : Window
         AddAccel(Windows.System.VirtualKey.Right, Windows.System.VirtualKeyModifiers.Menu,
                  () => Navigate(1));
 
+        // Ctrl+Z / Ctrl+Y 只在焦点**不在**文本输入控件里时才归我们。
+        // 提示词框（RichEditBox）和两个输入框都有它们自己的撤销，抢过来会让
+        // "在提示词框里打完字按 Ctrl+Z"变成撤销标签操作、而不是撤销刚打的字。
+        // 所以这里刻意不吃这个键，让它继续走到焦点控件手里（见 AddAccelIf）。
+        AddAccelIf(() => !TextInputFocused() && _history.CanUndo,
+                   Windows.System.VirtualKey.Z, Windows.System.VirtualKeyModifiers.Control,
+                   UndoTagEdit);
+        AddAccelIf(() => !TextInputFocused() && _history.CanRedo,
+                   Windows.System.VirtualKey.Y, Windows.System.VirtualKeyModifiers.Control,
+                   RedoTagEdit);
+
         // 记住上次看到的文件，下次启动直接定位
         Closed += (_, _) =>
         {
@@ -189,6 +210,29 @@ public sealed partial class MainWindow : Window
     {
         var a = new KeyboardAccelerator { Key = key, Modifiers = mods };
         a.Invoked += (_, e) => { e.Handled = true; act(); };
+        RootGrid.KeyboardAccelerators.Add(a);
+    }
+
+    /// <summary>
+    /// 挂一个"只在轮到自己时才吃掉"的加速键。
+    ///
+    /// <paramref name="mine"/> 返回 false 时不置 Handled，按键继续往下走、
+    /// 由焦点控件自己处理。这是 Ctrl+Z 能同时满足两种语义的关键：
+    /// 焦点在标签列表/按钮上时是我们的撤销，焦点在提示词框里时是它自己的撤销。
+    ///
+    /// 对比 <see cref="AddAccel"/>：那个无条件吃键，适合 Ctrl+S 这种
+    /// "到哪儿都是我们的事"的键。
+    /// </summary>
+    private void AddAccelIf(Func<bool> mine, Windows.System.VirtualKey key,
+                            Windows.System.VirtualKeyModifiers mods, Action act)
+    {
+        var a = new KeyboardAccelerator { Key = key, Modifiers = mods };
+        a.Invoked += (_, e) =>
+        {
+            if (!mine()) return;
+            e.Handled = true;
+            act();
+        };
         RootGrid.KeyboardAccelerators.Add(a);
     }
 
@@ -236,6 +280,10 @@ public sealed partial class MainWindow : Window
 
         _cfg = AppSettings.Load();
         Log.Write("initialize: dataset=" + _cfg.DatasetDir + " vocab=" + _cfg.VocabDbPath);
+
+        // 撤销步数是用户配置，越界值由 setter 收敛（0 = 关闭撤销）。
+        _history.MaxSteps = _cfg.UndoMaxSteps;
+        UpdateUndoMenuState();
 
         // 模型补译的缓存：它是数据不是配置，所以独立 sidecar 文件。
         // 词库加载前读出来，列表首次构建时就能带上。
@@ -537,6 +585,7 @@ public sealed partial class MainWindow : Window
             _proseTail = "";
             SetCaptionText("");
             RefreshStatusBar();
+            ResetHistory();
             return;
         }
 
@@ -590,6 +639,8 @@ public sealed partial class MainWindow : Window
 
         _doc = doc;
         RefreshStatusBar();
+        // 换文档 = 换历史。撤销点里存的是上一份草稿的标签，留着会被退进当前这份。
+        ResetHistory();
     }
 
     /// <summary>
@@ -875,6 +926,7 @@ public sealed partial class MainWindow : Window
             PreviewBtn.IsEnabled = false;
             SelectionText.Text = "0 / 0";
             SyncListSelection();
+            ResetHistory();
             return;
         }
 
@@ -919,6 +971,10 @@ public sealed partial class MainWindow : Window
         SelectionText.Text = $"{_index + 1} / {_items.Count}";
 
         SyncListSelection();
+
+        // 换图片 = 换历史：撤销点存的是上一张图的标签，跨图撤销会把那些标签
+        // 显示在当前这张图的编辑区里，用户接着一保存就写错了文件。
+        ResetHistory();
 
         // 预览窗口开着就跟着走，避免两个窗口显示不同的图
         _preview?.GoTo(_index);
@@ -1659,6 +1715,11 @@ public sealed partial class MainWindow : Window
         InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
                            .HasFlag(CoreVirtualKeyStates.Down);
 
+    /// <summary>Ctrl 有没有按着。Ctrl+Z / Ctrl+Y 在输入框里要判修饰键。</summary>
+    private static bool CtrlDown() =>
+        InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
+                           .HasFlag(CoreVirtualKeyStates.Down);
+
     /// <summary>
     /// Tab / Shift+Tab 补全。返回 true 表示这次按键被吃掉了（要阻止它继续
     /// 去做焦点切换）。
@@ -1727,6 +1788,32 @@ public sealed partial class MainWindow : Window
         if (e.Key != Windows.System.VirtualKey.Tab) return;
         if (sender is not AutoSuggestBox box) return;
         if (CompleteFrom(box, _addCycle, ShiftDown())) e.Handled = true;
+    }
+
+    /// <summary>
+    /// 加完标签后焦点仍留在这个框里（<see cref="AddTag"/> 会清空它），而
+    /// "打完标签按回车、马上想反悔"正是最常按 Ctrl+Z 的时刻。框空着时输入框
+    /// 自己的原生撤销无事可做，所以这时把 Ctrl+Z / Ctrl+Y 让给标签历史；
+    /// 框里有字时仍然归输入框自己（那是用户在改刚打的字）。
+    ///
+    /// <para>**必须用 PreviewKeyDown（隧道）而不是 KeyDown（冒泡）**：AutoSuggestBox
+    /// 内部的 TextBox 会把 Ctrl+Z 处理掉并标记 Handled，冒泡阶段的事件根本到不了
+    /// 外层这个处理器。隧道是从根往下走，先经过这里。</para>
+    /// </summary>
+    private void AddTagBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (!CtrlDown() || AddTagBox.Text.Length > 0) return;
+
+        if (e.Key == Windows.System.VirtualKey.Z && _history.CanUndo)
+        {
+            UndoTagEdit();
+            e.Handled = true;
+        }
+        else if (e.Key == Windows.System.VirtualKey.Y && _history.CanRedo)
+        {
+            RedoTagEdit();
+            e.Handled = true;
+        }
     }
 
     /// <summary>从候选里选一个：把候选还原成纯标签填进输入框。</summary>
@@ -1819,6 +1906,7 @@ public sealed partial class MainWindow : Window
         if (_pendingTags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)))
             return (true, $"「{tag}」已经在列表里了。");
 
+        PushUndo("添加标签");
         _pendingTags.Add(tag);
         // 加完立刻按大类归位：否则新加的标签会落在列表末尾，
         // 和它所属的框分离开，看起来像没生效。
@@ -1863,6 +1951,7 @@ public sealed partial class MainWindow : Window
         }
 
         _undoPrompt = GetCaptionText();   // 复用「撤销翻译」这一条后悔路径
+        PushUndo("规整大类顺序");
         _pendingTags = after;
         CommitPrompt();
         UndoTranslateBtn.IsEnabled = true;
@@ -2213,6 +2302,8 @@ public sealed partial class MainWindow : Window
     private void ClearPrompt_Click(object sender, RoutedEventArgs e)
     {
         if (_doc is null) return;
+        // 已经空了就不记撤销点，否则 Ctrl+Z 会退到一个同样空白的界面
+        if (GetCaptionText().Trim().Length > 0) PushUndo("清空提示词");
         SetCaptionText("");
         _pendingTags = new List<string>();
         _proseTail = "";
@@ -2342,6 +2433,7 @@ public sealed partial class MainWindow : Window
         }
 
         _undoPrompt = GetCaptionText();
+        PushUndo("按热度排序");
         _pendingTags = after;
         CommitPrompt();
         UndoTranslateBtn.IsEnabled = true;
@@ -2628,6 +2720,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        PushUndo(delta < 0 ? "上移" : "下移");
         _pendingTags = res.Tags;
         var keep = res.MovedTo.Select(i => _pendingTags[i]).ToList();
 
@@ -2680,6 +2773,7 @@ public sealed partial class MainWindow : Window
         }
 
         // 按 PendingIndex 删：列表显示顺序已被大类重排，用显示下标会删错行。
+        PushUndo("删除标签");
         var before = _pendingTags.Count;
         _pendingTags = TagOrder.Delete(_pendingTags, sel.Select(s => s.PendingIndex));
         var removed = before - _pendingTags.Count;
@@ -3001,6 +3095,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        PushUndo("粘贴标签");
         _pendingTags.AddRange(res.Tags);
         CommitPrompt();
         SelectTagRow(res.Tags[^1]);
@@ -3071,6 +3166,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        PushUndo("规范化标签");
         _pendingTags = work;
         CommitPrompt();
 
@@ -3560,6 +3656,10 @@ private void EndEdit(bool commit, bool lostFocus = false)
         var i = _pendingTags.FindIndex(t => string.Equals(t, oldTag, StringComparison.OrdinalIgnoreCase));
         if (i < 0) return;
 
+        // 名字没变就不记撤销点：TagEdit 规范化后与原写法相同是常见情况
+        // （比如本来就已经是正典名），记了会让 Ctrl+Z 退到一个一模一样的界面。
+        if (!string.Equals(oldTag, newTag, StringComparison.Ordinal)) PushUndo("重命名标签");
+
         _pendingTags[i] = newTag;
         _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
 
@@ -3681,8 +3781,16 @@ private void EndEdit(bool commit, bool lostFocus = false)
             // 拖拽只在同一段内有可见效果：落点若在别的大类里，Canonicalize 会把
             // 它拨回自己那段（那才是符合官方顺序的位置）。段内的相对次序被保留，
             // 所以正常的段内拖拽是所见即所得的。
-            _pendingTags = TagSections.Canonicalize(rest, _vocab);
-            CommitPrompt();
+            var after = TagSections.Canonicalize(rest, _vocab);
+
+            // 拖回原位是常见操作（手一抖就放下了），结果与现在相同就不记撤销点、
+            // 也不重建列表——否则 Ctrl+Z 会退到一个看不出区别的界面。
+            if (!after.SequenceEqual(_pendingTags, StringComparer.Ordinal))
+            {
+                PushUndo("拖动排序");
+                _pendingTags = after;
+                CommitPrompt();
+            }
 
             TagList.SelectedItems.Clear();
             foreach (var t in moving)
@@ -4014,6 +4122,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
             // 撤销点存的是整段提示词，不只是标签——翻译动的可能只是散文
             _undoPrompt = GetCaptionText();
+            PushUndo("翻译散文");
 
             var replaced = AppendModeBox.IsChecked == true && _proseTail.Length > 0;
             if (replaced)
@@ -4122,9 +4231,86 @@ private void EndEdit(bool commit, bool lostFocus = false)
         return s.Trim();
     }
 
+    // ================= 撤销 / 重做 =================
+
+    /// <summary>
+    /// 记一个撤销点。**所有会改动文档的命令在真正动手之前调它**，
+    /// 参数是操作名（用于「已撤销：添加标签」）。
+    ///
+    /// 位置很讲究：必须放在各命令自己那句"没东西可改就提前返回"**之后**，
+    /// 否则一次什么都没做的点击也会被记成一个撤销点，用户按 Ctrl+Z 会发现
+    /// "撤销了但界面没变"。
+    /// </summary>
+    private void PushUndo(string label)
+    {
+        if (_history.Push(_pendingTags, _proseTail, label)) UpdateUndoMenuState();
+    }
+
+    private void UndoEdit_Click(object sender, RoutedEventArgs e) => UndoTagEdit();
+    private void RedoEdit_Click(object sender, RoutedEventArgs e) => RedoTagEdit();
+
+    private void UndoTagEdit()
+    {
+        var snap = _history.Undo(_pendingTags, _proseTail);
+        if (snap is null) { TranslateInfoText.Text = "没有可撤销的操作。"; return; }
+        ApplySnapshot(snap, "已撤销");
+    }
+
+    private void RedoTagEdit()
+    {
+        var snap = _history.Redo(_pendingTags, _proseTail);
+        if (snap is null) { TranslateInfoText.Text = "没有可重做的操作。"; return; }
+        ApplySnapshot(snap, "已重做");
+    }
+
+    /// <summary>
+    /// 把一份快照恢复成当前状态。**只改内存**：不写 .txt、不写提示词库。
+    /// 落盘仍旧走保存那条路——撤销顺手写文件会在用户没按保存的情况下
+    /// 静默改掉训练集里的 caption。
+    /// </summary>
+    private void ApplySnapshot(PromptSnapshot snap, string verb)
+    {
+        _pendingTags = new List<string>(snap.Tags);
+        _proseTail = snap.ProseTail;
+
+        CommitPrompt();
+        RefreshStatusBar();
+        UpdateUndoMenuState();
+
+        TranslateInfoText.Text = snap.Label.Length > 0 ? $"{verb}：{snap.Label}" : verb;
+        Log.Write($"history {verb}: {snap.Label} -> {_pendingTags.Count} tags " +
+                  $"undo={_history.UndoCount} redo={_history.RedoCount}");
+    }
+
+    /// <summary>按栈的现状刷新「编辑」菜单两项：能不能点、以及下一次退掉的是哪一步。</summary>
+    private void UpdateUndoMenuState()
+    {
+        UndoEditItem.IsEnabled = _history.CanUndo;
+        RedoEditItem.IsEnabled = _history.CanRedo;
+
+        // 文案带上操作名，点之前就知道会退掉什么。
+        UndoEditItem.Text = _history.CanUndo ? $"撤销（{_history.UndoLabel}）" : "撤销";
+        RedoEditItem.Text = _history.CanRedo ? $"重做（{_history.RedoLabel}）" : "重做";
+    }
+
+    /// <summary>
+    /// 换文档时清空历史。撤销点里存的是**上一份文档**的标签，而撤销只改内存
+    /// 不写盘——跨文档撤销会让上一张图的标签出现在当前文档里，用户接着一保存
+    /// 就把那个文件写错了。所以宁可让用户丢掉跨文档的撤销能力。
+    /// </summary>
+    private void ResetHistory()
+    {
+        _history.Clear();
+        UpdateUndoMenuState();
+    }
+
     private void UndoTranslate_Click(object sender, RoutedEventArgs e)
     {
         if (_undoPrompt is null) return;
+
+        // 「撤销翻译」本身也要可撤销：否则用户按了它之后没法反悔，
+        // 而它动的是一整段译文，比一次标签操作损失大得多。
+        PushUndo("撤销翻译");
 
         // 恢复整段提示词，而不只是标签：翻译动的是散文尾巴，
         // 只还原标签的话「撤销」看不出任何变化。
@@ -4135,6 +4321,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
         _undoPrompt = null;
 
         RefreshTagRows();
+        RefreshStatusBar();
         UndoTranslateBtn.IsEnabled = false;
         UndoMenuItem.IsEnabled = false;
         TranslateInfoText.Text = "已撤销上次翻译。";
@@ -4206,6 +4393,11 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
             dlg.ApplyTo(_cfg);
             _cfg.Save();
+
+            // 撤销步数改小要立刻生效（栈会被裁到新上限）。放在 LoadFolder 之前：
+            // 那次重载会清空历史，顺序反了也不会错，但这样读起来是"先定规则再换文档"。
+            _history.MaxSteps = _cfg.UndoMaxSteps;
+            UpdateUndoMenuState();
             Log.Write("settings applied: api=" + _cfg.ApiBaseUrl + " model=" + _cfg.Model +
                       " key=" + (string.IsNullOrEmpty(_cfg.ApiKey) ? "(none)" : "(set)") +
                       " colors=" + string.Join(",", TagSections.Colorable.Select(

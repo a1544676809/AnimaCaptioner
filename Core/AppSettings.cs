@@ -167,6 +167,20 @@ public sealed class AppSettings
     /// </summary>
     public bool EscapeTagParens { get; set; } = true;
 
+    // ---- 编辑 ----
+
+    /// <summary>
+    /// 撤销栈的最大步数。0 表示关闭撤销。
+    ///
+    /// <para>两个模式共用同一个值：撤销栈存的是"当前文档的标签 + 散文"，
+    /// 而标注的一张图与写标签的一份草稿在这一点上没有区别，按模式分两套
+    /// 只会让用户在设置里看到两个含义相同的输入框。</para>
+    ///
+    /// <para>越界值由 <see cref="PromptHistory.MaxSteps"/> 的 setter 收敛，
+    /// 所以这里不做校验——手改 settings.json 填进一个荒唐的值也不会出事。</para>
+    /// </summary>
+    public int UndoMaxSteps { get; set; } = PromptHistory.DefaultMaxSteps;
+
     /// <summary>
     /// tag 列表里各大类的框线颜色，"#RRGGBB"。
     /// 键是 TagSections 里的大类 key（quality/meta/period/safety/count/

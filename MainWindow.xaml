@@ -76,6 +76,23 @@
                 </MenuFlyoutItem>
             </MenuBarItem>
 
+            <!-- 撤销 / 重做。两个模式下都在。
+                 刻意**不挂**真的 KeyboardAccelerator：菜单项上的加速键是**窗口级**的，
+                 挂上就会把提示词框（RichEditBox）自己的原生撤销一起劫持——在框里
+                 打字后按 Ctrl+Z，会变成撤销标签操作而不是撤销刚打的字。
+                 真正的绑定在构造函数里用 AddAccelIf 挂到 RootGrid 上，且只在焦点
+                 不在文本输入控件里时才吃这个键；这里只留快捷键提示。 -->
+            <MenuBarItem Title="编辑">
+                <MenuFlyoutItem x:Name="UndoEditItem" Text="撤销" Click="UndoEdit_Click"
+                                KeyboardAcceleratorTextOverride="Ctrl+Z" IsEnabled="False">
+                    <MenuFlyoutItem.Icon><SymbolIcon Symbol="Undo" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
+                <MenuFlyoutItem x:Name="RedoEditItem" Text="重做" Click="RedoEdit_Click"
+                                KeyboardAcceleratorTextOverride="Ctrl+Y" IsEnabled="False">
+                    <MenuFlyoutItem.Icon><SymbolIcon Symbol="Redo" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
+            </MenuBarItem>
+
             <!-- 提示词库：只在写标签模式有意义，整条菜单按模式隐藏。
                  用 Visibility 而不是两套菜单，理由同上（避免加速键重复）。 -->
             <MenuBarItem x:Name="PromptMenu" Title="提示词" Visibility="Collapsed">
@@ -485,7 +502,8 @@
                                     TextChanged="AddTagBox_TextChanged"
                                     SuggestionChosen="AddTagBox_SuggestionChosen"
                                     QuerySubmitted="AddTagBox_QuerySubmitted"
-                                    KeyDown="AddTagBox_KeyDown">
+                                    KeyDown="AddTagBox_KeyDown"
+                                    PreviewKeyDown="AddTagBox_PreviewKeyDown">
                         <AutoSuggestBox.QueryIcon>
                             <FontIcon Glyph="&#xE710;" />
                         </AutoSuggestBox.QueryIcon>

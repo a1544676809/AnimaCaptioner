@@ -57,6 +57,8 @@ public sealed partial class SettingsDialog : ContentDialog
         VocabBox.Text = cfg.VocabDbPath;
         SeedBox.Text = cfg.SeedPath;
 
+        UndoStepsBox.Value = cfg.UndoMaxSteps;
+
         // 顺序有讲究：只把配置**读进**控件，绝不在构造期写回。
         // （早先的写法把 ApplyTo 那段误放进构造函数，于是构造时用复选框的默认值
         //   把 cfg.SearchEnabled 覆盖成了 false —— 保存后搜索就莫名关掉了。）
@@ -437,6 +439,10 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.DatasetDir = DatasetBox.Text.Trim();
         cfg.VocabDbPath = VocabBox.Text.Trim();
         cfg.SeedPath = SeedBox.Text.Trim();
+
+        // 步数越界由 PromptHistory.MaxSteps 收敛，这里只管把 NaN 兜住
+        cfg.UndoMaxSteps = (int)(double.IsNaN(UndoStepsBox.Value)
+            ? PromptHistory.DefaultMaxSteps : UndoStepsBox.Value);
 
         // 搜索配置。地址留空时按后端填回默认值，避免出现"看着配好了、
         // 实际调不通"的空地址状态。

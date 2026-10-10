@@ -166,6 +166,19 @@
 
             <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
 
+            <!-- 编辑 -->
+            <TextBlock Text="编辑" FontWeight="SemiBold" />
+
+            <NumberBox x:Name="UndoStepsBox" Header="最大撤销步数（0 = 关闭撤销）"
+                       Minimum="0" Maximum="1000" SmallChange="10"
+                       SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left" />
+
+            <TextBlock FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                       Text="撤销覆盖标签和自然语言的改动：添加、删除、移动、改名、粘贴、规范化、重排、翻译、清空。Ctrl+Z 撤销、Ctrl+Y 重做，焦点在标签列表里时生效（提示词框里是它自己的撤销，两者不冲突）。撤销只改内存，不写文件——要落盘仍需保存。" />
+
+            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+
             <!-- 标签大类配色 -->
             <TextBlock Text="标签大类配色" FontWeight="SemiBold" />
             <TextBlock FontSize="11" TextWrapping="Wrap"

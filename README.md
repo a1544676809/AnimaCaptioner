@@ -12,6 +12,11 @@
 它和标注模式共用中栏、右栏和全部词库能力，只换了左栏、菜单和「主操作」。
 详见 [写标签模式](docs/11-write-tag-mode.md)。
 
+两个模式都有**撤销 / 重做**（`Ctrl+Z` / `Ctrl+Y`，或菜单「编辑」）：标签的增删改移、
+粘贴、规范化、重排、翻译、清空都能一步步退回，步数在设置里可调
+（默认 100 步，填 0 表示关闭）。撤销只改内存、**不写文件**——要落盘仍然按保存。
+换图片或换提示词会清空历史，绝不会把上一张图的标签带进当前这份文档。
+
 全部在本机运行，词库、校验、翻译都不出局域网。
 
 ## 环境
@@ -75,6 +80,7 @@ Core/            纯逻辑层，不引用 WinUI，所以能被 net8 回归程序
   TagEscape.cs     生图用的括号转义（只做 ( ) ，判据是词库认不认得）
   PromptDoc.cs     两个模式的「当前文档」抽象（LabelDoc / DraftDoc）
   PromptLibraryStore.cs  写标签模式的历史与预设库（独立 JSON）
+  PromptHistory.cs 撤销 / 重做栈（快照式，只改内存不落盘）
   CaptionFile.cs   caption 读写，严格保字节
   ...
 MainWindow.xaml(.cs)      主界面：标注模式 + 写标签模式（共用中栏与右栏）
@@ -99,6 +105,7 @@ dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
 .\bin\Release\net8.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
 .\bin\Release\net8.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
+.\bin\Release\net8.0\corecheck.exe history     # 撤销 / 重做栈：步数上限、裁剪、往返、去重（纯逻辑）
 ```
 
 `parity` 与 Python 参考实现做 117 项对拍，只需要随仓库分发的 `tests/golden.json`。
