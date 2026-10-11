@@ -81,6 +81,16 @@
                            SpinButtonPlacementMode="Compact" />
             </Grid>
 
+            <!-- AI 助手。默认关着：翻译器那条路是实测调出来的确定性转换
+                 （长度跟输入走、方向词不许丢、不许加质量词），把它换成对话面板
+                 应当是用户主动做的选择。面板里仍然留着一键翻译。 -->
+            <TextBlock Text="AI 助手" FontWeight="SemiBold" />
+            <CheckBox x:Name="AgentEnabledBox" Content="打开 AI 助手面板"
+                      Click="AgentEnabledBox_Click"
+                      ToolTipService.ToolTip="把右栏下半部分从「中文描述 → 英文自然语言」换成对话面板：能读当前图片、能查词库，并提出一组标签和一段散文——但要你点「应用」才写进提示词。关掉时仍是原来的确定性翻译器。" />
+            <CheckBox x:Name="AgentAttachImageBox" Content="标注模式下把当前图片发给模型"
+                      ToolTipService.ToolTip="读图自动打标靠这一条。图片先缩到长边 1024 的 JPEG 再内联发送（约 150 KB）；原图不会上传到任何别的地方，但请确认接口地址是你信任的服务。接口或模型不支持图片输入时会如实报错，不会静默退回凭空描述。" />
+
             <!-- 联网搜索 -->
             <TextBlock Text="联网搜索（模型可调用的工具）" FontWeight="SemiBold" />
             <TextBlock FontSize="11" TextWrapping="Wrap"

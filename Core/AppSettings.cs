@@ -103,6 +103,26 @@ public sealed class AppSettings
     public double Temperature { get; set; } = 0.3;
     public int TimeoutSeconds { get; set; } = 300;
 
+    // ---- AI 助手 ----
+
+    /// <summary>
+    /// 打开 AI 助手面板：右栏下半部分从"确定性的中译英翻译器"换成能读图、能查词库、
+    /// 能提案的对话面板。
+    ///
+    /// **默认关闭**，两个理由：它要一个支持图片输入的接口才完整；而更重要的，
+    /// 翻译器那条路是四轮实测调出来的确定性转换（长度跟输入走、方向词不许丢、
+    /// 不许加质量词，见 <see cref="LlmClient.ProseSystemPrompt"/>），把它藏起来
+    /// 不该是默认行为。助手面板里仍然留着一键翻译，所以关掉不等于失去它。
+    /// </summary>
+    public bool AgentEnabled { get; set; }
+
+    /// <summary>
+    /// 标注模式下把当前图片一起发给模型。**默认开**——读图自动打标是这个面板
+    /// 存在的主要理由。接口或模型不支持图片时，程序会如实报错并建议关掉它，
+    /// 而不是静默退回"凭空描述"。
+    /// </summary>
+    public bool AgentAttachImage { get; set; } = true;
+
     /// <summary>上次打开的文件，下次启动自动定位。</summary>
     public string LastFile { get; set; } = "";
 

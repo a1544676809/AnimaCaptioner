@@ -39,17 +39,13 @@ public sealed class TagTranslator
     /// </summary>
     private const int ToolBudget = 1600;
 
-    private const string ToolName = "web_search";
-
     /// <summary>
-    /// 工具说明。刻意强调"你已经知道的就别查"——一律强制先搜会把它已经会的
-    /// 也搜一遍，既慢又容易被无关结果带偏（实测过：同一个模型对 `cat smile`
-    /// 直接给答案，对 `kimekomi` 才发起搜索，这个判断该由它自己做）。
+    /// 这一路的工具集。说明直接复用 <see cref="AgentKit.WebSearchTool"/>——
+    /// 工具描述是承重的（"你已经知道的就别查"，实测过同一模型对 `cat smile`
+    /// 直接答、对 `kimekomi` 才发起搜索，这个判断该由它自己做），所以两个入口
+    /// 必须逐字一致，不能让它们各自漂移。
     /// </summary>
-    private const string ToolDescription =
-        "Search the web for the meaning of an image tag. Use this when you do not " +
-        "know what a tag means, especially for character names, artist names, memes, " +
-        "or unusual garment and pose terms. Do not use it for tags you already know.";
+    private static readonly AgentTool[] Tools = { AgentKit.WebSearchTool };
 
     public async Task<Outcome> TranslateAsync(AppSettings cfg, string tag, CancellationToken ct = default)
     {
@@ -71,8 +67,8 @@ public sealed class TagTranslator
             if (useSearch)
             {
                 var turn = await _llm.ChatWithToolsAsync(
-                    cfg, LlmClient.TagGlossSystemPrompt, messages,
-                    ToolName, ToolDescription, ToolBudget, ct).ConfigureAwait(false);
+                    cfg, LlmClient.TagGlossSystemPrompt, messages, Tools, ToolBudget, ct)
+                    .ConfigureAwait(false);
 
                 if (!turn.Ok)
                     return new Outcome(false, "", false, searched, rounds, turn.Error, "");
@@ -108,8 +104,8 @@ public sealed class TagTranslator
                                           "the Chinese translation, or UNKNOWN. No explanation."
                         });
                         var final = await _llm.ChatWithToolsAsync(
-                            cfg, LlmClient.TagGlossSystemPrompt, messages, ToolName,
-                            ToolDescription, ToolBudget, ct).ConfigureAwait(false);
+                            cfg, LlmClient.TagGlossSystemPrompt, messages, Tools,
+                            ToolBudget, ct).ConfigureAwait(false);
                         content = final.Ok ? final.Content : "";
                         if (!final.Ok && final.Error.Length > 0) notes.Add(final.Error);
                     }

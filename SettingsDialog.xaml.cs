@@ -48,6 +48,9 @@ public sealed partial class SettingsDialog : ContentDialog
         ModelBox.Text = cfg.Model;
         ApiKeyBox.Password = cfg.ApiKey;
         DisableThinkingBox.IsChecked = cfg.DisableThinking;
+        AgentEnabledBox.IsChecked = cfg.AgentEnabled;
+        AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
+        SyncAgentBoxes();
         MaxTokensBox.Value = cfg.MaxTokens;
         TempBox.Value = cfg.Temperature;
         TimeoutBox.Value = cfg.TimeoutSeconds;
@@ -425,6 +428,17 @@ public sealed partial class SettingsDialog : ContentDialog
         Log.Write("section colours reset to defaults");
     }
 
+    // ---- AI 助手 ----
+
+    /// <summary>面板关着时"是否发图"没有意义，灰掉而不是隐藏，免得用户以为丢了一项。</summary>
+    private void AgentEnabledBox_Click(object sender, RoutedEventArgs e) => SyncAgentBoxes();
+
+    private void SyncAgentBoxes()
+    {
+        if (AgentAttachImageBox is null || AgentEnabledBox is null) return;
+        AgentAttachImageBox.IsEnabled = AgentEnabledBox.IsChecked == true;
+    }
+
     /// <summary>把对话框里的值写回配置对象。保存动作由调用方负责。</summary>
     public void ApplyTo(AppSettings cfg)
     {
@@ -432,6 +446,8 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.Model = ModelBox.Text.Trim();
         cfg.ApiKey = ApiKeyBox.Password;
         cfg.DisableThinking = DisableThinkingBox.IsChecked == true;
+        cfg.AgentEnabled = AgentEnabledBox.IsChecked == true;
+        cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
         cfg.Temperature = double.IsNaN(TempBox.Value) ? 0.3 : TempBox.Value;
         cfg.TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value);

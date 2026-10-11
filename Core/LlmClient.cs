@@ -117,6 +117,23 @@ public sealed class LlmClient : IDisposable
                                   List<ToolCall> Calls, string Raw, string Error);
 
     /// <summary>
+    /// 要随消息一起发出去的一张图。
+    ///
+    /// 走 data URI 内联而不是先上传：这条接口（OpenAI 兼容）本来就这么收图，
+    /// 而且**训练集的图不该被传到第三方存储**上——内联至少让"图片出了这台机器"
+    /// 这件事只发生在用户自己配置的那个接口上。
+    ///
+    /// 注意字节数：原图可达 8.4 MB（3258×3978），base64 之后还要再涨三分之一，
+    /// 所以调用方必须先缩到长边 1024 量级（见 <see cref="ImagePayload"/>）。
+    /// </summary>
+    public sealed record ChatImage(string MimeType, byte[] Bytes)
+    {
+        public string DataUri =>
+            "data:" + (string.IsNullOrWhiteSpace(MimeType) ? "image/jpeg" : MimeType) +
+            ";base64," + Convert.ToBase64String(Bytes);
+    }
+
+    /// <summary>
     /// 单个标签翻译的系统提示。
     ///
     /// 两个刻意的设计：
@@ -149,8 +166,16 @@ public sealed class LlmClient : IDisposable
         "or unusual garment and pose terms. Do not use it for tags you already know.";
 
     /// <summary>发一次 chat/completions。永不抛异常，错误放在返回值里，便于 UI 直接显示。</summary>
+    public Task<ChatResult> ChatAsync(AppSettings cfg, string systemPrompt, string userPrompt,
+                                      CancellationToken ct = default) =>
+        ChatAsync(cfg, systemPrompt, userPrompt, null, ct);
+
+    /// <summary>
+    /// 同上，但可以带一张图。读图那条路（AI 助手）走这个重载：它把图挂在
+    /// user 消息上，其余一切不变——尤其是那条"思考内容永不进结果"的规则。
+    /// </summary>
     public async Task<ChatResult> ChatAsync(AppSettings cfg, string systemPrompt, string userPrompt,
-                                            CancellationToken ct = default)
+                                            ChatImage? image, CancellationToken ct = default)
     {
         LastError = "";
         if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl))
@@ -172,7 +197,7 @@ public sealed class LlmClient : IDisposable
             ["messages"] = new JsonArray
             {
                 new JsonObject { ["role"] = "system", ["content"] = systemPrompt },
-                new JsonObject { ["role"] = "user", ["content"] = userPrompt }
+                UserMessage(userPrompt, image)
             },
             ["max_tokens"] = budget,
             ["temperature"] = cfg.Temperature
@@ -384,7 +409,7 @@ public sealed class LlmClient : IDisposable
     /// </summary>
     public async Task<ToolTurn> ChatWithToolsAsync(
         AppSettings cfg, string systemPrompt, List<JsonObject> messages,
-        string toolName, string toolDescription, int maxTokens,
+        IReadOnlyList<AgentTool> tools, int maxTokens,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl))
@@ -392,31 +417,18 @@ public sealed class LlmClient : IDisposable
 
         var url = cfg.ApiBaseUrl.TrimEnd('/') + "/chat/completions";
 
-        var tools = new JsonArray
-        {
-            new JsonObject
+        var toolJson = new JsonArray();
+        foreach (var t in tools)
+            toolJson.Add(new JsonObject
             {
                 ["type"] = "function",
                 ["function"] = new JsonObject
                 {
-                    ["name"] = toolName,
-                    ["description"] = toolDescription,
-                    ["parameters"] = new JsonObject
-                    {
-                        ["type"] = "object",
-                        ["properties"] = new JsonObject
-                        {
-                            ["query"] = new JsonObject
-                            {
-                                ["type"] = "string",
-                                ["description"] = "The search query.",
-                            }
-                        },
-                        ["required"] = new JsonArray { "query" },
-                    },
+                    ["name"] = t.Name,
+                    ["description"] = t.Description,
+                    ["parameters"] = t.Parameters.DeepClone(),
                 },
-            }
-        };
+            });
 
         var msgs = new JsonArray();
         msgs.Add(new JsonObject { ["role"] = "system", ["content"] = systemPrompt });
@@ -426,11 +438,18 @@ public sealed class LlmClient : IDisposable
         {
             ["model"] = string.IsNullOrWhiteSpace(cfg.Model) ? "local" : cfg.Model,
             ["messages"] = msgs,
-            ["tools"] = tools,
-            ["tool_choice"] = "auto",
             ["max_tokens"] = maxTokens,
             ["temperature"] = cfg.Temperature,
         };
+
+        // 空工具列表 = 这一轮不给工具。**不能下发 `"tools": []`**：有些服务
+        // 会当成"要求调用工具但没有工具可用"而报错，另一些会照旧自由发挥。
+        // 干脆不带这个字段，语义最干净。
+        if (tools.Count > 0)
+        {
+            body["tools"] = toolJson;
+            body["tool_choice"] = "auto";
+        }
 
         // **这一路刻意不下发 enable_thinking=false**，即使全局关着思考也一样。
         //
@@ -543,6 +562,27 @@ public sealed class LlmClient : IDisposable
         }
         catch { /* 参数不是合法 JSON：退回原文，总比丢掉这次调用好 */ }
         return "";
+    }
+
+    /// <summary>构造一条 user 消息。带图时按 OpenAI 的 multimodal parts 形状发。</summary>
+    public static JsonObject UserMessage(string text, ChatImage? image)
+    {
+        if (image is null)
+            return new JsonObject { ["role"] = "user", ["content"] = text };
+
+        return new JsonObject
+        {
+            ["role"] = "user",
+            ["content"] = new JsonArray
+            {
+                new JsonObject { ["type"] = "text", ["text"] = text },
+                new JsonObject
+                {
+                    ["type"] = "image_url",
+                    ["image_url"] = new JsonObject { ["url"] = image.DataUri },
+                },
+            },
+        };
     }
 
     /// <summary>构造一条 assistant 消息（原样回灌 tool_calls，id 不能改）。</summary>

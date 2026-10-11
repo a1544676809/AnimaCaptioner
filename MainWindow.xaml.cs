@@ -536,6 +536,9 @@ public sealed partial class MainWindow : Window
         PrimaryActionItem.Text = draft ? "复制提示词" : "保存";
 
         if (draft) UpdatePinMenuItemState();
+
+        // 右栏下半部分：翻译器 / AI 助手，二选一（设置里决定）
+        ApplyAgentChrome(draft);
     }
 
     /// <summary>
@@ -4091,6 +4094,400 @@ private void EndEdit(bool commit, bool lostFocus = false)
     //    两个入口都产 tag 会互相打架，而且模型直接写英文 tag 实测是错的
     //    （会写成散文，用语法约束又会选错词义）。
 
+    // ---- AI 助手面板 ----
+    //
+    // 与上面那个翻译器的关系：**两条路并存，不是替换**。翻译器是四轮实测
+    // 调出来的确定性转换（长度跟输入走、方向词不许丢、不许加质量词，
+    // 见 LlmClient.ProseSystemPrompt 的长注释）；助手面板换来的是能读图、
+    // 能查词库、能一次提出多项改动，代价是不再逐字可复现。所以面板只顶替
+    // 右栏的**位置**，设置里关掉就退回翻译器，而面板里也留着一键翻译。
+
+    private readonly TagAgent _agent = new();
+
+    /// <summary>
+    /// 对话历史。**只活在这一次运行里**，而且换文档就清空——历史里带着
+    /// 上一张图的描述，跨文档继续问会让模型把 A 图的画面说到 B 图上。
+    /// </summary>
+    private readonly List<AgentTurn> _agentHistory = new();
+
+    /// <summary>正在等模型。期间禁掉发送，避免连点发出一串请求。</summary>
+    private bool _agentBusy;
+
+    /// <summary>
+    /// 这次是否把图发给模型。写标签模式没有图片，恒为 false；标注模式下还要
+    /// 勾了「带当前图片」。**图和设置里的开关是两件事**：开关是默认值，
+    /// 复选框是这一屏的即时意愿。
+    /// </summary>
+    private bool AgentImageWanted =>
+        AgentImageBox.IsChecked == true && CurrentImagePath() is not null;
+
+    /// <summary>标注模式下当前这张图的路径；写标签模式或没选中图时返回 null。</summary>
+    private string? CurrentImagePath() =>
+        _mode == PromptMode.Label && _index >= 0 && _index < _items.Count
+            ? _items[_index].ImagePath
+            : null;
+
+    /// <summary>按设置决定右栏下半部分露哪一个面板。跟着 ApplyModeChrome 一起走。</summary>
+    private void ApplyAgentChrome(bool draft)
+    {
+        var on = _cfg.AgentEnabled;
+        TranslatorPanel.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        AgentPanel.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!on) return;
+
+        // 「带当前图片」只在标注模式有意义：写标签模式左栏是提示词库，没有图。
+        AgentImageBox.IsEnabled = !draft && _index >= 0 && _index < _items.Count;
+        AgentImageBox.IsChecked = _cfg.AgentAttachImage && AgentImageBox.IsEnabled;
+
+        if (AgentFeed.Children.Count == 0)
+            AgentAddNote("说一句要它做什么，或直接描述画面。它会先查词库，" +
+                         "然后把「要加的标签 + 一段散文」摆出来——**要你点应用才写进去**。" +
+                         (AgentImageBox.IsChecked == true
+                             ? "这一屏会带上当前这张图。"
+                             : "没带图时它只会照你的文字写。"));
+    }
+
+    private void AgentImageBox_Click(object sender, RoutedEventArgs e)
+    {
+        _cfg.AgentAttachImage = AgentImageBox.IsChecked == true;
+        _cfg.Save();
+        Log.Write($"agent attach image: {_cfg.AgentAttachImage}");
+    }
+
+    private void AgentClear_Click(object sender, RoutedEventArgs e)
+    {
+        ResetAgentConversation();
+        Log.Write("agent: conversation cleared");
+    }
+
+    private void AgentInput_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        // Ctrl+Enter 发送、单个 Enter 换行：反过来会让"想写两段"变成"发了两条"。
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control);
+        if (e.Key == Windows.System.VirtualKey.Enter && ctrl.HasFlag(CoreVirtualKeyStates.Down))
+        {
+            e.Handled = true;
+            _ = AgentSendAsync();
+        }
+    }
+
+    private async void AgentSend_Click(object sender, RoutedEventArgs e) => await AgentSendAsync();
+
+    private async Task AgentSendAsync()
+    {
+        if (_agentBusy) return;
+
+        var text = AgentInput.Text.Trim();
+        if (text.Length == 0) return;
+
+        if (_doc is null)
+        {
+            await Info("还没有打开的文档", "先打开一张图（标注模式）或一条草稿（写标签模式），" +
+                                          "助手需要一个可以改动的地方。");
+            return;
+        }
+
+        _agentBusy = true;
+        AgentRing.IsActive = true;
+        AgentSendBtn.IsEnabled = false;
+        AgentInput.Text = "";
+        SetAgentStatus("正在思考…");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var asked = new AgentTurn(true, text);
+        AgentAddUserBubble(text);
+
+        LlmClient.ChatImage? image = null;
+        try
+        {
+            // 读图失败不阻断：不带图问一句仍然是有用的，但要如实说明这次没带图。
+            if (AgentImageWanted)
+            {
+                var path = CurrentImagePath();
+                if (path is not null) image = await ImagePayload.LoadAsync(path);
+                if (image is null) SetAgentStatus("这张图读不出来，这次不带图。");
+            }
+
+            _agentHistory.Add(asked);
+
+            // 每轮现建 host：词库可能在这中间才加载完，而 host 是抓着 _vocab 的。
+            var host = new AgentHost(_cfg, _llm, _search, _vocab);
+            var outcome = await _agent.RunAsync(host, _agentHistory.ToList(), image);
+
+            if (!outcome.Ok)
+            {
+                // 失败的一轮不进历史：留着会让下一轮带着一段没有答案的上下文，
+                // 模型会以为它已经回过话了。
+                _agentHistory.Remove(asked);
+                AgentAddNote("调用失败：" + outcome.Error);
+                SetAgentStatus("失败：" + outcome.Error);
+                Log.Write("agent failed: " + outcome.Error);
+                return;
+            }
+
+            _agentHistory.Add(new AgentTurn(false, outcome.Reply));
+            AgentAddReply(outcome);
+
+            sw.Stop();
+            SetAgentStatus($"{(image is not null ? "带图 · " : "")}{outcome.Rounds} 轮 · " +
+                           $"{sw.Elapsed.TotalSeconds:F1} 秒" +
+                           (outcome.Found.Count > 0 ? $" · 查过 {outcome.Found.Count} 条" : ""));
+            Log.Write($"agent done: rounds={outcome.Rounds} proposal={(outcome.Proposal is not null)} " +
+                      $"found={outcome.Found.Count} ms={sw.ElapsedMilliseconds}");
+        }
+        catch (Exception ex)
+        {
+            _agentHistory.Remove(asked);
+            AgentAddNote("出错了：" + ex.Message);
+            SetAgentStatus("出错了：" + ex.Message);
+            Log.Write("agent exception: " + ex);
+        }
+        finally
+        {
+            _agentBusy = false;
+            AgentRing.IsActive = false;
+            AgentSendBtn.IsEnabled = true;
+        }
+    }
+
+    private void SetAgentStatus(string text) => AgentStatusText.Text = text;
+
+    /// <summary>系统说明（不是模型说的话）。灰一点、小一点，别和回答混在一起。</summary>
+    private void AgentAddNote(string text)
+    {
+        AgentFeed.Children.Add(new TextBlock
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+        });
+        AgentScrollToEnd();
+    }
+
+    private void AgentAddUserBubble(string text)
+    {
+        var body = new TextBlock
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+        };
+        AgentFeed.Children.Add(new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            MaxWidth = 460,
+            Padding = new Thickness(10, 6, 10, 6),
+            CornerRadius = new CornerRadius(8),
+            Background = (Brush)Application.Current.Resources["AccentFillColorSecondaryBrush"],
+            Child = body,
+        });
+        AgentScrollToEnd();
+    }
+
+    /// <summary>
+    /// 模型这一轮的回复。有提案时**回复是配角**——真正要看的是下面那张提案卡片，
+    /// 所以这里只放一句话，把版面让给卡片。
+    /// </summary>
+    private void AgentAddReply(TagAgent.Outcome outcome)
+    {
+        var stack = new StackPanel { Spacing = 6 };
+        var reply = outcome.Reply.Trim();
+        if (reply.Length > 0)
+            stack.Children.Add(new TextBlock
+            {
+                Text = reply,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+            });
+
+        if (outcome.Proposal is { } p && !p.IsEmpty)
+            stack.Children.Add(BuildProposalCard(p));
+
+        AgentFeed.Children.Add(stack);
+        AgentScrollToEnd();
+    }
+
+    /// <summary>
+    /// 提案卡片。三项都在这里：要加的标签（逐个可加，也可一次全加）、
+    /// 散文、以及"应用"——**应用是一次动作，所以是一个撤销点**（见 ApplyAgentProposal）。
+    ///
+    /// 词库查不到的标签**照旧列出来**并标成橙色，和中间那个标签列表的规则一致：
+    /// 词库不是全集（实测 679 个真实标签里 74 个查不到，`@` 触发词、
+    /// `2 fingers` 都在其中），静默丢掉等于偷改用户的提示词。
+    /// </summary>
+    private Border BuildProposalCard(AgentProposal p)
+    {
+        var body = new StackPanel { Spacing = 8 };
+        var buttons = new List<Button>();
+
+        if (p.HasTags)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"建议添加 {p.AddTags.Count} 个标签" +
+                       (p.Unknown.Count > 0 ? $"（其中 {p.Unknown.Count} 个词库查不到）" : ""),
+                FontSize = 12,
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+            });
+
+            var list = new StackPanel { Spacing = 4 };
+            foreach (var tag in p.AddTags)
+            {
+                var known = p.Known.Any(k => string.Equals(k, tag, StringComparison.OrdinalIgnoreCase));
+                var cn = _vocab?.LookupCn(tag) ?? "";
+                var label = new StringBuilder("＋ ").Append(tag);
+                if (cn.Length > 0) label.Append("  ·  ").Append(cn);
+
+                var btn = new Button
+                {
+                    Content = label.ToString(),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(8, 4, 8, 4),
+                    Foreground = known
+                        ? (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"]
+                        : new SolidColorBrush(Microsoft.UI.Colors.DarkOrange),
+                };
+                ToolTipService.SetToolTip(btn, known
+                    ? "词库里查得到这个标签"
+                    : "词库查不到——加进去仍然会原样写进提示词（这个词可能只是词库没有）");
+
+                var captured = tag;
+                btn.Click += (_, _) =>
+                {
+                    ApplyAgentProposal(new AgentProposal(new[] { captured },
+                        known ? new[] { captured } : Array.Empty<string>(),
+                        known ? Array.Empty<string>() : new[] { captured },
+                        "", false, ""), single: true);
+                    btn.IsEnabled = false;
+                };
+                buttons.Add(btn);
+                list.Children.Add(btn);
+            }
+            body.Children.Add(list);
+        }
+
+        if (p.HasProse)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = p.ReplaceProse ? "英文散文（替换现有的）" : "英文散文（追加到末尾）",
+                FontSize = 12,
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+            });
+            body.Children.Add(new Border
+            {
+                Padding = new Thickness(8, 6, 8, 6),
+                CornerRadius = new CornerRadius(6),
+                Background = (Brush)Application.Current.Resources["ControlFillColorDefaultBrush"],
+                Child = new TextBlock
+                {
+                    Text = p.Prose,
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true,
+                    FontFamily = new FontFamily("Consolas"),
+                },
+            });
+        }
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var applyBtn = new Button
+        {
+            Content = p.HasTags && p.HasProse
+                ? $"应用（{p.AddTags.Count} 个标签 + 散文）"
+                : p.HasTags ? $"应用（{p.AddTags.Count} 个标签）" : "应用（散文）",
+        };
+        applyBtn.Click += (_, _) =>
+        {
+            ApplyAgentProposal(p, single: false);
+            applyBtn.IsEnabled = false;
+            foreach (var b in buttons) b.IsEnabled = false;
+        };
+        actions.Children.Add(applyBtn);
+        body.Children.Add(actions);
+
+        return new Border
+        {
+            Padding = new Thickness(10),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+            Background = (Brush)Application.Current.Resources["CardBackgroundFillColorSecondaryBrush"],
+            Child = body,
+        };
+    }
+
+    /// <summary>
+    /// 把一条提案落进当前文档。**一次调用 = 一个撤销点**，所以 Ctrl+Z 一下能全退。
+    ///
+    /// 刻意不走 AddTagCore：那个每次都会自己记一个撤销点，一条 8 个标签的提案
+    /// 就会占掉 8 步。这里直接动 _pendingTags，只在开头记一笔。
+    /// </summary>
+    private void ApplyAgentProposal(AgentProposal p, bool single)
+    {
+        if (_doc is null) return;
+        if (p.IsEmpty && !single) return;
+
+        PushUndo("AI 助手");
+
+        var added = 0;
+        foreach (var tag in p.AddTags)
+        {
+            if (_pendingTags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase))) continue;
+            _pendingTags.Add(tag);
+            added++;
+        }
+        if (added > 0) _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
+        CommitPrompt();
+
+        if (p.HasProse)
+        {
+            // 与翻译器完全同一条落法（替换 -> 换掉散文尾巴；追加 -> AppendProse
+            // 再回读），不另写一份——散文边界的规则在 PromptText 里，重复实现
+            // 必然会漂移。
+            if (p.ReplaceProse || _proseTail.Trim().Length == 0)
+            {
+                _proseTail = ". " + p.Prose;
+                CommitPrompt();
+            }
+            else
+            {
+                SetCaptionText(PromptText.AppendProse(GetCaptionText(), p.Prose));
+                var parsed = ParseCaption(GetCaptionText());
+                _pendingTags = new List<string>(parsed.Tags);
+                _proseTail = parsed.ProseTail;
+                RefreshTagRows();
+            }
+        }
+
+        Log.Write($"agent applied: tags+={added} prose={(p.HasProse ? (p.ReplaceProse ? "replace" : "append") : "none")} " +
+                  $"total={_pendingTags.Count} single={single}");
+    }
+
+    /// <summary>
+    /// 聊天的滚动条跟到最新一条。
+    ///
+    /// **要补一跳**：卡片是刚刚才 Add 进去的，第一跳时布局还没算完，
+    /// ScrollableHeight 读到的还是旧值——实测结果是停在上一条的位置，
+    /// 而最新那张提案卡片（要用户点应用的那张）正好在视野外。
+    /// </summary>
+    private void AgentScrollToEnd()
+    {
+        DispatcherQueue.TryEnqueue(AgentScrollToEndNow);
+        _ = AgentScrollToEndLaterAsync();
+    }
+
+    private void AgentScrollToEndNow() =>
+        AgentScroll.ChangeView(null, AgentScroll.ScrollableHeight, null);
+
+    private async Task AgentScrollToEndLaterAsync()
+    {
+        await Task.Delay(150);
+        DispatcherQueue.TryEnqueue(AgentScrollToEndNow);
+    }
+
     private async void Translate_Click(object sender, RoutedEventArgs e) => await TranslateAsync();
 
     private async Task TranslateAsync()
@@ -4388,6 +4785,29 @@ private void EndEdit(bool commit, bool lostFocus = false)
     {
         _history = _histories.Attach(_doc?.Identity, _pendingTags, _proseTail);
         UpdateUndoMenuState();
+
+        // 换文档就重开一段对话。历史里带着上一份文档的画面，跨文档继续问会让
+        // 模型把 A 图的描述说到 B 图上——撤销历史能按身份分桶，对话不能：
+        // 它没有"离开时的内容"可以对账，只能整段丢掉。
+        ResetAgentConversation();
+    }
+
+    /// <summary>清空助手对话（换文档、点「清空对话」）。</summary>
+    private void ResetAgentConversation()
+    {
+        _agentHistory.Clear();
+
+        // 构造期这些控件还没生成（AttachHistory 可能早于 InitializeComponent 的某些路径）
+        if (AgentFeed is null) return;
+
+        AgentFeed.Children.Clear();
+        AgentStatusText.Text = "";
+
+        // **两个方向都要走这里**：设置里把助手关掉时也要把翻译器放回来。
+        // 早先这里写成"只在开着时刷新面板"，结果关掉之后面板会一直留在屏幕上
+        // ——设置保存后恰好也走 LoadFolder → AttachHistory 这条路，所以它是唯
+        // 一个能让改动立刻生效的地方。
+        ApplyAgentChrome(_mode == PromptMode.Draft);
     }
 
     /// <summary>

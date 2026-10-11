@@ -46,13 +46,14 @@ public sealed class TagSearchAgent
     /// </summary>
     private const int Budget = 1600;
 
-    private const string ToolName = "search_tags";
-
     /// <summary>
     /// 工具说明。刻意写"每次都要先查"——和翻译那条路的"不知道才查"正好相反，
     /// 因为这里的目标是**库里的真实标签名**，不是模型的知识。
+    ///
+    /// 公开是因为 AI 助手（<see cref="AgentKit.SearchTool"/>）复用同一个工具，
+    /// 两处的说明必须逐字一致——不然同一个工具在两个入口表现不同，最难查。
     /// </summary>
-    private const string ToolDescription =
+    public const string ToolDescription =
         "Search the local Danbooru/Anima tag database. Call this FIRST, before answering, " +
         "for every question: the database is the only source of valid tag names and you " +
         "must not name tags from memory. Use SHORT queries of one or two words " +
@@ -122,7 +123,7 @@ public sealed class TagSearchAgent
             rounds++;
 
             var turn = await _llm.ChatWithToolsAsync(
-                cfg, SystemPrompt, messages, ToolName, ToolDescription, Budget, ct)
+                cfg, SystemPrompt, messages, new[] { AgentKit.SearchTool }, Budget, ct)
                 .ConfigureAwait(false);
 
             if (!turn.Ok)

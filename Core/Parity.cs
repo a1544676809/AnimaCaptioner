@@ -86,6 +86,40 @@ public static class Parity
             }
 
             // ---- 排序 ----
+            //
+            // 从这一节起要比的是"参考实现对**同一个数据集**的输出"，所以先确认
+            // 数据集真的是同一份。不确认的后果实测过：把数据集切到另一批图之后
+            // 再跑，prior/arrange/audit 三节会一起炸出**八十多条**看着像代码坏了的
+            // 差异（prior.size 671→44、audit.files 53→1…），而真正的原因只是
+            // settings.json 里的数据集目录换了——这种失败模式比"跳过"危险得多。
+            var auditWant = root.GetProperty("audit");
+            var wantFiles = auditWant.GetProperty("files").GetInt32();
+            var haveFiles = Dataset.Scan(cfg.DatasetDir).Count(i => i.HasCaption);
+            if (haveFiles != wantFiles)
+            {
+                Emit($"""
+
+                    ! 跳过与数据集有关的那几节：数据集对不上
+                      golden.json 是针对 {wantFiles} 个 caption 生成的一份快照，
+                      而当前配置的数据集里有 {haveFiles} 个：
+                        {cfg.DatasetDir}
+                      这几节（prior / arrange / build / audit）比的是"参考实现对同一个
+                      数据集的输出"，数据集不同结果必然不同。
+                      换回那份数据集，或在设置里把数据集目录改回去，再跑这一项。
+
+                    """);
+                Emit($"parity: {_pass} passed, {_fail} failed（与数据集有关的几节未验证）");
+
+                if (outPath is not null)
+                {
+                    try { File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false)); }
+                    catch (Exception ex) { Console.WriteLine("write result failed: " + ex.Message); }
+                }
+                // 不是 0：这几节**没有被验证**，报绿等于说谎。2 = 无法验证（与
+                // "缺数据集/词库"同一个约定）。
+                return 2;
+            }
+
             var prior = VocabDb.OrderFromDir(cfg.DatasetDir);
             var priorGolden = root.GetProperty("prior");
             CheckEq("prior.size", priorGolden.GetProperty("size").GetInt32(), prior.Count);

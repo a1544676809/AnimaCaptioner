@@ -36,6 +36,10 @@ internal static class Harness
                 // 纯解析，不联网也不需要数据集
                 return CoreCheck.Models.Run();
 
+            case "agent":
+                // 纯逻辑 + 假 host，不联网也不需要词库
+                return CoreCheck.Agent.Run();
+
             case "reasoning":
                 // 思考内容不许进译文。核心断言不需要数据集；
                 // 给了数据集就额外扫一遍真实 caption 查假阳性。
@@ -116,6 +120,7 @@ internal static class Harness
                       parity                      与 Python 实现 117 项对拍（只需 golden.json）
                       defaults                    默认路径解析
                       models                      /models 响应解析（不联网）
+                      agent                       AI 助手（尺寸 / 提案解析 / 工具循环，不联网）
                       reasoning   [训练集]         思考内容不许进译文（不联网）
                       sections   <训练集>          归类 / 排序 / 颜色 / 结构编辑
                       prose      <训练集> <词库> <seed>

@@ -19,6 +19,13 @@
 所以翻到别的图再翻回来照样能退，也绝不会把上一张图的标签带进当前这份文档。文档被
 别的程序改过时，那一份的历史会作废并从空历史开始。
 
+设置里还能把右栏下半部分换成 **AI 助手**（默认关）：一个能**看当前这张图**、
+能查词库的对话面板。它把改动摆成一张提案卡片——要加的标签、要写的英文散文——
+**点了「应用」才写进提示词**，而一次应用就是一个撤销点。没有对应标签的概念会被
+写成散文而不是硬造标签；词库查不到的写法（例如画师触发词 `@syrstyle`）仍然保留为标签。
+原来的翻译器没有删，关掉助手面板就退回去。
+详见 [AI 助手](docs/12-ai-assistant.md)。
+
 全部在本机运行，词库、校验、翻译都不出局域网。
 
 ## 环境
@@ -90,7 +97,7 @@ MainWindow.xaml(.cs)      主界面：标注模式 + 写标签模式（共用中
 SettingsDialog.xaml(.cs)  设置
 HelpWindow.xaml(.cs)     帮助窗口
 MarkdownRenderer.cs      Markdig → WinUI 元素
-docs/                   帮助文档（10 个模块，随程序分发）
+docs/                   帮助文档（11 个模块，随程序分发）
   dev/                  开发文档：架构取舍、文档格式、本训练集审计（不随程序分发）
 Assets/app.ico          应用图标（9 档尺寸 16–256px）
 tools/icon/             图标的 SVG 源文件与生成脚本
@@ -109,11 +116,16 @@ dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
 .\bin\Release\net8.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
 .\bin\Release\net8.0\corecheck.exe history     # 撤销 / 重做：栈语义、按文档分桶、外部改动作废、LRU 淘汰（纯逻辑）
+.\bin\Release\net8.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
 ```
 
 `parity` 与 Python 参考实现做 117 项对拍，只需要随仓库分发的 `tests/golden.json`。
 （条数会随训练集内容变化——`golden.json` 是参考实现对**当前数据集**的输出快照，
 改了 caption 就要用生成脚本重新出一份。）
+它有一半的检查（prior / arrange / build / audit）比的是"参考实现对**同一个数据集**的
+输出"，所以那几项读的是设置里当前的数据集目录。**数据集对不上时它会跳过那几节并以
+退出码 2 结束**，而不是刷出一堆看起来像代码坏了的差异——2 的含义是"没能验证"，
+不是"通过"（与"缺数据集/词库"同一个约定）。
 其余几项要用到你的训练集和词库，它们在仓库外，按参数或环境变量传入：
 
 ```powershell
@@ -155,7 +167,7 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 ### 2. 自带文档：CC BY-NC-SA 4.0
 
-`docs/` **顶层**的 10 个 `.md`（帮助窗口左侧目录的内容）采用
+`docs/` **顶层**的 11 个 `.md`（帮助窗口左侧目录的内容）采用
 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)：署名、**非商业**、
 相同方式共享。
 

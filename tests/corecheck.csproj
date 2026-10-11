@@ -37,6 +37,9 @@
     <Compile Include="..\Core\PromptLibraryStore.cs" />
     <Compile Include="..\Core\PromptHistory.cs" />
     <Compile Include="..\Core\PromptHistoryStore.cs" />
+    <Compile Include="..\Core\AgentKit.cs" />
+    <Compile Include="..\Core\TagAgent.cs" />
+    <Compile Include="..\Core\ImageSizing.cs" />
     <Compile Include="Sections.cs" />
     <Compile Include="RoundTrip.cs" />
     <Compile Include="Prose.cs" />
@@ -49,6 +52,7 @@
     <Compile Include="Escape.cs" />
     <Compile Include="Defaults.cs" />
     <Compile Include="Models.cs" />
+    <Compile Include="Agent.cs" />
     <Compile Include="Reasoning.cs" />
     <Compile Include="RichApi.cs" />
     <Compile Include="Harness.cs" />

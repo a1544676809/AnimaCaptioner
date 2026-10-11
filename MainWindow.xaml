@@ -720,7 +720,7 @@
                        "You can mix tags and natural language in arbitrary order."
                        "If using pure natural langauge, more descriptive is better.
                         Aim for at least 2 sentences." -->
-                <Grid Grid.Row="2">
+                <Grid x:Name="TranslatorPanel" Grid.Row="2">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -771,6 +771,63 @@
                     </Grid>
 
                     <TextBlock Grid.Row="3" x:Name="TranslateInfoText" FontSize="11" Margin="2,4,0,0"
+                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </Grid>
+
+                <!-- 下（另一副面孔）：AI 助手。设置里打开后顶替上面的翻译器。
+                     对话 + 提案：模型给出「加这几个标签 + 这段散文」，但**不直接写**，
+                     要用户点应用才落进提示词——一次应用是一个撤销点。
+                     翻译器那条确定性的路没被删掉：面板顶上留着一键翻译。 -->
+                <Grid x:Name="AgentPanel" Grid.Row="2" Visibility="Collapsed">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Margin="2,0,0,6" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock FontWeight="SemiBold" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" Text="AI 助手" />
+                        <CheckBox Grid.Column="1" x:Name="AgentImageBox" Content="带当前图片"
+                                  VerticalAlignment="Center" Click="AgentImageBox_Click"
+                                  ToolTipService.ToolTip="把左栏选中的这张图缩到长边 1024 后一起发出去。写标签模式没有图片，这一项会自动灰掉。" />
+                        <Button Grid.Column="2" x:Name="AgentClearBtn" Content="清空对话"
+                                Padding="8,4" Click="AgentClear_Click" />
+                    </Grid>
+
+                    <Border Grid.Row="1" CornerRadius="8" BorderThickness="1"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                        <ScrollViewer x:Name="AgentScroll" Padding="10"
+                                      VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="AgentFeed" Spacing="10" />
+                        </ScrollViewer>
+                    </Border>
+
+                    <Grid Grid.Row="2" Margin="0,6,0,0" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="AgentInput" AcceptsReturn="True" TextWrapping="Wrap"
+                                 MinHeight="56" MaxHeight="120"
+                                 KeyDown="AgentInput_KeyDown"
+                                 PlaceholderText="说一句要它做什么，或直接描述画面。Ctrl+Enter 发送" />
+                        <ProgressRing Grid.Column="1" x:Name="AgentRing" Width="18" Height="18"
+                                      IsActive="False" VerticalAlignment="Center" />
+                        <Button Grid.Column="2" x:Name="AgentSendBtn" Content="发送"
+                                VerticalAlignment="Bottom" Click="AgentSend_Click" />
+                    </Grid>
+
+                    <TextBlock Grid.Row="3" x:Name="AgentStatusText" FontSize="11" Margin="2,4,0,0"
                                TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 </Grid>

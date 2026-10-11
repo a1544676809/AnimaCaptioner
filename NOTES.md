@@ -560,5 +560,34 @@ python tools/icon/make-ico.py
 - **用菜单项触发撤销比键盘可靠。** 菜单项不依赖焦点（`InvokePattern.Invoke()`），而且它的
   文案与 `IsEnabled` 直接暴露了 `CanUndo` / `UndoLabel`——把菜单展开读一遍就能确认
   "这一刻到底有没有可撤销的东西"，比按 `Ctrl+Z` 再看日志稳得多。
+- **`ConvertFrom-Json` 出来的对象上"没有"的字段不能直接赋值。** 旧 `settings.json` 里
+  没有 `AgentEnabled` / `AgentAttachImage`（它们是这次新加的），脚本里
+  `$json.AgentEnabled = $true` 会抛 `SetValueInvocationException`，而
+  PowerShell 的**非终止错误**默认不会打断脚本——于是配置根本没改成，后面十几条断言
+  全都在"面板没开"的前提下跑，看起来像功能全坏了。要用
+  `Add-Member -NotePropertyName ... -Force`。这条也提醒：冒烟脚本自己要检查
+  "前提条件真的成立了吗"（`AgentInput` 在不在 UIA 树里），而不是直接开始点。
+
+## AI 助手（读图 / 提案）踩到的坑
+
+- **`Trim` 只剥一次是错的。** 模型会写 `` - `1girl` `` 或 `* solo*`，而 `Trim(chars)`
+  遇到不在集合里的字符就停：先剥掉连字符后被**空格**挡住，前导反引号留了下来，于是
+  标签变成 `` `1girl ``。要多轮剥（空格和标点交替），`tests/Agent.cs` 第 4 节钉着这条。
+- **`BitmapEncoder` 没有 `SetQuality`。** JPEG 质量走
+  `encoder.BitmapProperties.SetPropertiesAsync({"ImageQuality": ...})`，而且必须在
+  `SetSoftwareBitmap` **之前**设。`ImageQuality` 的值类型是 `PropertyType.Single`。
+- **EXIF 方向 5–8 时解码器报的宽高是转置的。** 不管它长边就落在错的那一维上
+  （竖图会按宽度去缩）。`ImageSizing.Oriented` 负责换，`Fit` 再缩。
+- **图片 token 的实测口径**（deepseek-v4.1-flash）：约等于像素数 / 1600，且每张图有
+  一个约 200 token 的**底**。所以小图并不便宜，长边 1024 是"够看清"和"不烧 token"
+  的折中；1024×1024 约 850 token。
+- **`"tools": []` 不能发。** 收尾那一次"不给工具"必须**不带这个字段**：有些服务会把
+  空数组当成"要求调用工具但没有工具可用"而报错。
+- **收尾请求复用同一个 messages 列表**（只把工具清空），不要另起一条纯文本请求——
+  那会把第一轮的图丢掉，而读图正是最容易把轮数用完的场景。
+- **滚动要补一跳。** 卡片是刚 `Add` 进去的，第一跳时布局还没算完，`ScrollableHeight`
+  读到的还是旧值，结果停在上一条、最新那张提案卡片正好在视野外。隔 150 ms 再滚一次。
+- **写标签模式没有图。** `AgentImageBox` 会自动灰掉，判据是
+  `_mode == Label && _index` 有效——`CurrentImagePath()` 一处收敛，别在别处再判断一次。
 
 
