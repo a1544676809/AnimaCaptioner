@@ -32,8 +32,13 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
+                <!--
+                  刻意**不设** PlaceholderText：可编辑 ComboBox 上它会盖过真实文本，
+                  实测填着 deepseek-v4-pro 时框里显示的是占位符（灰字），看起来像
+                  "模型名没读进来"。空着的时候下面那行提示已经说清了可以手填。
+                -->
                 <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
-                          PlaceholderText="8b-iq4_xs" HorizontalAlignment="Stretch"
+                          HorizontalAlignment="Stretch"
                           SelectionChanged="Model_SelectionChanged" />
                 <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
                         Click="FetchModels_Click" VerticalAlignment="Bottom" />

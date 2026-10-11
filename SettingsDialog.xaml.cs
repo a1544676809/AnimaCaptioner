@@ -46,6 +46,12 @@ public sealed partial class SettingsDialog : ContentDialog
 
         BaseUrlBox.Text = cfg.ApiBaseUrl;
         ModelBox.Text = cfg.Model;
+
+        // 上面那句只落在依赖属性上，**界面画不出来**——可编辑 ComboBox 只把「选中项」
+        // 可靠地画进模板里的 TextBox，而构造期模板还没应用、Items 也还空着。
+        // 于是打开设置看到的是一个空框（或灰着的占位符），像模型名根本没读进来。
+        // 模板就绪后再走一次统一同步（见 SyncModelText）。
+        Loaded += (_, _) => SyncModelText(_cfg.Model);
         ApiKeyBox.Password = cfg.ApiKey;
         DisableThinkingBox.IsChecked = cfg.DisableThinking;
         AgentEnabledBox.IsChecked = cfg.AgentEnabled;
@@ -633,17 +639,60 @@ public sealed partial class SettingsDialog : ContentDialog
         var keep = ModelBox.Text;
         ModelBox.Items.Clear();
         foreach (var m in models) ModelBox.Items.Add(m.Id);
-        ModelBox.Text = keep;
+
+        // 重建 Items 会把模板里的 TextBox 重置掉，所以这里走同一套同步（见 SyncModelText）。
+        SyncModelText(keep);
+
+        // 再晚一拍补一次：重建 Items 之后 ComboBox 会**异步**把选中项落到列表第一项上，
+        // 那一刻界面与下面那行提示都会短暂变成"列表里的第一个模型"（实测保存的值不受影响，
+        // 但看起来像你的模型被换掉了）。晚一拍的这次同步才是最终状态。
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            SyncModelText(keep);
+            UpdateModelHint(ModelBox.Text.Trim());
+        });
 
         // 只有"服务端恰好报了一个模型"且"用户还没填名字"时才代填。
         // 多个模型时代选第一个纯属乱猜。
         if (string.IsNullOrWhiteSpace(keep) && models.Count == 1)
         {
-            ModelBox.Text = models[0].Id;
+            SyncModelText(models[0].Id);
             Log.Write("model list: 服务端只报了 " + models[0].Id + "，已自动填入模型名");
         }
 
         UpdateModelHint(ModelBox.Text.Trim());
+    }
+
+    /// <summary>
+    /// 把模型名落到「模型名」那个可编辑 ComboBox 上——**属性与界面都要落到**。
+    ///
+    /// 属性那一半是给保存用的（`ApplyTo` 读 `ModelBox.Text`），它一直是好的；
+    /// 难的是**界面那一半**：`ComboBox.Text` 只是依赖属性，界面上真正画的是模板里的
+    /// `PART_EditableTextBox`，而**只有「选中项」会被可靠地画出来**。
+    /// 试过两条不行的路，别再走：构造后（`Loaded`）再设一次 `Text`；以及走可视树
+    /// 直接写那个模板 TextBox（`TryEnqueue` 推后一拍写也一样）——后者会被 ComboBox
+    /// 按"当前没有选中项"再刷回空。
+    ///
+    /// 所以这里的做法是：值在列表里就选中它；不在列表里（别名 / 自定义名 / 网关不实现
+    /// `/models`）就**把它自己补进列表**再选中。补进去只影响这个下拉框的候选，
+    /// 下面那行提示仍按服务端真正报的列表说话，所以"不在列表里"那句警告不会失效。
+    ///
+    /// 时机也重要：`PopulateModels` 重建 Items 之后 ComboBox 会**异步**把选中项落到
+    /// 列表第一项上，所以那边晚一拍还要再调一次，否则界面和提示会显示成第一个模型名
+    /// （实测保存的值不受影响，纯粹是画错了）。
+    /// </summary>
+    private void SyncModelText(string value)
+    {
+        ModelBox.Text = value;
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        var idx = ModelBox.Items.IndexOf(value);
+        if (idx < 0)
+        {
+            ModelBox.Items.Insert(0, value);
+            idx = 0;
+        }
+        ModelBox.SelectedIndex = idx;
     }
 
     /// <summary>把"服务端给了什么"和"当前填的是什么"写进提示行。</summary>
