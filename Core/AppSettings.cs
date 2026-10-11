@@ -59,9 +59,10 @@ public sealed class AppSettings
     /// <summary>
     /// 允许模型调用搜索。关掉时翻译只靠模型自身知识。
     ///
-    /// 实测（llama-server b11393 + Qwen3-8B）：关闭思考链后模型**不会**发出
-    /// tool_calls，只把标签原样吐回来；开启思考才能走通工具循环。所以这条开关
-    /// 生效的前提是 <see cref="DisableThinking"/> 为 false，UI 里要说明。
+    /// 实测（llama-server b11393 + Qwen3-8B）：把推理档位设为「关闭思考」后模型
+    /// **不会**发出 tool_calls，只把标签原样吐回来；有档位（思考开着）才能走通工具
+    /// 循环。所以这条开关生效的前提是 <see cref="ReasoningEffort"/> 不是 "none"，
+    /// UI 里要说明。
     /// </summary>
     public bool SearchEnabled { get; set; }
 
@@ -92,18 +93,40 @@ public sealed class AppSettings
     public int SearchMaxResults { get; set; } = 5;
 
     /// <summary>
-    /// 关掉混合推理模型的思考链。主要影响短任务（标签释义）；散文翻译两种都行——
-    /// 实测开与关质量相同（各 3 次采样、两类输入共 12 个样本全干净），
-    /// 只是开思考慢 10–15 倍。开思考时程序会自动给思考留 token 余量
+    /// 推理档位（服务端的 `reasoning_effort`）。空串 = 自动，即不下发、跟随服务端
+    /// 自己的默认档；其余取值为 <see cref="Core.LlmClient.EffortVocabulary"/> 里那八个。
+    ///
+    /// 早先这里是个 bool（"关闭思考链"），之所以升级成档位：那个 bool 只能表达
+    /// "关"与"不指定"两态，而服务端提供的是 8 档连续强度，用户没法要求"少想一点
+    /// 但别完全不想"。映射关系在 <see cref="MigrateThinking"/>：`true → "none"`。
+    ///
+    /// **默认 "none"**（与旧的 bool 默认 true 一致）：主要影响短任务（标签释义）；
+    /// 散文翻译开与关实测质量相同（各 3 次采样、共 12 个样本全干净），只是开思考
+    /// 慢 10–15 倍。非 none 档位时程序会自动给思考留 token 余量
     /// （见 LlmClient.ReasoningHeadroom），且思考内容永不进译文。
     ///
-    /// **两种服务端要两种关法，程序按 `/models` 报的能力自动选**（见
-    /// LlmClient.ThinkingOffEffort）：llama-server 认
+    /// **两种服务端要两种关法，程序按 `/models` 报的能力自动选**：llama-server 认
     /// `chat_template_kwargs.enable_thinking=false`；而 DeepSeek 这类云服务
     /// **把它静默忽略**（实测带与不带都照样思考），真正管用的是被严格校验的
-    /// `reasoning_effort`。
+    /// `reasoning_effort`。服务端没在 `/models` 里声明 `effort` 时不下发档位
+    /// （见 LlmClient.EffortToSend），界面会把这件事写出来，不静默吞掉。
     /// </summary>
-    public bool DisableThinking { get; set; } = true;
+    public string ReasoningEffort { get; set; } = "none";
+
+    /// <summary>
+    /// 旧字段：bool「关闭思考链」。**只用于把老配置读进来迁移**，不再写出。
+    ///
+    /// `WhenWritingDefault` + 迁移里置 null 的两步配合，让它自我清理：迁移过一次
+    /// 再保存，settings.json 里这个键就没了，不会长期留着一个和
+    /// <see cref="ReasoningEffort"/> 说法不一致的死字段。
+    ///
+    /// 顺序：**旧字段在场时以它为准**。因为它是旧版本写的，而新版本一保存就会把它
+    /// 抹掉，所以"两者同时在场"只可能来自手工编辑 settings.json——那时按旧字段
+    /// 迁移、由用户在新界面上重新选一次，比猜哪个更新更可预期。
+    /// </summary>
+    [JsonPropertyName("DisableThinking")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool? LegacyDisableThinking { get; set; }
 
     public int MaxTokens { get; set; } = 400;
     public double Temperature { get; set; } = 0.3;
@@ -258,6 +281,21 @@ public sealed class AppSettings
         return changed;
     }
 
+    /// <summary>
+    /// 把旧的 bool「关闭思考链」迁移成推理档位。返回是否真的动过配置。
+    ///
+    /// 映射只有两条：`true → "none"`（真的关掉）、`false → ""`（自动，即不下发档位、
+    /// 跟随服务端默认）。`false` 之所以不能映射成某个具体档位：它当时的语义就是
+    /// "不去管服务端怎么想"，映射成 "high" 之类会凭空替用户做选择。
+    /// </summary>
+    private bool MigrateThinking()
+    {
+        if (LegacyDisableThinking is not { } legacy) return false;
+        ReasoningEffort = legacy ? "none" : "";
+        LegacyDisableThinking = null;   // 迁移过就不再写出，旧键随下一次 Save 消失
+        return true;
+    }
+
     /// <summary>取某个大类的颜色十六进制值；没有配置过时返回空串（调用方回落默认）。</summary>
     public string GetSectionColor(string key) =>
         SectionColors.TryGetValue(key, out var v) ? v : "";
@@ -341,19 +379,34 @@ public sealed class AppSettings
 
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
+    /// <summary>
+    /// 从 JSON 文本解析出一份配置，并跑完全部迁移。
+    ///
+    /// **抽出来是为了可测**：<see cref="Load"/> 读写的是固定的用户路径，回归测试不能
+    /// 碰它，而"老配置能不能正确迁移"恰恰是最容易静默出错的一步（迁移写错不会报错，
+    /// 只会让用户的选择悄悄变掉）。tests/Defaults.cs 直接喂 JSON 字符串断言结果。
+    /// </summary>
+    public static AppSettings? FromJson(string json)
+    {
+        var s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts);
+        if (s is null) return null;
+
+        // 旧配置的配色键要迁移（六段 -> 九段）；bool 关闭思考要迁移成推理档位。
+        // 迁移只在内存里做，下次任何一次 Save() 会把结果写回去。
+        if (s.MigrateColorSchema()) Log.Write("settings: colour schema migrated to v" + CurrentColorSchema);
+        if (s.MigrateThinking()) Log.Write("settings: reasoning effort migrated to '" + s.ReasoningEffort + "'");
+        return s;
+    }
+
     public static AppSettings Load()
     {
         try
         {
             if (File.Exists(FilePath))
             {
-                var json = File.ReadAllText(FilePath);
-                var s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts);
+                var s = FromJson(File.ReadAllText(FilePath));
                 if (s is not null)
                 {
-                    // 旧配置的配色键要迁移（六段 -> 九段）。迁移只在内存里做，
-                    // 下次任何一次 Save() 会把结果写回去。
-                    if (s.MigrateColorSchema()) Log.Write("settings: colour schema migrated to v" + CurrentColorSchema);
                     Log.Write("settings loaded from " + FilePath);
                     return s;
                 }

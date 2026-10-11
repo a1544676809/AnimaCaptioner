@@ -366,6 +366,33 @@ DeepSeek 照收这个字段、回 **200**，然后什么都不做。同端点、
 `supported_levels` 是**该模型支持的子集**（flash 只报 `low/high/max`）——所以按
 它发，别硬编码一份全局清单。
 
+**上面最后一句是错的，2026-10 补测推翻。** `supported_levels` 是**描述性的**，
+不是允许的取值。对同一个 `deepseek-flash` 连发它没声明的档位，全部 200：
+
+| 发出的档位 | 在 `supported_levels`(low/high/max) 里？ | 结果 |
+|---|---|---|
+| `minimal` / `medium` / `ultra` | 否 | HTTP 200 |
+| `none` | 否 | **200，且 `reasoning_content` = 0** |
+| `bogus` | —— | 422，正文列出八个合法值 |
+
+**硬约束是那份全局词表**（就是 422 正文里列的八个），`supported_levels` 只说明
+"这个模型有意义的档位"。所以 C# 侧的 `LlmClient.EffortVocabulary` 直接写那八个
+（顺序照服务端原样），界面另外把模型声明的子集写进提示行。如果当初真拿
+`supported_levels` 当门槛，"关闭思考"在 flash 上会被判成非法而不下发——正好是
+那个已经修好的"空转"bug 换个形式回来。
+
+顺带一个容易误判的点：`reasoning_effort` 是**接口级**的，不是模型级的。只吃文本的
+`deepseek-v4-pro`（`input_modalities` 里没有 image）收 `reasoning_effort: "none"`
+同样回 200、思考为 0。所以判据只能是"服务端声明过 `effort` 字段"，不能是"当前模型
+的 `supported_levels` 里有没有这一档"。
+
+升级那条路也有一处容易静默出错的地方，已用测试钉住：旧的 bool「关闭思考链」
+`true → "none"`、`false → ""`（自动）。`false` 不能映射成某个具体档位——它当时的
+语义就是"不去管服务端怎么想"，映射成 `high` 之类等于凭空替用户做选择。迁移完把旧键
+置 null，靠 `JsonIgnore(WhenWritingDefault)` 让它在下次保存时从 settings.json 消失；
+`tests/Defaults.cs` 连"读进来→写出去→再读进来 15 个字段全一致"一起验，防的是
+"迁移顺手把别的字段弄丢"这种不报错的损坏。
+
 ### `AutoSuggestBox`（Tab 补全 / 候选列表）
 
 补全用的是 `AutoSuggestBox`，它的模板内部有一个真的 `TextBox`。四条实测教训：

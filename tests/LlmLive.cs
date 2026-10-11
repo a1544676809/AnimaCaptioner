@@ -27,7 +27,8 @@ public static class LlmLive
 
         Console.WriteLine($"endpoint        = {cfg.ApiBaseUrl}");
         Console.WriteLine($"model           = {cfg.Model}");
-        Console.WriteLine($"DisableThinking = {cfg.DisableThinking}   MaxTokens = {cfg.MaxTokens}");
+        var chosen = LlmClient.NormalizeEffort(cfg.ReasoningEffort);
+        Console.WriteLine($"推理档位        = {(chosen.Length > 0 ? chosen : "(自动)")}   MaxTokens = {cfg.MaxTokens}");
         Console.WriteLine($"key             = {(cfg.ApiKey.Length > 0 ? $"已配置（{cfg.ApiKey.Length} 字符）" : "(空)")}");
         Console.WriteLine();
 
@@ -48,12 +49,22 @@ public static class LlmLive
             Console.WriteLine($"Describe()      = {caps.Describe()}");
         }
 
-        var effort = LlmClient.ThinkingOffEffort(cfg.DisableThinking, caps?.SupportsEffort == true);
-        Console.WriteLine($"决定            = ThinkingOffEffort({cfg.DisableThinking}, {caps?.SupportsEffort == true}) " +
+        var effort = LlmClient.EffortToSend(cfg.ReasoningEffort, caps?.SupportsEffort == true);
+        Console.WriteLine($"决定            = EffortToSend('{cfg.ReasoningEffort}', {caps?.SupportsEffort == true}) " +
                           $"→ {(effort is null ? "不发 reasoning_effort" : "reasoning_effort=" + effort)}");
         Console.WriteLine();
 
-        // ---------- 对照组：改动前的请求体 ----------
+        // ---------- 对照组 ----------
+        // 只有档位是「关闭思考」时这个 A/B 才有意义：这一路要证明的正是
+        // "把档位设成 none 之后思考真的停了"，而对照组复刻的是改动前那种状态
+        // （只发 chat_template_kwargs，云端会静默忽略）。
+        if (!LlmClient.IsThinkingOff(cfg.ReasoningEffort))
+        {
+            Console.WriteLine($"档位是 '{chosen}'，本来就要思考，A/B 不适用——跳过。");
+            Console.WriteLine($"\n=== llm: SKIP（把档位设为「关闭思考」再跑） ===");
+            return 0;
+        }
+
         var oldReasoning = RawReasoning(cfg, withEffort: false);
         Console.WriteLine($"对照（旧请求体：只发 chat_template_kwargs）  reasoning 长度 = {oldReasoning}");
 

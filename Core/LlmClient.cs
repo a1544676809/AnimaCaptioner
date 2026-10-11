@@ -12,8 +12,9 @@ namespace AnimaCaptioner.Core;
 /// 只换 base url、key、model。
 ///
 /// 三处刻意的设计：
-/// - chat_template_kwargs.enable_thinking 只在显式要求时下发。本地 llama-server
-///   认这个字段，云端多数服务不认；不认的服务会直接 400，所以默认不发。
+/// - chat_template_kwargs.enable_thinking 只在档位设成「关闭思考」时下发。本地
+///   llama-server 认这个字段，云端多数服务不认；不认的服务会直接 400，所以默认不发。
+///   云端要用 `reasoning_effort`（见 <see cref="EffortToSend"/>）。
 /// - **思考内容永远不进结果**。llama-server 配了 `--reasoning-format deepseek`
 ///   时思考走独立的 reasoning_content，content 只有答案（已实测）；但这是
 ///   协议外的约定，所以 <see cref="StripThinking"/> 会再剥一遍内联标记，
@@ -185,11 +186,11 @@ public sealed class LlmClient : IDisposable
 
         // 开思考时 max_tokens 是「思考 + 答案」的总预算，所以给思考单独留额度，
         // 否则真实长描述的思考链会把预算吃光、答案一个字都写不出来（实测见
-        // ReasoningHeadroom）。关思考时预算就是用户设的那个值。
-        var thinking = !cfg.DisableThinking;
+        // ReasoningHeadroom）。关思考（档位 none）时预算就是用户设的那个值。
+        var thinking = !IsThinkingOff(cfg.ReasoningEffort);
         var budget = thinking ? cfg.MaxTokens + ReasoningHeadroom : cfg.MaxTokens;
-        if (thinking) Log.Write($"llm thinking on: max_tokens={budget} " +
-                                $"(答案 {cfg.MaxTokens} + 思考余量 {ReasoningHeadroom})");
+        if (thinking) Log.Write($"llm thinking on: 档位='{NormalizeEffort(cfg.ReasoningEffort)}' " +
+                                $"max_tokens={budget} (答案 {cfg.MaxTokens} + 思考余量 {ReasoningHeadroom})");
 
         var body = new JsonObject
         {
@@ -203,28 +204,46 @@ public sealed class LlmClient : IDisposable
             ["temperature"] = cfg.Temperature
         };
 
-        // 只有本地 llama-server 认这个字段；不下发以免云端服务 400。
-        // 但仍给一个开关，因为有些自建网关也支持。
+        // 关闭思考在两种服务端上走两个不同的开关：档位是「关闭思考」时两个都发、
+        // 各认各的；档位是某个强度（minimal…max）时**只发** reasoning_effort。
         //
-        // **实测补充（DeepSeek，2026-10）：云端不是"400"，是"静默忽略"**——
-        // 字段照收，思考照样发生。所以关思考必须另配 reasoning_effort，
-        // 而那个字段服务端会严格校验，只能照它自己声明过的能力发。
-        if (cfg.DisableThinking)
-        {
+        // - 本地 llama-server 认 `chat_template_kwargs.enable_thinking=false`，
+        //   这是唯一能关掉它的途径（**实测补充（DeepSeek，2026-10）：云端不是
+        //   "400"，是"静默忽略"**——字段照收，思考照样发生）。
+        // - 云端认 `reasoning_effort`，而那个字段服务端会严格校验，只能照它自己
+        //   声明过的能力发（见 EffortToSend）。
+        //
+        // 档位不是 none 时只发 `reasoning_effort`，不发 kwargs：kwargs 只能表达
+        // 开/关，和"少想一点"这种要求是矛盾的。llama-server 上选非 none 档位的
+        // 效果因此是"什么也不改"（它没有这个参数），设置页的提示行会说明。
+        var effort = NormalizeEffort(cfg.ReasoningEffort);
+
+        if (IsThinkingOff(effort))
             body["chat_template_kwargs"] = new JsonObject { ["enable_thinking"] = false };
 
-            // 先问一次能力（每个「地址+模型」一辈子只问一次），再决定发不发。
+        // 只有真的要发档位时才去探测能力（"自动"和"关闭思考"在本地都不需要它：
+        // 前者不下发，后者靠 kwargs）。每个「地址+模型」一辈子只探一次。
+        if (effort.Length > 0)
+        {
             var caps = await EnsureCapsAsync(cfg, ct).ConfigureAwait(false);
-            var effort = ThinkingOffEffort(cfg.DisableThinking, caps?.SupportsEffort == true);
-            if (effort is not null)
+            var send = EffortToSend(effort, caps?.SupportsEffort == true);
+            if (send is not null)
             {
-                body["reasoning_effort"] = effort;
-                Log.Write($"llm thinking off: reasoning_effort={effort} " +
-                          $"(服务端声明 {string.Join("/", caps!.EffortLevels!)})");
+                body["reasoning_effort"] = send;
+                Log.Write($"llm effort: reasoning_effort={send} " +
+                          $"(模型声明 {string.Join("/", caps!.EffortLevels!)}，默认 {caps.DefaultEffort})");
             }
             else if (caps is null)
             {
-                Log.Write("llm thinking off: 能力未知，只发 chat_template_kwargs");
+                Log.Write($"llm effort: 档位 '{effort}' 未下发——服务端没报过 /models 的能力");
+            }
+            else if (!caps.SupportsEffort)
+            {
+                Log.Write($"llm effort: 档位 '{effort}' 未下发——该服务端没声明 effort（llama-server 靠 enable_thinking 关思考）");
+            }
+            else
+            {
+                Log.Write($"llm effort: 档位 '{effort}' 未下发——不在服务端词表内");
             }
         }
 
@@ -406,7 +425,7 @@ public sealed class LlmClient : IDisposable
                 : "模型只输出了思考过程，没有给出答案。";
             return new ChatResult(false, "", think, raw,
                 why + $"本次思考约 {think.Length} 字符。" +
-                "请调大「最大 token」，或勾选「关闭思考链」。");
+                "请调大「最大 token」，或把「推理档位」设为关闭思考。");
         }
 
         return new ChatResult(false, "", think, raw, finishReason == "length"
@@ -471,14 +490,16 @@ public sealed class LlmClient : IDisposable
             body["tool_choice"] = "auto";
         }
 
-        // **这一路刻意不下发 enable_thinking=false**，即使全局关着思考也一样。
+        // **这一路刻意不下发 enable_thinking=false，也不下发 reasoning_effort**，
+        // 即使档位设成「关闭思考」也一样。
         //
         // 实测（llama-server b11393 + Qwen3-8B）：关掉思考链后模型**不会**发出
-        // tool_calls，只把标签原样吐回来——搜索工具等于失效。而全局那个开关是为
+        // tool_calls，只把标签原样吐回来——搜索工具等于失效。而档位那个开关是为
         // 散文翻译设的（那边思考纯属浪费 token），两件事的正确取值相反。
         // 所以这里按本次调用的需要决定，不跟着全局走：工具循环总是保留思考。
         //
-        // （ChatAsync 那条路仍然照旧下发关闭标记，行为不变。）
+        // （ChatAsync 那条路照旧按档位下发，行为不变。副作用是：档位设成
+        //   「关闭思考」时，AI 助手的工具轮仍会思考——设置页的提示行写明了这一点。）
 
         try
         {
@@ -838,21 +859,64 @@ public sealed class LlmClient : IDisposable
     }
 
     /// <summary>
-    /// 关思考时该不该下发 `reasoning_effort: "none"`。**纯函数**，所以
-    /// tests/Models.cs 能直接钉住这条真值表，不必联网。
+    /// 服务端接受的推理档位全集，**顺序照服务端自己列出来的原样**。
     ///
-    /// 两条实测事实（DeepSeek `api.deepseek.com`，2026-10）：
+    /// 来源是它校验失败时那句 422 的原话（`api.deepseek.com`，2026-10，逐字节）：
+    /// `unknown variant \`bogus\`, expected one of \`none\`, \`minimal\`, \`low\`,
+    /// \`medium\`, \`high\`, \`xhigh\`, \`ultra\`, \`max\``。
     ///
-    /// - `chat_template_kwargs.enable_thinking=false` 被**静默忽略**：同一条提问
-    ///   带上它，`reasoning_content` 照样返回（123 字符，比不带的 53 还多），
-    ///   HTTP 200 什么也不说。也就是说"关闭思考"这个开关在云服务上一直是空转的。
-    /// - 真正管用的是 `reasoning_effort`，而且服务端**严格校验**：给个它认不得的
-    ///   值直接 422，还会把全部合法值列出来（none/minimal/low/medium/high/xhigh/
-    ///   ultra/max）。所以不能"顺手发一个 none"——得照服务端在 /models 里声明的
-    ///   `supported_levels` 来，没声明的（llama-server）就维持原样只发 kwargs。
+    /// 为什么敢硬编码这一份，而 `/models` 报的 `supported_levels` 只当参考：
+    /// **实测两者不是一回事**。同一个模型（`deepseek-flash`）在 `/models` 里只报
+    /// `low/high/max`，但发 `minimal` / `medium` / `ultra` 全部 **HTTP 200**，
+    /// 只有不在上面那八个里的值才 422。也就是说 `supported_levels` 描述的是
+    /// "这个模型有意义的档位"，不是"允许的取值"，硬约束是这份全局词表。
+    /// 界面仍会把模型声明的子集写出来，因为那才是有意义的那几档。
     /// </summary>
-    public static string? ThinkingOffEffort(bool disableThinking, bool effortSupported) =>
-        disableThinking && effortSupported ? "none" : null;
+    public static readonly IReadOnlyList<string> EffortVocabulary = new[]
+    {
+        "none", "minimal", "low", "medium", "high", "xhigh", "ultra", "max"
+    };
+
+    /// <summary>档位配置的规范化：去空白、转小写。空串表示"自动"。</summary>
+    public static string NormalizeEffort(string? effort) => (effort ?? "").Trim().ToLowerInvariant();
+
+    /// <summary>
+    /// 这个档位是不是"关掉思考"。**纯函数**，供 tests/Models.cs 钉住。
+    ///
+    /// 注意空串（自动）**不算关**：服务端默认档（DeepSeek 报的是 `high`）与
+    /// llama-server 不收到 `enable_thinking=false` 时的默认行为，都是照常思考。
+    /// 把它当成"关"会少留 token 余量，正好复现 ReasoningHeadroom 要防的那个截断。
+    /// </summary>
+    public static bool IsThinkingOff(string? effort) =>
+        string.Equals(NormalizeEffort(effort), "none", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 该不该下发 `reasoning_effort`、发什么值。**纯函数**，所以 tests/Models.cs
+    /// 能直接钉住这条真值表，不必联网。
+    ///
+    /// 三条规则，每条都有实测依据（DeepSeek `api.deepseek.com`，2026-10）：
+    ///
+    /// - **自动（空串）→ 不发**：让服务端用自己的 `default_level`，这是"不指定"的
+    ///   字面含义；顺带也省掉一次能力探测的网络请求。
+    /// - **服务端没声明 `effort` → 不发**：档位值本身在服务端词表内，但**参数是否
+    ///   存在**是另一件事。llama-server 那条路压根没有这个参数（它靠
+    ///   `chat_template_kwargs.enable_thinking=false` 关思考），没有证据证明它
+    ///   会忽略一个不认识的字段，所以不冒 400 的风险。代价是"支持但不在 /models
+    ///   里报"的网关会静默不下发——所以界面必须把这件事写出来（设置页的提示行）。
+    /// - **不在词表内 → 不发**：非法的值会 422（实测 `bogus` 就是），而手改
+    ///   settings.json 是唯一能造出这种值的途径。宁可退回"自动"也不打红请求。
+    ///
+    /// 另外一条实测事实：`reasoning_effort` 是**接口级**的，不是模型级的——
+    /// 只吃文本的 `deepseek-v4-pro` 收 `none` 同样回 200 且 `reasoning_content` 为 0。
+    /// 所以这里按"服务端声明过"判断，而不是按当前模型的 `supported_levels`。
+    /// </summary>
+    public static string? EffortToSend(string? configured, bool effortSupported)
+    {
+        var want = NormalizeEffort(configured);
+        if (want.Length == 0) return null;
+        if (!effortSupported) return null;
+        return EffortVocabulary.Contains(want, StringComparer.Ordinal) ? want : null;
+    }
 
     /// <summary>
     /// 该不该把当前这张图附进请求。**纯函数**，供 tests/Models.cs 钉住真值表。

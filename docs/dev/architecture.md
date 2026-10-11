@@ -317,31 +317,56 @@ DeepSeek 报的是（`tests/Models.cs` 里存着逐字节的原样响应）：
 `EnsureCapsAsync` 对每个键**一辈子只试一次**（含失败），否则一个不实现 `/models`
 的网关会让每次翻译都多等一次超时。
 
-## "关闭思考"在两种服务端要用两种关法
+## 推理档位：两种服务端、两种机制，以及 `supported_levels` 不是门槛
 
-原来只发 `chat_template_kwargs.enable_thinking=false`，代码注释里的担心是
-"下发给云端会 400"。**实测推翻了这个担心，真正的问题更隐蔽**：DeepSeek
-`api.deepseek.com` 照收这个字段、回 200，然后**静默忽略**——同一端点、同一条提问、
-同一个 `max_tokens`：
+原来设置里只有个 bool「关闭思考链」，代码只发
+`chat_template_kwargs.enable_thinking=false`，注释里的担心是"下发给云端会 400"。
+**实测推翻了这个担心，真正的问题更隐蔽**：DeepSeek `api.deepseek.com` 照收这个
+字段、回 200，然后**静默忽略**——同一端点、同一条提问、同一个 `max_tokens`：
 
 | 请求体 | 服务端返回的 `reasoning_content` |
 |---|---|
 | 只有 `chat_template_kwargs` | **69 字符**（思考照常发生） |
 | 加上 `reasoning_effort: "none"` | 0（真的关掉了） |
 
-也就是说"关闭思考"这个开关在云服务上一直是空转的，token 预算里那句
-"关思考时预算就是用户设的那个值"（`ReasoningHeadroom`）也因此不成立。
+所以那个 bool 在云服务上一直是**空转**的：用户以为省了 token，实际每次都在为思考
+付费；`ReasoningHeadroom` 那句"关思考时预算就是用户设的那个值"也不成立。
 
-真正管用的 `reasoning_effort` **被服务端严格校验**：给个它认不得的值直接 422，
-并把全部合法值列出来（`none/minimal/low/medium/high/xhigh/ultra/max`）。而
-`/models` 报的 `effort.supported_levels` 是**该模型支持的子集**（flash 只报
-`low/high/max`）。所以规则是 `LlmClient.ThinkingOffEffort(disableThinking,
-effortSupported)`：只有服务端自己声明过才发 `"none"`，没声明的（llama-server）
-维持原样——这样既不瞎填一个值，也不会把不认这个字段的服务端打成 400。
+**为什么从 bool 升级成档位选择器。** 那个 bool 只能表达"关"与"不指定"两态，而
+服务端提供的是连续强度——用户没法要求"少想一点但别完全不想"。升级后配置里是
+`ReasoningEffort`：空串 = 自动（不下发，跟随服务端 `default_level`），其余取八个
+档位之一。旧的 bool 迁移规则是 `true → "none"`、`false → ""`（见
+`AppSettings.MigrateThinking`）；迁移过就把旧键置空，靠
+`JsonIgnore(WhenWritingDefault)` 让它在下次保存时消失，不留一个和档位说法不一致的
+死字段。
 
-**带工具那条路仍然不关思考**，即使全局开关是开的：llama-server + Qwen3 实测关掉
-思考后模型不再发出 `tool_calls`，搜索工具等于失效（见 `ChatWithToolsAsync` 的注释）。
-两件事的正确取值相反，所以按调用需要决定，不跟着全局走。
+**`effort.supported_levels` 是描述性的，不是硬约束**——这一点推翻了本仓库早先
+写下的"按它发，别硬编码一份全局清单"。给 `deepseek-flash` 连发它**没声明**的档位：
+
+| 发出的档位 | 在 `/models` 的 `supported_levels`(low/high/max) 里？ | 结果 |
+|---|---|---|
+| `minimal` / `medium` / `ultra` | 否 | **HTTP 200** |
+| `none` | 否 | **HTTP 200**，且 `reasoning_content` = 0 |
+| `max` | 是 | HTTP 200 |
+| `bogus` | —— | **422**，正文列出全部合法值 |
+
+也就是说硬约束是一份**全局词表**（422 原话：
+``expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `ultra`, `max` ``），
+`supported_levels` 只说明"这个模型有意义的档位"。所以
+`LlmClient.EffortVocabulary` 就是那八个，界面另外把模型声明的子集写进提示行。
+顺带一条：`reasoning_effort` 是**接口级**的，只吃文本的 `deepseek-v4-pro` 收
+`none` 同样回 200 且思考为 0——所以判据是"服务端声明过 `effort`"，不是"当前模型
+的 `supported_levels` 里有它"。
+
+于是规则是 `LlmClient.EffortToSend(档位, 服务端声明过 effort 吗)`：自动→不发；
+服务端没声明→不发（llama-server 压根没这个参数，没有证据证明它会忽略一个不认识
+的字段，不冒 400 的风险）；不在词表内→不发（只可能来自手改 settings.json，宁可
+退回"自动"也不打红请求）。**代价是"支持但不报"的网关会静默不下发**，所以设置页
+那个提示行必须把这件事写出来——它不是装饰，"选了一个不生效的档位"本身看不出来。
+
+**带工具那条路仍然不跟档位走**：llama-server + Qwen3 实测关掉思考后模型不再发出
+`tool_calls`，搜索工具等于失效（见 `ChatWithToolsAsync` 的注释）。两件事的正确取值
+相反，所以按调用需要决定，不跟着档位走。
 
 ## 分栏比例为什么按模式各存一套
 

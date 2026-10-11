@@ -149,14 +149,37 @@ public static class Models
         Eq("标准 OpenAI → 图像能力未知", std[0].SupportsImage, (bool?)null);
         Eq("Describe() 里不出现图像字样", std[0].Describe().Contains("图像"), false);
 
-        // ---------- 9. 关思考该发什么（真值表） ----------
-        Console.WriteLine("\n=== 9. ThinkingOffEffort ===");
-        // 实测：chat_template_kwargs 被云端静默忽略，真正管用的是 reasoning_effort，
-        // 而它被严格校验 —— 所以只有服务端自己声明过才发。
-        Eq("关思考 + 服务端声明支持 → 发 none", LlmClient.ThinkingOffEffort(true, true), "none");
-        Eq("关思考 + 未声明（llama-server）→ 不发", LlmClient.ThinkingOffEffort(true, false), null);
-        Eq("不关思考 + 支持 → 不发", LlmClient.ThinkingOffEffort(false, true), null);
-        Eq("不关思考 + 不支持 → 不发", LlmClient.ThinkingOffEffort(false, false), null);
+        // ---------- 9. 推理档位（真值表） ----------
+        Console.WriteLine("\n=== 9. 档位词表 / IsThinkingOff / EffortToSend ===");
+        // 词表来自服务端 422 的原话（见 tests/EffortProbe 那组实测）：supported_levels
+        // 只是"有意义的那几档"，允许的取值范围是这八个。
+        Eq("词表就是服务端列出的那八个",
+           string.Join("/", LlmClient.EffortVocabulary),
+           "none/minimal/low/medium/high/xhigh/ultra/max");
+
+        Eq("空串不是关思考（自动=服务端默认，仍会思考）", LlmClient.IsThinkingOff(""), false);
+        Eq("null 不是关思考", LlmClient.IsThinkingOff(null), false);
+        Eq("none 是关思考", LlmClient.IsThinkingOff("none"), true);
+        Eq("大小写与空白都算 none", LlmClient.IsThinkingOff("  NONE "), true);
+        Eq("low 不是关思考", LlmClient.IsThinkingOff("low"), false);
+
+        Eq("自动 + 支持 → 不发（跟随服务端默认）", LlmClient.EffortToSend("", true), null);
+        Eq("自动 + 不支持 → 不发", LlmClient.EffortToSend("", false), null);
+        Eq("none + 支持 → 发 none", LlmClient.EffortToSend("none", true), "none");
+        // llama-server 没有这个参数，没声明就不发——它靠 enable_thinking=false 关思考
+        Eq("none + 未声明 → 不发", LlmClient.EffortToSend("none", false), null);
+        Eq("high + 支持 → 发 high", LlmClient.EffortToSend("high", true), "high");
+        Eq("high + 未声明 → 不发", LlmClient.EffortToSend("high", false), null);
+        Eq("规范化：'  HIGH ' → high", LlmClient.EffortToSend("  HIGH ", true), "high");
+        // 实测：flash 的 supported_levels 只报 low/high/max，但 medium 会被 200 接受，
+        // 所以这里**不**拿 supported_levels 当门槛（拿它当门槛会白白丢掉用户的选择）。
+        Eq("medium（模型未声明）仍发", LlmClient.EffortToSend("medium", true), "medium");
+        // 反过来，不在全局词表里的值会被 422（实测 bogus），所以挡住不打红请求。
+        Eq("词表外的值 → 不发", LlmClient.EffortToSend("bogus", true), null);
+        Eq("手改出的怪值也挡下", LlmClient.EffortToSend("high; rm -rf", true), null);
+        // 八个都必须能发出去，否则界面上就会出现"选了却没反应"的档
+        Eq("八个档位全部可下发",
+           LlmClient.EffortVocabulary.All(l => LlmClient.EffortToSend(l, true) == l), true);
 
         // ---------- 10. 能不能带图（真值表） ----------
         Console.WriteLine("\n=== 10. CanAttachImage ===");

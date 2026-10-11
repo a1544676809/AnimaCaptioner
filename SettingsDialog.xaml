@@ -56,17 +56,25 @@
 
             <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <CheckBox x:Name="DisableThinkingBox" Content="关闭思考链"
-                          ToolTipService.ToolTip="混合推理模型会先输出思考过程。散文翻译开与关实测质量相同（只是开思考慢 10–15 倍）；开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。本地 llama-server 用 enable_thinking=false 关；云端（如 DeepSeek）那个字段会被静默忽略，实测要用 reasoning_effort=none —— 程序会照服务端在 /models 里报的档位自动选对的那一个" />
-                <TextBlock Grid.Column="1" x:Name="TestResultText" FontSize="11" Margin="10,0"
+                <TextBlock x:Name="TestResultText" FontSize="11"
                            VerticalAlignment="Center" TextWrapping="Wrap"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button Grid.Column="2" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
+                <Button Grid.Column="1" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
             </Grid>
+
+            <!-- 推理档位。早先这里是个 bool「关闭思考链」：它只能表达"关"与"不指定"
+                 两态，而服务端提供的是 8 档连续强度（用户没法要求"少想一点但别完全
+                 不想"），而且那个 bool 在云端一直是空转的——enable_thinking 被静默
+                 忽略，真正管用的是 reasoning_effort。 -->
+            <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"
+                      HorizontalAlignment="Stretch"
+                      SelectionChanged="Reasoning_SelectionChanged"
+                      ToolTipService.ToolTip="混合推理模型会先输出思考过程，这个档位就是让它想多久。散文翻译「关闭思考」与非 none 档位实测质量相同（各 3 次采样共 12 个样本全干净），只是思考越久越慢——开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。两种服务端要用两种关法，程序按服务端在 /models 里报的能力自动选：本地 llama-server 用 enable_thinking=false（只认「关闭思考」这一档），云端用 reasoning_effort。" />
+            <TextBlock x:Name="EffortHintText" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
             <TextBlock FontSize="11" TextWrapping="Wrap"
                        Foreground="{ThemeResource TextFillColorTertiaryBrush}"
@@ -103,7 +111,7 @@
                        Text="给模型一个 web_search 工具：遇到不认识或没有官方中文释义的标签时，它可以自己决定去查一下。默认指向 192.168.1.4 上已部署的搜索网关。" />
 
             <CheckBox x:Name="SearchEnabledBox" Content="启用搜索工具"
-                      ToolTipService.ToolTip="实测：关闭思考链时模型不会调用搜索工具，所以启用搜索需要同时让思考链保持开启。" />
+                      ToolTipService.ToolTip="实测：推理档位设为「关闭思考」时模型不会调用搜索工具，所以启用搜索需要同时选一个会思考的档位（或「自动」）。" />
 
             <ComboBox x:Name="ProviderBox" Header="搜索后端" HorizontalAlignment="Stretch"
                       SelectionChanged="Provider_SelectionChanged">

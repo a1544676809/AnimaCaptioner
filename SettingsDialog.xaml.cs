@@ -53,7 +53,9 @@ public sealed partial class SettingsDialog : ContentDialog
         // 模板就绪后再走一次统一同步（见 SyncModelText）。
         Loaded += (_, _) => SyncModelText(_cfg.Model);
         ApiKeyBox.Password = cfg.ApiKey;
-        DisableThinkingBox.IsChecked = cfg.DisableThinking;
+        BuildEffortItems();
+        SelectEffort(cfg.ReasoningEffort);
+        UpdateEffortHint();
         AgentEnabledBox.IsChecked = cfg.AgentEnabled;
         AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
         SyncAgentBoxes();
@@ -443,6 +445,8 @@ public sealed partial class SettingsDialog : ContentDialog
     {
         if (AgentAttachImageBox is null || AgentEnabledBox is null) return;
         AgentAttachImageBox.IsEnabled = AgentEnabledBox.IsChecked == true;
+        // 档位提示里那句"带工具那几轮不受影响"只在助手开着时才该出现
+        UpdateEffortHint();
     }
 
     /// <summary>把对话框里的值写回配置对象。保存动作由调用方负责。</summary>
@@ -451,7 +455,7 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.ApiBaseUrl = BaseUrlBox.Text.Trim();
         cfg.Model = ModelBox.Text.Trim();
         cfg.ApiKey = ApiKeyBox.Password;
-        cfg.DisableThinking = DisableThinkingBox.IsChecked == true;
+        cfg.ReasoningEffort = SelectedEffort;
         cfg.AgentEnabled = AgentEnabledBox.IsChecked == true;
         cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
@@ -559,6 +563,127 @@ public sealed partial class SettingsDialog : ContentDialog
         finally { SearchTestBtn.IsEnabled = true; }
     }
 
+    // ---- 推理档位 ----
+
+    /// <summary>
+    /// 档位下拉框的条目：值 + 显示名。**值必须落在
+    /// <see cref="LlmClient.EffortVocabulary"/> 里**（那是服务端 422 时自己列出的
+    /// 全集，硬约束就是它）；显示名给中文，因为 minimal / xhigh / ultra 这几个词
+    /// 光看英文很难排出强弱。
+    /// </summary>
+    private static readonly (string Value, string Label)[] EffortItems =
+    {
+        ("", "自动（跟随服务端默认）"),
+        ("none", "关闭思考（none）"),
+        ("minimal", "最少（minimal）"),
+        ("low", "少（low）"),
+        ("medium", "中（medium）"),
+        ("high", "高（high）"),
+        ("xhigh", "很高（xhigh）"),
+        ("ultra", "极高（ultra）"),
+        ("max", "最高（max）"),
+    };
+
+    /// <summary>当前选中的档位值（空串 = 自动）。控件还没建好时回落到配置。</summary>
+    private string SelectedEffort =>
+        (ReasoningBox?.SelectedItem as ComboBoxItem)?.Tag as string ?? _cfg.ReasoningEffort;
+
+    private void BuildEffortItems()
+    {
+        ReasoningBox.Items.Clear();
+        foreach (var (value, label) in EffortItems)
+            ReasoningBox.Items.Add(new ComboBoxItem { Content = label, Tag = value });
+    }
+
+    /// <summary>
+    /// 把配置里的档位落到下拉框。配置里是不认识的值时（手改过 settings.json、
+    /// 或服务端换了词表）落到「自动」——**不能落到 none**：那会静默把思考关掉，
+    /// 而用户原本想要的可能是"多想想"。
+    /// </summary>
+    private void SelectEffort(string value)
+    {
+        var want = value ?? "";
+        foreach (var o in ReasoningBox.Items.OfType<ComboBoxItem>())
+            if (string.Equals(o.Tag as string, want, StringComparison.OrdinalIgnoreCase))
+            { ReasoningBox.SelectedItem = o; return; }
+        ReasoningBox.SelectedIndex = 0;
+    }
+
+    private void Reasoning_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        UpdateEffortHint();
+
+    /// <summary>
+    /// 说明当前档位到底会不会下发。**这不是装饰**：档位能不能生效取决于服务端，
+    /// 而"选了一个不会生效的档位"是看不出来的——提示行就是不让它静默。
+    ///
+    /// 判据只有一条：服务端在 `/models` 里报过 `effort` 才下发（见
+    /// LlmClient.EffortToSend，那里写了为什么没报就不发）。
+    /// </summary>
+    private void UpdateEffortHint()
+    {
+        if (EffortHintText is null) return;
+
+        var chosen = SelectedEffort;
+        var model = ModelBox?.Text.Trim() ?? "";
+        LlmClient.ModelInfo? info = null;
+        var known = model.Length > 0 && _modelInfos.TryGetValue(model, out info);
+
+        // 先假定提示是信息性的；下面遇到"选了但不生效"再换成警示色。
+        EffortHintText.Foreground = HintBrush;
+        var sb = new StringBuilder();
+
+        if (!known)
+        {
+            sb.Append("还没取到服务端能力：点「获取列表」或「测试连接」之后，这里会说明这一档会不会下发。");
+            if (LlmClient.IsThinkingOff(chosen))
+                sb.Append("「关闭思考」不受影响——本地 llama-server 靠 enable_thinking=false，始终有效。");
+        }
+        else if (!info!.SupportsEffort)
+        {
+            sb.Append("该服务端没有声明 reasoning_effort（llama-server 就是这种），所以档位不会下发。");
+            if (LlmClient.IsThinkingOff(chosen))
+            {
+                sb.Append("「关闭思考」仍然有效——它会下发 enable_thinking=false。");
+            }
+            else if (chosen.Length == 0)
+            {
+                sb.Append("「自动」本来就是不下发，行为与从前一致。");
+            }
+            else
+            {
+                EffortHintText.Foreground = BadBrush;
+                sb.Append("在这个服务端上，这一档等于「自动」——只有「关闭思考」才能真正改变行为。");
+            }
+        }
+        else
+        {
+            var declared = info.EffortLevels ?? new List<string>();
+            if (chosen.Length == 0)
+                sb.Append($"不下发档位，由服务端自己决定（该模型默认 {info.DefaultEffort}）。");
+            else if (LlmClient.IsThinkingOff(chosen))
+                sb.Append("下发 reasoning_effort=none。实测云端真能关掉思考——同一条提问，"
+                          + "enable_thinking=false 会给回 69 字符思考，加上 none 才是 0。");
+            else if (declared.Contains(chosen, StringComparer.OrdinalIgnoreCase))
+                sb.Append($"下发 reasoning_effort={chosen}。");
+            else
+                sb.Append($"下发 reasoning_effort={chosen}——但该模型在 /models 里只声明了 "
+                          + $"{string.Join("/", declared)}。没声明的档位实测服务端照样接受（HTTP 200），"
+                          + "只是未必比声明过的那几档更有区分度。");
+        }
+
+        // 非 none 档位一律会思考，此时程序会替思考留出 token 预算——说一句，
+        // 免得用户以为 max_tokens 设小了是自己算错。
+        if (!LlmClient.IsThinkingOff(chosen) && chosen.Length > 0)
+            sb.Append(" 会思考，程序因此会另外留一份 token 预算给思考过程。");
+
+        // 工具那一路刻意不跟档位走（关了思考模型就不发 tool_calls），这条差异
+        // 在 user 把档位设成 none 时最容易误解。
+        if (LlmClient.IsThinkingOff(chosen) && AgentEnabledBox?.IsChecked == true)
+            sb.Append(" 例外：AI 助手里带工具的那几轮始终保留思考，不受这里影响。");
+
+        EffortHintText.Text = sb.ToString();
+    }
+
     // ---- 模型列表 ----
 
     /// <summary>提示行的两种配色。都只在需要时构造，没有缓存价值。</summary>
@@ -579,8 +704,12 @@ public sealed partial class SettingsDialog : ContentDialog
             : "settings fetch models FAILED: " + err);
     }
 
-    private void Model_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+    private void Model_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
         UpdateModelHint(ModelBox.Text.Trim());
+        // 档位能不能下发取决于**当前模型**所属服务端报了什么，所以换模型就要重算
+        UpdateEffortHint();
+    }
 
     /// <summary>
     /// 拉一次 /models，结果同时喂给下拉框和提示行。
@@ -650,6 +779,7 @@ public sealed partial class SettingsDialog : ContentDialog
         {
             SyncModelText(keep);
             UpdateModelHint(ModelBox.Text.Trim());
+            UpdateEffortHint();
         });
 
         // 只有"服务端恰好报了一个模型"且"用户还没填名字"时才代填。
@@ -661,6 +791,7 @@ public sealed partial class SettingsDialog : ContentDialog
         }
 
         UpdateModelHint(ModelBox.Text.Trim());
+        UpdateEffortHint();
     }
 
     /// <summary>
