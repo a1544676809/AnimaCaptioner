@@ -49,6 +49,10 @@ internal static class Harness
                 return CoreCheck.RichApi.Run(
                     Arg(1) ?? @"D:\NuGet\Packages\microsoft.windowsappsdk.winui\1.8.260803003\lib\net6.0-windows10.0.17763.0\Microsoft.WinUI.dll");
 
+            case "llm":
+                // 临时探针：真实网络 + 当前 settings.json。不属于默认套件。
+                return CoreCheck.LlmLive.Run();
+
             case "sections":
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 return Sections.Run(dataset!);
@@ -133,6 +137,7 @@ internal static class Harness
                       escape     - <词库> [seed]   标签转义（与 ComfyUI 解析器对拍）
                       roundtrip  <训练集>          逐字节往返
                       richapi    <WinUI.dll>      反射查 API 是否存在
+                      llm                         真实网络：/models 能力 + 关思考 A/B
 
                     数据集与词库在仓库外，也可改用环境变量：
                       AC_DATASET / AC_VOCABDB / AC_SEED

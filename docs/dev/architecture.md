@@ -283,6 +283,66 @@ token 预算也按**编码器看到的**文本算：ComfyUI 会把 `\(` 的反�
 `TagTranslator` / `TagSearchAgent` / AI 助手三处引用同一份——同一个工具在两个入口
 表现不同是最难查的 bug。
 
+## 模型能力为什么是"问服务端"而不是"让用户填"
+
+标准 OpenAI 的 `GET /models` 只保证 `id`，但**兼容实现普遍加了能力字段**，实测
+DeepSeek 报的是（`tests/Models.cs` 里存着逐字节的原样响应）：
+
+```json
+{"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576,
+ "max_output_tokens":393216,"input_modalities":["text","image"],
+ "effort":{"supported_levels":["low","high","max"],"default_level":"high"}}
+```
+
+所以"这个模型吃不吃图"有确定答案，不需要用户手工声明，也不需要发一次试探请求。
+`ModelInfo` 把这些字段都解出来，设置里那行提示直接报（含"仅文本输入"这样的
+结论），AI 助手据此决定「带当前图片」能不能勾。
+
+**`SupportsImage` 是三态，这一条是设计要点。** 它返回 `bool?`：
+
+| 服务端说 | 值 | 行为 |
+|---|---|---|
+| `input_modalities` 含 `image` | `true` | 放行 |
+| 报了但只含 `text` | `false` | 拦下，并说明原因 |
+| **根本没报这个字段** | `null` | **放行** |
+
+第三行是 llama-server 那一类：它只报 `meta{n_ctx,ftype,size}`。把"不知道"当"不支持"
+会把本来能用的配置判死，而且用户完全无从察觉——`tests/Models.cs` 第 8、10 节专门
+钉着这条。拦截逻辑抽成纯函数 `LlmClient.CanAttachImage(bool?, bool)` 而不是留在
+`MainWindow` 里，就是为了让这条规则能在 net8 回归里被测到。
+
+缓存只在 `LlmClient` 内部（`_caps`，按「接口地址 + 模型名」索引），**不落盘**：
+条目极少、只在会话内有用，丢了只多花一次几百毫秒的 GET——不值得再引入一个要与
+配置文件同步的文件。键必须带接口地址，同一个模型名在本地网关和云端是两回事。
+`EnsureCapsAsync` 对每个键**一辈子只试一次**（含失败），否则一个不实现 `/models`
+的网关会让每次翻译都多等一次超时。
+
+## "关闭思考"在两种服务端要用两种关法
+
+原来只发 `chat_template_kwargs.enable_thinking=false`，代码注释里的担心是
+"下发给云端会 400"。**实测推翻了这个担心，真正的问题更隐蔽**：DeepSeek
+`api.deepseek.com` 照收这个字段、回 200，然后**静默忽略**——同一端点、同一条提问、
+同一个 `max_tokens`：
+
+| 请求体 | 服务端返回的 `reasoning_content` |
+|---|---|
+| 只有 `chat_template_kwargs` | **69 字符**（思考照常发生） |
+| 加上 `reasoning_effort: "none"` | 0（真的关掉了） |
+
+也就是说"关闭思考"这个开关在云服务上一直是空转的，token 预算里那句
+"关思考时预算就是用户设的那个值"（`ReasoningHeadroom`）也因此不成立。
+
+真正管用的 `reasoning_effort` **被服务端严格校验**：给个它认不得的值直接 422，
+并把全部合法值列出来（`none/minimal/low/medium/high/xhigh/ultra/max`）。而
+`/models` 报的 `effort.supported_levels` 是**该模型支持的子集**（flash 只报
+`low/high/max`）。所以规则是 `LlmClient.ThinkingOffEffort(disableThinking,
+effortSupported)`：只有服务端自己声明过才发 `"none"`，没声明的（llama-server）
+维持原样——这样既不瞎填一个值，也不会把不认这个字段的服务端打成 400。
+
+**带工具那条路仍然不关思考**，即使全局开关是开的：llama-server + Qwen3 实测关掉
+思考后模型不再发出 `tool_calls`，搜索工具等于失效（见 `ChatWithToolsAsync` 的注释）。
+两件事的正确取值相反，所以按调用需要决定，不跟着全局走。
+
 ## 分栏比例为什么按模式各存一套
 
 两个模式的分栏语义不同（图片 / 标签 / 提示词 vs 提示词库 / 标签 / 提示词），

@@ -119,6 +119,16 @@ dotnet build -c Release
 .\bin\Release\net8.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
 ```
 
+有一条**要联网、要已配置接口**的诊断（不属于上面这组"clone 下来就能跑"的）：
+
+```powershell
+.\bin\Release\net8.0\corecheck.exe llm   # 拉一次 /models 看服务端报的能力，并 A/B 验证"关思考"是否真生效
+```
+
+它会用你 `settings.json` 里的地址与密钥打真实请求（因此单独列出来）。
+有用的场合：换了接口或模型之后，想确认服务端到底报了什么能力、以及
+`chat_template_kwargs` 那个字段是不是又被静默忽略了。
+
 `parity` 与 Python 参考实现做 117 项对拍，只需要随仓库分发的 `tests/golden.json`。
 （条数会随训练集内容变化——`golden.json` 是参考实现对**当前数据集**的输出快照，
 改了 caption 就要用生成脚本重新出一份。）

@@ -205,8 +205,28 @@ public sealed class LlmClient : IDisposable
 
         // 只有本地 llama-server 认这个字段；不下发以免云端服务 400。
         // 但仍给一个开关，因为有些自建网关也支持。
+        //
+        // **实测补充（DeepSeek，2026-10）：云端不是"400"，是"静默忽略"**——
+        // 字段照收，思考照样发生。所以关思考必须另配 reasoning_effort，
+        // 而那个字段服务端会严格校验，只能照它自己声明过的能力发。
         if (cfg.DisableThinking)
+        {
             body["chat_template_kwargs"] = new JsonObject { ["enable_thinking"] = false };
+
+            // 先问一次能力（每个「地址+模型」一辈子只问一次），再决定发不发。
+            var caps = await EnsureCapsAsync(cfg, ct).ConfigureAwait(false);
+            var effort = ThinkingOffEffort(cfg.DisableThinking, caps?.SupportsEffort == true);
+            if (effort is not null)
+            {
+                body["reasoning_effort"] = effort;
+                Log.Write($"llm thinking off: reasoning_effort={effort} " +
+                          $"(服务端声明 {string.Join("/", caps!.EffortLevels!)})");
+            }
+            else if (caps is null)
+            {
+                Log.Write("llm thinking off: 能力未知，只发 chat_template_kwargs");
+            }
+        }
 
         try
         {
@@ -623,27 +643,66 @@ public sealed class LlmClient : IDisposable
     /// <summary>
     /// 服务端列出的一个模型。
     ///
-    /// 后三项来自 llama-server 的扩展字段（`data[].meta`），标准 OpenAI 服务不提供。
-    /// 但选模型时恰好最需要它们：同一个模型的不同量化在列表里只是一串相似的名字，
-    /// 只有 ftype 能把 IQ4_XS / Q4_K_M / Q6_K 区分开。
+    /// 字段来自两套互不相同的扩展，**都不是标准 OpenAI 的东西**（标准只保证
+    /// `id`）：
+    ///
+    /// - llama-server：`data[].meta` 的 `ftype` / `n_ctx` / `size`。同一个模型的
+    ///   不同量化在列表里只是一串相似的名字，只有 ftype 能把 IQ4_XS / Q4_K_M /
+    ///   Q6_K 区分开，所以这几项一直留着。
+    /// - OpenAI 兼容的云服务（实测 DeepSeek）：`name` / `context_window` /
+    ///   `max_output_tokens` / `input_modalities` / `effort`。**能力信息是从这里
+    ///   知道的**，不是靠猜或让用户手填。
+    ///
+    /// 两套都缺时（老网关）全都取默认值，<see cref="Describe"/> 返回空串。
     /// </summary>
     public sealed record ModelInfo(
         string Id,
         string Quantization = "",
         int ContextLength = 0,
         long SizeBytes = 0,
-        IReadOnlyList<string>? Aliases = null)
+        IReadOnlyList<string>? Aliases = null,
+        string DisplayName = "",
+        int MaxOutputTokens = 0,
+        IReadOnlyList<string>? InputModalities = null,
+        IReadOnlyList<string>? EffortLevels = null,
+        string DefaultEffort = "")
     {
         /// <summary>
-        /// 界面上的一行说明。三项扩展信息都没有时返回空串，由调用方决定不显示。
+        /// 能不能吃图。**三态**：true 能、false 服务端明确说不能、null 服务端没说。
+        ///
+        /// 三态是必要的：旧网关（llama-server 就没有这个字段）什么都不声明，
+        /// 这时不能当成"不能"，否则会把本来能用的配置判死。只有服务端真的报了
+        /// `input_modalities` 且里面没有 `image`，才敢拦。
+        /// </summary>
+        public bool? SupportsImage =>
+            InputModalities is null or { Count: 0 }
+                ? null
+                : InputModalities.Any(m => string.Equals(m, "image", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>服务端是否声明了思考强度参数（`reasoning_effort`）。</summary>
+        public bool SupportsEffort => EffortLevels is { Count: > 0 };
+
+        /// <summary>
+        /// 界面上的一行说明。所有扩展信息都没有时返回空串，由调用方决定不显示。
         /// （标准 OpenAI 服务只会给 id，那时这一行本来就是空的。）
         /// </summary>
         public string Describe()
         {
             var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(DisplayName)) parts.Add(DisplayName);
             if (!string.IsNullOrWhiteSpace(Quantization)) parts.Add(Quantization);
             if (ContextLength > 0) parts.Add("上下文 " + ContextLength);
+            if (MaxOutputTokens > 0) parts.Add("输出上限 " + MaxOutputTokens);
             if (SizeBytes > 0) parts.Add(FormatSize(SizeBytes));
+
+            // 图像能力值得单独占一节：它决定「带当前图片」那个复选框能不能勾。
+            if (SupportsImage == true) parts.Add("支持图像输入");
+            else if (SupportsImage == false) parts.Add("仅文本输入");
+
+            if (SupportsEffort)
+                parts.Add("思考 " + string.Join("/", EffortLevels!) +
+                          (string.IsNullOrWhiteSpace(DefaultEffort) ? "" : $"（默认 {DefaultEffort}）"));
+
             return string.Join(" · ", parts);
         }
     }
@@ -694,6 +753,7 @@ public sealed class LlmClient : IDisposable
             if (!TryParseModels(raw, out var models))
                 Log.Write("models: 响应不是可识别的形状 " + Truncate(raw, 300));
 
+            Remember(cfg, models);
             Log.Write($"models listed: {models.Count} url={url}");
             return (true, models, "");
         }
@@ -709,6 +769,101 @@ public sealed class LlmClient : IDisposable
             return (false, new(), ex.Message);
         }
     }
+
+    /// <summary>
+    /// `/models` 报过的能力，按「接口地址 + 模型名」索引。**只在内存里**，不落盘。
+    ///
+    /// 刻意不做 sidecar 文件：条目极少、只在会话内有用，而且丢了只多花一次
+    /// 几百毫秒的 GET——不值得再引入一个要与配置文件同步的文件。
+    ///
+    /// 键必须带接口地址：同一个模型名在本地网关和云端是两个不同的东西。
+    /// </summary>
+    private readonly Dictionary<string, ModelInfo> _caps = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>已经为该键试过拉列表（无论成没成），避免每次请求都去撞一个不实现 /models 的网关。</summary>
+    private readonly HashSet<string> _capTried = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static string CapKey(string baseUrl, string model) =>
+        (baseUrl ?? "").Trim().TrimEnd('/').ToLowerInvariant() + "|" +
+        (model ?? "").Trim().ToLowerInvariant();
+
+    private void Remember(AppSettings cfg, List<ModelInfo> models)
+    {
+        lock (_caps)
+        {
+            _capTried.Add(CapKey(cfg.ApiBaseUrl, cfg.Model));
+            foreach (var m in models) _caps[CapKey(cfg.ApiBaseUrl, m.Id)] = m;
+        }
+    }
+
+    /// <summary>
+    /// 当前配置所选模型的能力；服务端没报过就返回 null。
+    ///
+    /// 调用方据此决定"能不能带图""要不要发 reasoning_effort"。**null 不等于
+    /// 不支持**，只表示不知道——这时应当保持原有行为，而不是拦下来。
+    /// </summary>
+    public ModelInfo? Caps(AppSettings cfg)
+    {
+        lock (_caps)
+            return _caps.TryGetValue(CapKey(cfg.ApiBaseUrl, cfg.Model), out var m) ? m : null;
+    }
+
+    /// <summary>
+    /// 保证能力已知：没报过就当场拉一次 /models。**每个键一辈子只试一次**
+    /// （含失败），所以不实现 /models 的网关不会让每次翻译都多等一次超时。
+    ///
+    /// 失败不抛：拿不到能力只是"按老办法办"，不是错误。
+    /// </summary>
+    public async Task<ModelInfo?> EnsureCapsAsync(AppSettings cfg, CancellationToken ct = default)
+    {
+        var existing = Caps(cfg);
+        if (existing is not null) return existing;
+
+        var key = CapKey(cfg.ApiBaseUrl, cfg.Model);
+        lock (_caps) { if (_capTried.Contains(key)) return null; }
+        lock (_caps) { _capTried.Add(key); }
+
+        try
+        {
+            var (ok, models, err) = await ListModelsAsync(cfg, ct).ConfigureAwait(false);
+            if (!ok) Log.Write("caps: /models 拉取失败（按未知处理）：" + err);
+            else if (models.Count == 0) Log.Write("caps: /models 没报模型（按未知处理）");
+            else Log.Write($"caps: {cfg.Model} 能力已获取（{models.Count} 个模型）");
+        }
+        catch (Exception ex)
+        {
+            Log.Write("caps: 拉取异常（按未知处理）：" + ex.Message);
+        }
+        return Caps(cfg);
+    }
+
+    /// <summary>
+    /// 关思考时该不该下发 `reasoning_effort: "none"`。**纯函数**，所以
+    /// tests/Models.cs 能直接钉住这条真值表，不必联网。
+    ///
+    /// 两条实测事实（DeepSeek `api.deepseek.com`，2026-10）：
+    ///
+    /// - `chat_template_kwargs.enable_thinking=false` 被**静默忽略**：同一条提问
+    ///   带上它，`reasoning_content` 照样返回（123 字符，比不带的 53 还多），
+    ///   HTTP 200 什么也不说。也就是说"关闭思考"这个开关在云服务上一直是空转的。
+    /// - 真正管用的是 `reasoning_effort`，而且服务端**严格校验**：给个它认不得的
+    ///   值直接 422，还会把全部合法值列出来（none/minimal/low/medium/high/xhigh/
+    ///   ultra/max）。所以不能"顺手发一个 none"——得照服务端在 /models 里声明的
+    ///   `supported_levels` 来，没声明的（llama-server）就维持原样只发 kwargs。
+    /// </summary>
+    public static string? ThinkingOffEffort(bool disableThinking, bool effortSupported) =>
+        disableThinking && effortSupported ? "none" : null;
+
+    /// <summary>
+    /// 该不该把当前这张图附进请求。**纯函数**，供 tests/Models.cs 钉住真值表。
+    ///
+    /// 关键是最后一条：`supportsImage` 为 null（服务端没报）时**放行**。
+    /// `input_modalities` 是云服务的扩展字段，llama-server 这类网关根本不报；
+    /// 把"不知道"当"不支持"会把本来能读图的配置判死，而且用户无从察觉。
+    /// 只有服务端**明确**报了不含 image 的模态列表才拦——那时请求注定 400。
+    /// </summary>
+    public static bool CanAttachImage(bool? supportsImage, bool hasImage) =>
+        hasImage && supportsImage != false;
 
     /// <summary>
     /// 解析 /models 的响应。**纯函数，不碰网络**，所以能在测试工程里直接对着真实
@@ -770,12 +925,35 @@ public sealed class LlmClient : IDisposable
             if (string.IsNullOrWhiteSpace(id)) continue;
 
             var hasMeta = el.TryGetProperty("meta", out var meta) && meta.ValueKind == JsonValueKind.Object;
+
+            // `name` 只在与服务端 id **逐字符不同**时才当显示名。
+            //
+            // 用 Ordinal 而不是忽略大小写：`{"models":[{"name":"llama3"}]}` 那种
+            // 网关里 name 就是 id，丢掉避免界面重复一遍；但 `DeepSeek-V4-Pro`
+            // 与 `deepseek-v4-pro` 只是大小写不同、却是有价值的显示名
+            // （tests/Models.cs 第 7 节抓到的就是这个）。
+            var name = Str(el, "name");
+            if (string.Equals(name, id, StringComparison.Ordinal)) name = null;
+
+            // 两种"上下文"来源合一：云服务用 context_window，llama-server 用
+            // meta.n_ctx。语义相同（都是模型的总窗口），谁在就用谁的。
+            var ctx = Int(el, "context_window");
+            if (ctx <= 0 && hasMeta) ctx = Int(meta, "n_ctx");
+
+            var effort = el.TryGetProperty("effort", out var ef) && ef.ValueKind == JsonValueKind.Object
+                ? ef : default;
+
             sink.Add(new ModelInfo(
                 id.Trim(),
                 hasMeta ? Str(meta, "ftype") ?? "" : "",
-                hasMeta ? Int(meta, "n_ctx") : 0,
+                ctx,
                 hasMeta ? Long(meta, "size") : 0L,
-                StrArray(el, "aliases")));
+                StrArray(el, "aliases"),
+                name?.Trim() ?? "",
+                Int(el, "max_output_tokens"),
+                StrArray(el, "input_modalities"),
+                effort.ValueKind == JsonValueKind.Object ? StrArray(effort, "supported_levels") : null,
+                effort.ValueKind == JsonValueKind.Object ? Str(effort, "default_level")?.Trim() ?? "" : ""));
         }
         DedupeModels(sink);
     }

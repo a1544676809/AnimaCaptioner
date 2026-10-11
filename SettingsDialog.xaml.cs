@@ -666,7 +666,17 @@ public sealed partial class SettingsDialog : ContentDialog
             ModelListText.Foreground = HintBrush;
             sb.Append($"当前「{info.Id}」");
             var detail = info.Describe();
-            sb.Append(detail.Length > 0 ? '：' + detail : "（服务端未提供量化 / 上下文信息）");
+            // 这行现在还会报服务端声明的能力（能否读图、上下文与输出上限、
+            // 思考强度档位）——那正是"该不该勾带图"和"要不要发 reasoning_effort"
+            // 的判据，不是装饰。
+            sb.Append(detail.Length > 0 ? '：' + detail : "（服务端没有提供模型说明）");
+
+            // 服务端允许的输出上限常常远大于界面这个框的上限（实测 DeepSeek：
+            // 393216 vs 界面的 8192）。不说明的话，用户会以为"模型就只能写这么长"。
+            if (info.MaxOutputTokens > 0 && MaxTokensBox.Maximum > 0 &&
+                info.MaxOutputTokens > MaxTokensBox.Maximum)
+                sb.Append($"（该模型允许输出到 {info.MaxOutputTokens}，" +
+                          $"界面 max_tokens 上限是 {MaxTokensBox.Maximum:0}）");
 
             var alias = (info.Aliases ?? new List<string>())
                 .Where(a => !string.Equals(a, info.Id, StringComparison.OrdinalIgnoreCase))

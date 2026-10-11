@@ -55,6 +55,7 @@
     <Compile Include="Agent.cs" />
     <Compile Include="Reasoning.cs" />
     <Compile Include="RichApi.cs" />
+    <Compile Include="LlmLive.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
 </Project>

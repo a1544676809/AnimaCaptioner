@@ -4136,9 +4136,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
         if (!on) return;
 
-        // 「带当前图片」只在标注模式有意义：写标签模式左栏是提示词库，没有图。
-        AgentImageBox.IsEnabled = !draft && _index >= 0 && _index < _items.Count;
-        AgentImageBox.IsChecked = _cfg.AgentAttachImage && AgentImageBox.IsEnabled;
+        ApplyAgentImageGate(draft);
 
         if (AgentFeed.Children.Count == 0)
             AgentAddNote("说一句要它做什么，或直接描述画面。它会先查词库，" +
@@ -4146,6 +4144,58 @@ private void EndEdit(bool commit, bool lostFocus = false)
                          (AgentImageBox.IsChecked == true
                              ? "这一屏会带上当前这张图。"
                              : "没带图时它只会照你的文字写。"));
+
+        // 顺手问一次"这个模型吃不吃图"（每个模型一次，之后走内存缓存）。
+        _ = RefreshAgentImageGateAsync();
+    }
+
+    /// <summary>
+    /// 「带当前图片」那个复选框的启用状态。
+    ///
+    /// 三重条件：有图可带（写标签模式没有）、服务端没说过这个模型只吃文本。
+    /// **"不知道"一律放行**——`input_modalities` 是 OpenAI 兼容云服务的扩展，
+    /// llama-server 这类老网关根本不报，把未知当"不支持"会把本来能用的配置判死。
+    /// </summary>
+    private void ApplyAgentImageGate(bool draft)
+    {
+        var caps = _llm.Caps(_cfg);
+        var hasImage = !draft && _index >= 0 && _index < _items.Count;
+        var textOnly = caps?.SupportsImage == false;
+
+        AgentImageBox.IsEnabled = LlmClient.CanAttachImage(caps?.SupportsImage, hasImage);
+        AgentImageBox.IsChecked = _cfg.AgentAttachImage && AgentImageBox.IsEnabled;
+
+        ToolTipService.SetToolTip(AgentImageBox,
+            textOnly
+                ? $"「{_cfg.Model}」只接受文本输入（服务端 /models 声明 " +
+                  $"{string.Join("/", caps!.InputModalities!)}），不能带图。"
+                : hasImage
+                    ? "把当前这张图一起发给模型（它会先查词库再给提案）。"
+                    : "写标签模式没有图片；标注模式下要先选中一张图。");
+    }
+
+    /// <summary>
+    /// 能力还没拿到时去拉一次 /models，拿到后重画上面那个复选框。
+    ///
+    /// 失败与"服务端没报"都静默放过：拉不到能力只是维持原样，不是错误。
+    /// </summary>
+    private async Task RefreshAgentImageGateAsync()
+    {
+        if (!_cfg.AgentEnabled || _llm.Caps(_cfg) is not null) return;
+        try
+        {
+            var wasChecked = AgentImageBox.IsChecked == true;
+            if (await _llm.EnsureCapsAsync(_cfg, CancellationToken.None) is null) return;
+            ApplyAgentImageGate(_mode == PromptMode.Draft);
+
+            // 能力是晚一步才知道的，而开头那句问候已经按"会带图"写了。这里补一句
+            // 更正——不补的话界面会一边说"这一屏会带上当前这张图"，一边把复选框
+            // 灰掉，用户只会觉得程序坏了。
+            if (wasChecked && AgentImageBox.IsChecked != true)
+                AgentAddNote($"「{_cfg.Model}」只接受文本输入（服务端 /models 声明 " +
+                             $"{string.Join("/", _llm.Caps(_cfg)!.InputModalities!)}），这次不带图。");
+        }
+        catch (Exception ex) { Log.Write("agent image gate failed: " + ex.Message); }
     }
 
     private void AgentImageBox_Click(object sender, RoutedEventArgs e)
@@ -4205,9 +4255,19 @@ private void EndEdit(bool commit, bool lostFocus = false)
             // 读图失败不阻断：不带图问一句仍然是有用的，但要如实说明这次没带图。
             if (AgentImageWanted)
             {
-                var path = CurrentImagePath();
-                if (path is not null) image = await ImagePayload.LoadAsync(path);
-                if (image is null) SetAgentStatus("这张图读不出来，这次不带图。");
+                // 服务端说过这个模型只吃文本就别发了——那是一次注定 400 的请求，
+                // 而且图片要先缩、要 base64，白花时间。
+                if (_llm.Caps(_cfg)?.SupportsImage == false)
+                {
+                    SetAgentStatus("这个模型不吃图，这次只发文字。");
+                    Log.Write($"agent: skip image, {_cfg.Model} declared text-only");
+                }
+                else
+                {
+                    var path = CurrentImagePath();
+                    if (path is not null) image = await ImagePayload.LoadAsync(path);
+                    if (image is null) SetAgentStatus("这张图读不出来，这次不带图。");
+                }
             }
 
             _agentHistory.Add(asked);

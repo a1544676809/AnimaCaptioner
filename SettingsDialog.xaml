@@ -55,8 +55,8 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <CheckBox x:Name="DisableThinkingBox" Content="关闭思考链 (enable_thinking=false)"
-                          ToolTipService.ToolTip="混合推理模型会先输出思考过程。散文翻译开与关实测质量相同（只是开思考慢 10–15 倍）；开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文" />
+                <CheckBox x:Name="DisableThinkingBox" Content="关闭思考链"
+                          ToolTipService.ToolTip="混合推理模型会先输出思考过程。散文翻译开与关实测质量相同（只是开思考慢 10–15 倍）；开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。本地 llama-server 用 enable_thinking=false 关；云端（如 DeepSeek）那个字段会被静默忽略，实测要用 reasoning_effort=none —— 程序会照服务端在 /models 里报的档位自动选对的那一个" />
                 <TextBlock Grid.Column="1" x:Name="TestResultText" FontSize="11" Margin="10,0"
                            VerticalAlignment="Center" TextWrapping="Wrap"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

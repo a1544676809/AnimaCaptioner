@@ -92,10 +92,16 @@ public sealed class AppSettings
     public int SearchMaxResults { get; set; } = 5;
 
     /// <summary>
-    /// 关掉 Qwen3 的思考链。主要影响短任务（标签释义）；散文翻译两种都行——
+    /// 关掉混合推理模型的思考链。主要影响短任务（标签释义）；散文翻译两种都行——
     /// 实测开与关质量相同（各 3 次采样、两类输入共 12 个样本全干净），
     /// 只是开思考慢 10–15 倍。开思考时程序会自动给思考留 token 余量
     /// （见 LlmClient.ReasoningHeadroom），且思考内容永不进译文。
+    ///
+    /// **两种服务端要两种关法，程序按 `/models` 报的能力自动选**（见
+    /// LlmClient.ThinkingOffEffort）：llama-server 认
+    /// `chat_template_kwargs.enable_thinking=false`；而 DeepSeek 这类云服务
+    /// **把它静默忽略**（实测带与不带都照样思考），真正管用的是被严格校验的
+    /// `reasoning_effort`。
     /// </summary>
     public bool DisableThinking { get; set; } = true;
 
@@ -118,8 +124,11 @@ public sealed class AppSettings
 
     /// <summary>
     /// 标注模式下把当前图片一起发给模型。**默认开**——读图自动打标是这个面板
-    /// 存在的主要理由。接口或模型不支持图片时，程序会如实报错并建议关掉它，
-    /// 而不是静默退回"凭空描述"。
+    /// 存在的主要理由。
+    ///
+    /// 但服务端在 `/models` 里明确报过"这个模型只吃文本"时，界面会把「带当前
+    /// 图片」禁掉并说明原因，而不是发一次注定 400 的请求（实测 llama-server
+    /// 根本不报这个字段，所以那种情况一律放行——**"不知道"不等于"不支持"**）。
     /// </summary>
     public bool AgentAttachImage { get; set; } = true;
 

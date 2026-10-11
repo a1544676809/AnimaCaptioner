@@ -116,7 +116,74 @@ public static class Models
         Eq("1 MiB", LlmClient.FormatSize(1L << 20), "1.0 MB");
         Eq("512 B", LlmClient.FormatSize(512L), "512 B");
 
+        // ---------- 7. DeepSeek：能力是服务端报的，不是猜的 ----------
+        Console.WriteLine("\n=== 7. DeepSeek 的真实响应（能力字段） ===");
+        var ds = LlmClient.ParseModels(DeepSeek);
+        Eq("个数", ds.Count, 2);
+        if (ds.Count == 2)
+        {
+            var flash = ds[0];
+            Eq("id", flash.Id, "deepseek-flash");
+            Eq("显示名（name 与 id 不同才记）", flash.DisplayName, "DeepSeek-V4.1-Flash");
+            Eq("上下文取自 context_window", flash.ContextLength, 1048576);
+            Eq("输出上限", flash.MaxOutputTokens, 393216);
+            Eq("能吃图（input_modalities 含 image）", flash.SupportsImage, (bool?)true);
+            Eq("思考档位取自 effort.supported_levels",
+               string.Join("/", flash.EffortLevels ?? new List<string>()), "low/high/max");
+            Eq("默认档位", flash.DefaultEffort, "high");
+            Eq("Describe()", flash.Describe(),
+               "DeepSeek-V4.1-Flash · 上下文 1048576 · 输出上限 393216 · 支持图像输入 · 思考 low/high/max（默认 high）");
+
+            var pro = ds[1];
+            Eq("只报 text 的模型判为不能吃图", pro.SupportsImage, (bool?)false);
+            Eq("Describe() 写明仅文本", pro.Describe(),
+               "DeepSeek-V4-Pro · 上下文 1048576 · 输出上限 393216 · 仅文本输入 · 思考 low/high/max（默认 high）");
+        }
+
+        // ---------- 8. 「不知道」不等于「不支持」 ----------
+        Console.WriteLine("\n=== 8. 老网关不报能力时必须是未知 ===");
+        // llama-server 的 meta 里没有 input_modalities：这一条守着"别把未知当不支持"，
+        // 一旦判成 false，本来能读图的配置会被界面拦下来。
+        Eq("llama-server → 图像能力未知", remote[0].SupportsImage, (bool?)null);
+        Eq("llama-server → 没有思考档位", remote[0].SupportsEffort, false);
+        Eq("标准 OpenAI → 图像能力未知", std[0].SupportsImage, (bool?)null);
+        Eq("Describe() 里不出现图像字样", std[0].Describe().Contains("图像"), false);
+
+        // ---------- 9. 关思考该发什么（真值表） ----------
+        Console.WriteLine("\n=== 9. ThinkingOffEffort ===");
+        // 实测：chat_template_kwargs 被云端静默忽略，真正管用的是 reasoning_effort，
+        // 而它被严格校验 —— 所以只有服务端自己声明过才发。
+        Eq("关思考 + 服务端声明支持 → 发 none", LlmClient.ThinkingOffEffort(true, true), "none");
+        Eq("关思考 + 未声明（llama-server）→ 不发", LlmClient.ThinkingOffEffort(true, false), null);
+        Eq("不关思考 + 支持 → 不发", LlmClient.ThinkingOffEffort(false, true), null);
+        Eq("不关思考 + 不支持 → 不发", LlmClient.ThinkingOffEffort(false, false), null);
+
+        // ---------- 10. 能不能带图（真值表） ----------
+        Console.WriteLine("\n=== 10. CanAttachImage ===");
+        Eq("能读图 + 有图 → 带", LlmClient.CanAttachImage(true, true), true);
+        Eq("能读图 + 没图 → 不带", LlmClient.CanAttachImage(true, false), false);
+        Eq("明确只吃文本 + 有图 → 拦下", LlmClient.CanAttachImage(false, true), false);
+        Eq("明确只吃文本 + 没图 → 不带", LlmClient.CanAttachImage(false, false), false);
+        // 这一条是重点：llama-server 不报 input_modalities，绝不能因此判成"不支持"。
+        Eq("服务端没报 + 有图 → 放行", LlmClient.CanAttachImage(null, true), true);
+        Eq("服务端没报 + 没图 → 不带", LlmClient.CanAttachImage(null, false), false);
+
         Console.WriteLine($"\n=== models: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
+
+    /// <summary>
+    /// `GET https://api.deepseek.com/models` 的原样响应（2026-10 实测，逐字节）。
+    ///
+    /// 与 llama-server 那份的核心差别：**它在 `data[]` 里直接报了模型能力**
+    /// （`input_modalities` / `context_window` / `max_output_tokens` / `effort`），
+    /// 而这些**不是标准 OpenAI 的字段**——标准只保证 `id`。所以解析必须是
+    /// "有就取、没有就留空"，不能假设任何一项存在。
+    ///
+    /// 两个模型的 `input_modalities` 恰好一个含 image 一个不含，正好用来钉住
+    /// 三态里的 true 与 false。
+    /// </summary>
+    private const string DeepSeek = """
+        {"object":"list","data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek","name":"DeepSeek-V4.1-Flash","context_window":1048576,"max_output_tokens":393216,"input_modalities":["text","image"],"output_modalities":["text"],"effort":{"supported_levels":["low","high","max"],"default_level":"high"},"api_capabilities":{"anthropic_messages":{"system_prompt_update":"in-history"}}},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek","name":"DeepSeek-V4-Pro","context_window":1048576,"max_output_tokens":393216,"input_modalities":["text"],"output_modalities":["text"],"effort":{"supported_levels":["low","high","max"],"default_level":"high"},"api_capabilities":{"anthropic_messages":{"system_prompt_update":"leading-only"}}}]}
+        """;
 }

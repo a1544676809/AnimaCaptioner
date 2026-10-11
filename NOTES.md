@@ -315,6 +315,45 @@ viewport=349`。
 （回 `{"object":"list","data":[]}`），这时该照常让用户手填模型名，所以
 `ListModelsAsync` 把 `Ok` 和 `Models.Count` 分成两件事返回。
 
+### `/models` 的能力字段，以及一个被静默忽略的开关
+
+**"这个模型吃不吃图"有确定答案，不用猜、也不用发试探请求。** 但那些字段是
+**扩展**：标准 OpenAI 的 `/models` 只保证 `id`，所以解析一律"有就取、没有就留空"。
+实测 DeepSeek（`api.deepseek.com`，2026-10）回的是：
+
+```json
+{"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash","context_window":1048576,
+ "max_output_tokens":393216,"input_modalities":["text","image"],
+ "effort":{"supported_levels":["low","high","max"],"default_level":"high"}}
+```
+
+同一份响应里 `deepseek-v4-pro` 的 `input_modalities` 只有 `["text"]`——两个模型的
+差别就这样摆着，不需要用户填、也不需要程序去试。原样字节存在 `tests/Models.cs`
+的第 7 节，改动解析就会被它挡下。
+
+一个被测试抓到的细节：**判"`name` 是不是就是 id"必须用 Ordinal。** 一开始用了
+忽略大小写的比较，于是 `DeepSeek-V4-Pro` 被判成"和 `deepseek-v4-pro` 相同"、
+显示名被丢掉。而忽略大小写的本意（`{"models":[{"name":"llama3"}]}` 那种网关里
+`name` 就是 id）用**逐字符相等**就能满足。
+
+**`chat_template_kwargs.enable_thinking=false` 在云服务上被静默忽略。** 代码注释
+原来写的是"不下发以免云端服务 400"，实测推翻了这个担心，而真正的问题更隐蔽：
+DeepSeek 照收这个字段、回 **200**，然后什么都不做。同端点、同一条提问、同
+`max_tokens` 的 A/B：
+
+| 请求体 | 返回的 `reasoning_content` |
+|---|---|
+| 只有 `chat_template_kwargs` | **69 字符**（思考照常发生） |
+| 加上 `reasoning_effort: "none"` | 0 |
+
+也就是说这个开关在云服务上一直是**空转**的：用户以为省了 token，实际每次都在
+为思考付费。`corecheck llm` 那个探针就是把这个 A/B 固定下来，换端点时可以复跑。
+
+**`reasoning_effort` 不能瞎填。** 服务端严格校验，认不得的值直接 422，并在错误
+里列出全部合法值：`none/minimal/low/medium/high/xhigh/ultra/max`。而 `/models` 报的
+`supported_levels` 是**该模型支持的子集**（flash 只报 `low/high/max`）——所以按
+它发，别硬编码一份全局清单。
+
 ### `AutoSuggestBox`（Tab 补全 / 候选列表）
 
 补全用的是 `AutoSuggestBox`，它的模板内部有一个真的 `TextBox`。四条实测教训：
