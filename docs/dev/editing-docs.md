@@ -12,11 +12,11 @@
 随程序分发的是**仓库里 `docs/` 顶层的 `.md`**，构建时被拷到 exe 同级：
 
 ```text
-E:\source\repos\AnimaCaptioner\docs\01-shortcuts.md      ← 源（改这里）
-                                     \02-interface.md
-                                     \11-write-tag-mode.md
-                                     \dev\               ← 本目录，不分发
-E:\source\repos\AnimaCaptioner\bin\...\win-x64\docs\     ← 分发出去的副本
+<仓库>\docs\01-shortcuts.md                    ← 源（改这里）
+            \02-interface.md
+            \11-write-tag-mode.md
+            \dev\                              ← 本目录，不分发
+<仓库>\bin\...\win-x64\docs\                   ← 分发出去的副本
 ```
 
 点帮助窗口工具栏的「**打开文档目录**」打开的是**分发出去的那一份**（exe 同级），

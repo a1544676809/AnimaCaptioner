@@ -50,8 +50,16 @@ internal static class Harness
                 return CoreCheck.Reasoning.Run(dataset);
 
             case "richapi":
-                return CoreCheck.RichApi.Run(
-                    Arg(1) ?? @"D:\NuGet\Packages\microsoft.windowsappsdk.winui\1.8.260803003\lib\net6.0-windows10.0.17763.0\Microsoft.WinUI.dll");
+                // 路径按这个顺序解析：参数 -> 环境变量 AC_WINUI -> 构建输出 -> NuGet 缓存。
+                var winui = Arg(1) ?? ResolveWinUi();
+                if (winui is null)
+                {
+                    Console.WriteLine("找不到 Microsoft.WinUI.dll。请作为参数传入，" +
+                                      "或设环境变量 AC_WINUI 指向它。");
+                    return 2;
+                }
+                Console.WriteLine("winui: " + winui);
+                return CoreCheck.RichApi.Run(winui);
 
             case "llm":
                 // 临时探针：真实网络 + 当前 settings.json。不属于默认套件。
@@ -140,11 +148,11 @@ internal static class Harness
                       history                     撤销 / 重做栈
                       escape     - <词库> [seed]   标签转义（与 ComfyUI 解析器对拍）
                       roundtrip  <训练集>          逐字节往返
-                      richapi    <WinUI.dll>      反射查 API 是否存在
+                      richapi    [WinUI.dll]      反射查 API 是否存在（不给路径时自动查找）
                       llm                         真实网络：/models 能力 + 关思考 A/B
 
                     数据集与词库在仓库外，也可改用环境变量：
-                      AC_DATASET / AC_VOCABDB / AC_SEED
+                      AC_DATASET / AC_VOCABDB / AC_SEED / AC_WINUI
                     """);
                 return 2;
         }
@@ -169,5 +177,108 @@ internal static class Harness
                 return dir.FullName;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 定位 Microsoft.WinUI.dll，供 richapi 做 API 表面反射。
+    ///
+    /// 顺序：环境变量 AC_WINUI -> 构建输出 -> NuGet 缓存。
+    ///
+    /// **构建输出优先，且优先级高于版本号。** 应用输出目录里
+    /// Microsoft.WinUI.dll 与 Microsoft.Windows.SDK.NET.dll 挨着放，于是
+    /// Microsoft.UI.* 那些**被转发**的类型能就地解析；NuGet 缓存里两者在
+    /// 不同目录，只能靠 RichApi 里的解析钩子兜住。两个目录的“版本”还不可比：
+    /// 缓存是 …\&lt;包名&gt;\&lt;版本&gt;\lib\&lt;tfm&gt;，输出目录却叫 win-x64，
+    /// 早期实现按“版本最高”挑，于是输出目录那份（版本解析失败=0.0）永远被跳过。
+    /// </summary>
+    private static string? ResolveWinUi()
+    {
+        var env = Environment.GetEnvironmentVariable("AC_WINUI");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            if (File.Exists(env)) return env;
+            Console.WriteLine("AC_WINUI 指向的文件不存在，改按构建输出/NuGet 缓存查找：" + env);
+        }
+
+        // 构建输出优先（排除 obj：里面的中间产物不作数）
+        var build = Best(AppContext.BaseDirectory, rank: 2, skipObj: true);
+        if (build is null)
+        {
+            var repo = FindRepoRoot(AppContext.BaseDirectory);
+            if (repo is not null) build = Best(repo, rank: 2, skipObj: true);
+        }
+
+        // 退回 NuGet 缓存
+        return build ?? Best(NuGetRoot(), rank: 1, skipObj: false);
+    }
+
+    /// <summary>NuGet 缓存根目录；没设 NUGET_PACKAGES 时退回 ~\.nuget\packages。</summary>
+    private static string NuGetRoot()
+    {
+        var root = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+        if (!string.IsNullOrWhiteSpace(root)) return root;
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".nuget", "packages");
+    }
+
+    /// <summary>
+    /// 在 <paramref name="start"/> 及其子目录里找 Microsoft.WinUI.dll。
+    /// rank 高者优先，同级再比版本（版本按父目录名解析，解析不出算 0.0）。
+    /// </summary>
+    private static string? Best(string start, int rank, bool skipObj)
+    {
+        if (string.IsNullOrEmpty(start) || !Directory.Exists(start)) return null;
+
+        var skip = new[] { ".git", "node_modules" };
+        var bestPath = (string?)null;
+        var bestRank = int.MinValue;
+        var bestVer = new Version(0, 0);
+
+        var pending = new Stack<string>();
+        pending.Push(start);
+        for (var visited = 0; pending.Count > 0 && visited < 3000; visited++)
+        {
+            string dir;
+            try { dir = pending.Pop(); } catch { break; }
+
+            string[] subdirs, files;
+            try { subdirs = Directory.GetDirectories(dir); files = Directory.GetFiles(dir, "Microsoft.WinUI.dll"); }
+            catch { continue; }
+
+            foreach (var f in files)
+            {
+                var v = VerOf(f);
+                if (bestPath is null || rank > bestRank || (rank == bestRank && v > bestVer))
+                {
+                    bestPath = f;
+                    bestRank = rank;
+                    bestVer = v;
+                }
+            }
+
+            foreach (var d in subdirs)
+            {
+                var name = Path.GetFileName(d);
+                if (skip.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                if (skipObj && name.Equals("obj", StringComparison.OrdinalIgnoreCase)) continue;
+                pending.Push(d);
+            }
+        }
+        return bestPath;
+    }
+
+    /// <summary>
+    /// 版本号：路径形如 …\&lt;包名&gt;\&lt;版本&gt;\lib\&lt;tfm&gt;\Microsoft.WinUI.dll。
+    /// 从 dll 往上逐级找第一个能解析成版本号的目录名；都不行则 0.0。
+    /// </summary>
+    private static Version VerOf(string dllPath)
+    {
+        var dir = Directory.GetParent(dllPath);
+        for (var up = 0; dir is not null && up < 4; up++, dir = dir.Parent)
+        {
+            if (Version.TryParse(dir.Name, out var v)) return v;
+        }
+        return new Version(0, 0);
     }
 }
