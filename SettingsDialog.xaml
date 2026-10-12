@@ -11,216 +11,320 @@
     CloseButtonText="取消"
     DefaultButton="Primary">
 
-    <!-- 不要给 RootPanel 设固定宽度。ContentDialog 的内容区被 ContentDialogMaxWidth
-         (548 DIP) 减去内边距后只有 496 DIP 宽，这里写死 560 会让右侧 64 DIP 被裁掉：
-         「测试连接」按钮正好在 x=479..560，于是只露出十几像素，看上去像个莫名其妙的
-         小控件。宽度交给对话框自己算。 -->
-    <ScrollViewer x:Name="ContentScroll" MaxHeight="420" VerticalScrollBarVisibility="Auto"
-                  VerticalScrollMode="Auto">
-        <StackPanel x:Name="RootPanel" Spacing="10">
+    <!-- 左栏类别 + 右栏设置项。这条布局改了宽度约束：内容区可用宽度 =
+         ContentDialogMaxWidth 减去内容区两侧的内边距（实测每侧 26 DIP），默认 548
+         时只剩 496，装不下一栏导航。所以这里把上限抬到 880，下面的 SettingsRoot
+         才敢写死 800 宽。宽度到底够不够由 ProbeScreenRects 常驻自检——它比宽度
+         多就把"右边缘被裁掉"写进日志，不靠肉眼发现。 -->
+    <ContentDialog.Resources>
+        <x:Double x:Key="ContentDialogMaxWidth">880</x:Double>
+        <!-- 高度上限：窗口够高时对话框最多这么高，再高的页面靠内部滚动。窗口不够高时
+             由弹出层自己再往下夹，不用我们操心。 -->
+        <x:Double x:Key="ContentDialogMaxHeight">640</x:Double>
+    </ContentDialog.Resources>
 
-            <!-- 模型接口 -->
-            <TextBlock Text="模型接口（OpenAI 兼容）" FontWeight="SemiBold" />
+    <!-- 宽度只给下限与上限：下限（748 = 左栏 172 + 间距 12 + 右栏 564）是**必须**的，
+         否则对话框会跟着每一页的内容宽度伸缩（实测 352↔616 DIP，点一下类别整个对话框
+         横向跳一下）。实际下限由 FitToDialog 按窗口宽再收敛一次，窄窗口里让出去而不是
+         被裁掉右边。
+         **这里刻意不写高度**：写死高度会被对话框静默裁掉脚——根面板要求的比宿主给得起的
+         多时，超出部分既不滚动也不报错，直接看不见（实测联网搜索页「回灌条数」的下半截
+         和「测试搜索」按钮就这样点不到，而 ScrollViewer 还报 extent == viewport）。
+         高度改由 FitToDialog 按宿主实际给得起的高度钉住，见那里的注释。
+         两件事各有 ProbeScreenRects 里的哨兵盯着，不靠肉眼。 -->
+    <Grid x:Name="SettingsRoot" MinWidth="748" MaxWidth="800" ColumnSpacing="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="172" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
 
-            <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
-                     PlaceholderText="http://127.0.0.1:8080/v1" />
+        <!-- 类别用 ListView 而不是 NavigationView：后者在对话框里自带汉堡按钮、
+             默认面板宽 320 DIP，要收窄它得跟它的模板较劲，而这里需要的只是
+             "点一下换一页"。 -->
+        <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1" CornerRadius="6" Padding="4">
+            <ListView x:Name="PageList" SelectionMode="Single"
+                      SelectionChanged="PageList_SelectionChanged"
+                      Background="Transparent">
+                <!-- 每项的 Tag 就是页面的键，和 code-behind 里 _pages 的键一一对应。
+                     键对不上会被 MapPages 的自检抓出来写进日志。 -->
+                <ListViewItem Tag="model" AutomationProperties.Name="模型接口">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE753;" FontSize="14" />
+                        <TextBlock Text="模型接口" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="effort" AutomationProperties.Name="推理参数">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE945;" FontSize="14" />
+                        <TextBlock Text="推理参数" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="agent" AutomationProperties.Name="AI 助手">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE99A;" FontSize="14" />
+                        <TextBlock Text="AI 助手" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="search" AutomationProperties.Name="联网搜索">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE774;" FontSize="14" />
+                        <TextBlock Text="联网搜索" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="paths" AutomationProperties.Name="数据路径">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                        <TextBlock Text="数据路径" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="edit" AutomationProperties.Name="编辑">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE70F;" FontSize="14" />
+                        <TextBlock Text="编辑" />
+                    </StackPanel>
+                </ListViewItem>
+                <ListViewItem Tag="colors" AutomationProperties.Name="标签大类配色">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE790;" FontSize="14" />
+                        <TextBlock Text="标签大类配色" />
+                    </StackPanel>
+                </ListViewItem>
+            </ListView>
+        </Border>
 
-            <!-- 模型名做成可输入的下拉框：能列出服务端给的模型，也允许直接键入
-                 列表里没有的名字（别名、自定义名，或压根不实现 /models 的网关）。 -->
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <!--
-                  刻意**不设** PlaceholderText：可编辑 ComboBox 上它会盖过真实文本，
-                  实测填着 deepseek-v4-pro 时框里显示的是占位符（灰字），看起来像
-                  "模型名没读进来"。空着的时候下面那行提示已经说清了可以手填。
-                -->
-                <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
-                          HorizontalAlignment="Stretch"
-                          SelectionChanged="Model_SelectionChanged" />
-                <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
-                        Click="FetchModels_Click" VerticalAlignment="Bottom" />
-            </Grid>
+        <!-- 右栏。七页都常驻在这棵树里，切换只翻 Visibility——**不是**重建。
+             这样各页控件的值在切来切去之间不会丢（ApplyTo 读的是同一批命名控件）。
+             PageHost 的每个子元素都必须是某一页，MapPages 会自检。
 
-            <TextBlock x:Name="ModelListText" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+             **PageHost 必须是 StackPanel，不能是 Grid**：Grid 的单行是 `*` 行，而星号行
+             会把自身高度钳到可用高度，于是父滚动器永远看不到"内容比视口高"——超出的
+             部分既不滚动也不报错，直接裁掉（实测联网搜索页「回灌条数」的下半截和
+             「测试搜索」按钮就这样点不到，而 extent 还报成和视口一样高）。
+             StackPanel 即使在有限高度下被测量，也按子元素自然高度求和上报。 -->
+        <ScrollViewer x:Name="ContentScroll" Grid.Column="1"
+                      VerticalScrollBarVisibility="Auto" VerticalScrollMode="Auto"
+                      HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled">
+            <StackPanel x:Name="PageHost">
 
-            <PasswordBox x:Name="ApiKeyBox" Header="API Key"
-                         PlaceholderText="本地服务留空即可" />
+                <!-- ============ 模型接口 ============ -->
+                <StackPanel x:Name="PageModel" Spacing="10">
+                    <TextBlock Text="模型接口（OpenAI 兼容）" FontWeight="SemiBold" />
 
-            <TextBlock x:Name="KeyHintText" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                       Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
+                    <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
+                             PlaceholderText="http://127.0.0.1:8080/v1" />
 
-            <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="TestResultText" FontSize="11"
-                           VerticalAlignment="Center" TextWrapping="Wrap"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button Grid.Column="1" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
-            </Grid>
+                    <!-- 模型名做成可输入的下拉框：能列出服务端给的模型，也允许直接键入
+                         列表里没有的名字（别名、自定义名，或压根不实现 /models 的网关）。 -->
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <!--
+                          刻意**不设** PlaceholderText：可编辑 ComboBox 上它会盖过真实文本，
+                          实测填着 deepseek-v4-pro 时框里显示的是占位符（灰字），看起来像
+                          "模型名没读进来"。空着的时候下面那行提示已经说清了可以手填。
+                        -->
+                        <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
+                                  HorizontalAlignment="Stretch"
+                                  SelectionChanged="Model_SelectionChanged" />
+                        <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
+                                Click="FetchModels_Click" VerticalAlignment="Bottom" />
+                    </Grid>
 
-            <!-- 推理档位。早先这里是个 bool「关闭思考链」：它只能表达"关"与"不指定"
-                 两态，而服务端提供的是 8 档连续强度（用户没法要求"少想一点但别完全
-                 不想"），而且那个 bool 在云端一直是空转的——enable_thinking 被静默
-                 忽略，真正管用的是 reasoning_effort。 -->
-            <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"
-                      HorizontalAlignment="Stretch"
-                      SelectionChanged="Reasoning_SelectionChanged"
-                      ToolTipService.ToolTip="混合推理模型会先输出思考过程，这个档位就是让它想多久。散文翻译「关闭思考」与非 none 档位实测质量相同（各 3 次采样共 12 个样本全干净），只是思考越久越慢——开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。两种服务端要用两种关法，程序按服务端在 /models 里报的能力自动选：本地 llama-server 用 enable_thinking=false（只认「关闭思考」这一档），云端用 reasoning_effort。" />
-            <TextBlock x:Name="EffortHintText" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="ModelListText" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
-            <TextBlock FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                       Text="本地模型首次请求要编译 GPU kernel，可能明显偏慢；超时设大一些更稳妥。" />
+                    <PasswordBox x:Name="ApiKeyBox" Header="API Key"
+                                 PlaceholderText="本地服务留空即可" />
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <NumberBox x:Name="MaxTokensBox" Header="max_tokens" Minimum="32" Maximum="8192"
-                           SpinButtonPlacementMode="Compact" />
-                <NumberBox Grid.Column="1" x:Name="TempBox" Header="temperature" Minimum="0" Maximum="2"
-                           SmallChange="0.1" SpinButtonPlacementMode="Compact" />
-                <NumberBox Grid.Column="2" x:Name="TimeoutBox" Header="超时（秒）" Minimum="10" Maximum="3600"
-                           SpinButtonPlacementMode="Compact" />
-            </Grid>
+                    <TextBlock x:Name="KeyHintText" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
 
-            <!-- AI 助手。默认关着：翻译器那条路是实测调出来的确定性转换
-                 （长度跟输入走、方向词不许丢、不许加质量词），把它换成对话面板
-                 应当是用户主动做的选择。面板里仍然留着一键翻译。 -->
-            <TextBlock Text="AI 助手" FontWeight="SemiBold" />
-            <CheckBox x:Name="AgentEnabledBox" Content="打开 AI 助手面板"
-                      Click="AgentEnabledBox_Click"
-                      ToolTipService.ToolTip="把右栏下半部分从「中文描述 → 英文自然语言」换成对话面板：能读当前图片、能查词库，并提出一组标签和一段散文——但要你点「应用」才写进提示词。关掉时仍是原来的确定性翻译器。" />
-            <CheckBox x:Name="AgentAttachImageBox" Content="标注模式下把当前图片发给模型"
-                      ToolTipService.ToolTip="读图自动打标靠这一条。图片先缩到长边 1024 的 JPEG 再内联发送（约 150 KB）；原图不会上传到任何别的地方，但请确认接口地址是你信任的服务。接口或模型不支持图片输入时会如实报错，不会静默退回凭空描述。" />
+                    <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="TestResultText" FontSize="11"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Button Grid.Column="1" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
+                    </Grid>
+                </StackPanel>
 
-            <!-- 联网搜索 -->
-            <TextBlock Text="联网搜索（模型可调用的工具）" FontWeight="SemiBold" />
-            <TextBlock FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                       Text="给模型一个 web_search 工具：遇到不认识或没有官方中文释义的标签时，它可以自己决定去查一下。默认指向 192.168.1.4 上已部署的搜索网关。" />
+                <!-- ============ 推理参数 ============ -->
+                <StackPanel x:Name="PageEffort" Spacing="10">
+                    <TextBlock Text="推理与生成参数" FontWeight="SemiBold" />
 
-            <CheckBox x:Name="SearchEnabledBox" Content="启用搜索工具"
-                      ToolTipService.ToolTip="实测：推理档位设为「关闭思考」时模型不会调用搜索工具，所以启用搜索需要同时选一个会思考的档位（或「自动」）。" />
+                    <!-- 推理档位。早先这里是个 bool「关闭思考链」：它只能表达"关"与"不指定"
+                         两态，而服务端提供的是 8 档连续强度（用户没法要求"少想一点但别完全
+                         不想"），而且那个 bool 在云端一直是空转的——enable_thinking 被静默
+                         忽略，真正管用的是 reasoning_effort。 -->
+                    <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"
+                              HorizontalAlignment="Stretch"
+                              SelectionChanged="Reasoning_SelectionChanged"
+                              ToolTipService.ToolTip="混合推理模型会先输出思考过程，这个档位就是让它想多久。散文翻译「关闭思考」与非 none 档位实测质量相同（各 3 次采样共 12 个样本全干净），只是思考越久越慢——开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。两种服务端要用两种关法，程序按服务端在 /models 里报的能力自动选：本地 llama-server 用 enable_thinking=false（只认「关闭思考」这一档），云端用 reasoning_effort。" />
+                    <TextBlock x:Name="EffortHintText" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
-            <ComboBox x:Name="ProviderBox" Header="搜索后端" HorizontalAlignment="Stretch"
-                      SelectionChanged="Provider_SelectionChanged">
-                <ComboBoxItem Content="局域网搜索网关（Anthropic 兼容，推荐）" Tag="shim" />
-                <ComboBoxItem Content="SearXNG 实例（直连 JSON 接口）" Tag="searxng" />
-                <ComboBoxItem Content="Tavily API" Tag="tavily" />
-                <ComboBoxItem Content="Brave Search API" Tag="brave" />
-                <ComboBoxItem Content="Serper.dev（Google 结果）" Tag="serper" />
-            </ComboBox>
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="本地模型首次请求要编译 GPU kernel，可能明显偏慢；超时设大一些更稳妥。" />
 
-            <TextBox x:Name="SearchUrlBox" Header="搜索接口地址" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <NumberBox x:Name="MaxTokensBox" Header="max_tokens" Minimum="32" Maximum="8192"
+                                   SpinButtonPlacementMode="Compact" />
+                        <NumberBox Grid.Column="1" x:Name="TempBox" Header="temperature" Minimum="0" Maximum="2"
+                                   SmallChange="0.1" SpinButtonPlacementMode="Compact" />
+                        <NumberBox Grid.Column="2" x:Name="TimeoutBox" Header="超时（秒）" Minimum="10" Maximum="3600"
+                                   SpinButtonPlacementMode="Compact" />
+                    </Grid>
+                </StackPanel>
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="SearchSniBox" Header="TLS SNI / Host（Caddy 网关必填）" />
-                <TextBlock Grid.Column="1" FontSize="10" VerticalAlignment="Bottom" Margin="6,0,0,6"
-                           MaxWidth="140" TextWrapping="Wrap"
-                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                           Text="填证书域名，不是 IP" />
-            </Grid>
+                <!-- ============ AI 助手 ============ -->
+                <StackPanel x:Name="PageAgent" Spacing="10">
+                    <TextBlock Text="AI 助手" FontWeight="SemiBold" />
 
-            <PasswordBox x:Name="SearchKeyBox" Header="搜索 API Key"
-                         PlaceholderText="局域网网关 / 自建 SearXNG 可留空" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="打开后，右栏下半部分从「中文描述 → 英文自然语言」换成对话面板：能读当前图片、能查词库，并提出一组标签和一段散文——但要你点「应用」才写进提示词。关掉时仍是原来的确定性翻译器（那条路的长度跟着输入走，不会自己加质量词）。" />
 
-            <TextBlock x:Name="SearchHintText" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <CheckBox x:Name="AgentEnabledBox" Content="打开 AI 助手面板"
+                              Click="AgentEnabledBox_Click"
+                              ToolTipService.ToolTip="把右栏下半部分从「中文描述 → 英文自然语言」换成对话面板：能读当前图片、能查词库，并提出一组标签和一段散文——但要你点「应用」才写进提示词。关掉时仍是原来的确定性翻译器。" />
+                    <CheckBox x:Name="AgentAttachImageBox" Content="标注模式下把当前图片发给模型"
+                              ToolTipService.ToolTip="读图自动打标靠这一条。图片先缩到长边 1024 的 JPEG 再内联发送（约 150 KB）；原图不会上传到任何别的地方，但请确认接口地址是你信任的服务。接口或模型不支持图片输入时会如实报错，不会静默退回凭空描述。" />
+                </StackPanel>
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <NumberBox x:Name="SearchMaxBox" Header="回灌条数" Minimum="1" Maximum="20"
-                           SpinButtonPlacementMode="Compact" Width="110" />
-                <TextBlock Grid.Column="1" x:Name="SearchTestText" FontSize="11" Margin="10,0"
-                           VerticalAlignment="Center" TextWrapping="Wrap"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button Grid.Column="2" x:Name="SearchTestBtn" Content="测试搜索"
-                        Click="TestSearch_Click" VerticalAlignment="Bottom" />
-            </Grid>
+                <!-- ============ 联网搜索 ============ -->
+                <StackPanel x:Name="PageSearch" Spacing="10">
+                    <TextBlock Text="联网搜索（模型可调用的工具）" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="给模型一个 web_search 工具：遇到不认识或没有官方中文释义的标签时，它可以自己决定去查一下。默认指向 192.168.1.4 上已部署的搜索网关。" />
 
-            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+                    <CheckBox x:Name="SearchEnabledBox" Content="启用搜索工具"
+                              ToolTipService.ToolTip="实测：推理档位设为「关闭思考」时模型不会调用搜索工具，所以启用搜索需要同时选一个会思考的档位（或「自动」）。" />
 
-            <!-- 数据路径 -->
-            <TextBlock Text="数据路径" FontWeight="SemiBold" />
+                    <ComboBox x:Name="ProviderBox" Header="搜索后端" HorizontalAlignment="Stretch"
+                              SelectionChanged="Provider_SelectionChanged">
+                        <ComboBoxItem Content="局域网搜索网关（Anthropic 兼容，推荐）" Tag="shim" />
+                        <ComboBoxItem Content="SearXNG 实例（直连 JSON 接口）" Tag="searxng" />
+                        <ComboBoxItem Content="Tavily API" Tag="tavily" />
+                        <ComboBoxItem Content="Brave Search API" Tag="brave" />
+                        <ComboBoxItem Content="Serper.dev（Google 结果）" Tag="serper" />
+                    </ComboBox>
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="DatasetBox" Header="训练集目录" />
-                <Button Grid.Column="1" Content="浏览…" Click="BrowseDataset_Click"
-                        VerticalAlignment="Bottom" />
-            </Grid>
+                    <TextBox x:Name="SearchUrlBox" Header="搜索接口地址" />
 
-            <TextBox x:Name="VocabBox" Header="词库数据库 (vocab.sqlite)" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="SearchSniBox" Header="TLS SNI / Host（Caddy 网关必填）" />
+                        <TextBlock Grid.Column="1" FontSize="10" VerticalAlignment="Bottom" Margin="6,0,0,6"
+                                   MaxWidth="140" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                   Text="填证书域名，不是 IP" />
+                    </Grid>
 
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="SeedBox" Header="人工整理映射 (seed.json)" />
-                <Button Grid.Column="1" Content="浏览…" Click="BrowseSeed_Click"
-                        VerticalAlignment="Bottom" />
-            </Grid>
+                    <PasswordBox x:Name="SearchKeyBox" Header="搜索 API Key"
+                                 PlaceholderText="局域网网关 / 自建 SearXNG 可留空" />
 
-            <TextBlock x:Name="SettingsPathText" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="SearchHintText" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
-            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <NumberBox x:Name="SearchMaxBox" Header="回灌条数" Minimum="1" Maximum="20"
+                                   SpinButtonPlacementMode="Compact" Width="110" />
+                        <TextBlock Grid.Column="1" x:Name="SearchTestText" FontSize="11" Margin="10,0"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Button Grid.Column="2" x:Name="SearchTestBtn" Content="测试搜索"
+                                Click="TestSearch_Click" VerticalAlignment="Bottom" />
+                    </Grid>
+                </StackPanel>
 
-            <!-- 编辑 -->
-            <TextBlock Text="编辑" FontWeight="SemiBold" />
+                <!-- ============ 数据路径 ============ -->
+                <StackPanel x:Name="PagePaths" Spacing="10">
+                    <TextBlock Text="数据路径" FontWeight="SemiBold" />
 
-            <NumberBox x:Name="UndoStepsBox" Header="最大撤销步数（0 = 关闭撤销）"
-                       Minimum="0" Maximum="1000" SmallChange="10"
-                       SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="DatasetBox" Header="训练集目录" />
+                        <Button Grid.Column="1" Content="浏览…" Click="BrowseDataset_Click"
+                                VerticalAlignment="Bottom" />
+                    </Grid>
 
-            <TextBlock FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                       Text="撤销覆盖标签和自然语言的改动：添加、删除、移动、改名、粘贴、规范化、重排、翻译、清空。Ctrl+Z 撤销、Ctrl+Y 重做，焦点在标签列表里时生效（提示词框里是它自己的撤销，两者不冲突）。撤销只改内存，不写文件——要落盘仍需保存。" />
+                    <TextBox x:Name="VocabBox" Header="词库数据库 (vocab.sqlite)" />
 
-            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="0,4" />
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="SeedBox" Header="人工整理映射 (seed.json)" />
+                        <Button Grid.Column="1" Content="浏览…" Click="BrowseSeed_Click"
+                                VerticalAlignment="Bottom" />
+                    </Grid>
 
-            <!-- 标签大类配色 -->
-            <TextBlock Text="标签大类配色" FontWeight="SemiBold" />
-            <TextBlock FontSize="11" TextWrapping="Wrap"
-                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                       Text="中间 tag 列表按 Anima 官方大类分段显示，每段用这里的颜色画框。点色块打开取色器。" />
+                    <TextBlock x:Name="SettingsPathText" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
 
-            <Grid x:Name="ColorGrid" ColumnSpacing="8" RowSpacing="4">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <!-- 九个大类 + 自然语言的行由代码生成：写死在 XAML 里的话，
-                     TagSections.Colorable 一改就两边不同步了。
-                     取色器放在弹出层里而不是直接铺在页面上——十个 ColorPicker
-                     平铺会把对话框撑到屏幕外，底部的保存按钮都够不到。 -->
-            </Grid>
+                <!-- ============ 编辑 ============ -->
+                <StackPanel x:Name="PageEdit" Spacing="10">
+                    <TextBlock Text="编辑" FontWeight="SemiBold" />
 
-            <Button x:Name="ResetColorsBtn" Content="恢复默认配色" Click="ResetColors_Click" />
+                    <NumberBox x:Name="UndoStepsBox" Header="最大撤销步数（0 = 关闭撤销）"
+                               Minimum="0" Maximum="1000" SmallChange="10"
+                               SpinButtonPlacementMode="Compact" Width="240" HorizontalAlignment="Left" />
 
-        </StackPanel>
-    </ScrollViewer>
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="撤销覆盖标签和自然语言的改动：添加、删除、移动、改名、粘贴、规范化、重排、翻译、清空。Ctrl+Z 撤销、Ctrl+Y 重做，焦点在标签列表里时生效（提示词框里是它自己的撤销，两者不冲突）。撤销只改内存，不写文件——要落盘仍需保存。历史按图片（或草稿）分别记账，来回翻图片不会把撤销记录弄丢；同一份文档离开时被外部改过，那一份的历史会作废。本步数按每份文档计算。" />
+                </StackPanel>
+
+                <!-- ============ 标签大类配色 ============ -->
+                <StackPanel x:Name="PageColors" Spacing="10">
+                    <TextBlock Text="标签大类配色" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="中间 tag 列表按 Anima 官方大类分段显示，每段用这里的颜色画框。点色块打开取色器。" />
+
+                    <Grid x:Name="ColorGrid" ColumnSpacing="8" RowSpacing="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <!-- 九个大类 + 自然语言的行由代码生成：写死在 XAML 里的话，
+                             TagSections.Colorable 一改就两边不同步了。
+                             取色器放在弹出层里而不是直接铺在页面上——十个 ColorPicker
+                             平铺会把对话框撑到屏幕外，底部的保存按钮都够不到。 -->
+                    </Grid>
+
+                    <Button x:Name="ResetColorsBtn" Content="恢复默认配色" Click="ResetColors_Click" />
+                </StackPanel>
+
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
 </ContentDialog>

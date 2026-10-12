@@ -51,7 +51,28 @@ public sealed partial class SettingsDialog : ContentDialog
         // 可靠地画进模板里的 TextBox，而构造期模板还没应用、Items 也还空着。
         // 于是打开设置看到的是一个空框（或灰着的占位符），像模型名根本没读进来。
         // 模板就绪后再走一次统一同步（见 SyncModelText）。
-        Loaded += (_, _) => SyncModelText(_cfg.Model);
+        Loaded += (_, _) =>
+        {
+            SyncModelText(_cfg.Model);
+            // 尺寸与几何自检都要等对话框真正布局完才有意义（构造期控件还没量过尺寸，
+            // 读出来全是 0）。推后一拍，量到的才是屏幕上那副样子。
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                // 定尺寸要跑两轮：第一轮之后祖先链上的每一环才量出最终高度，而
+                // FitToDialog 的高度判据正是读它们（读 0 会被跳过，第一轮可能一个都读不到）。
+                ContentScroll.UpdateLayout();
+                FitToDialog();
+                ContentScroll.UpdateLayout();
+                FitToDialog();
+                // 定完尺寸要再跑一次布局：下面那几条探针读的是控件位置，
+                // 不重排就会读到改尺寸之前的样子。
+                ContentScroll.UpdateLayout();
+                ProbeColourRows();
+                ProbeScreenRects();
+            });
+        };
+        // 窗口被改大小（或换了显示器）时重新算一次——否则对话框可能又超出可用范围
+        SizeChanged += (_, _) => FitToDialog();
         ApiKeyBox.Password = cfg.ApiKey;
         BuildEffortItems();
         SelectEffort(cfg.ReasoningEffort);
@@ -83,6 +104,10 @@ public sealed partial class SettingsDialog : ContentDialog
 
         SettingsPathText.Text = "配置文件：" + AppSettings.FilePath;
 
+        // 先把类别和页面挂上，再建配色行——否则第一页露出来时竞态探针找不到页面。
+        MapPages();
+        SelectPage("model");
+
         BuildColorRows();
 
         if (cfg.ApiKeyUnreadable)
@@ -90,6 +115,149 @@ public sealed partial class SettingsDialog : ContentDialog
             KeyHintText.Text = "⚠ 已保存的密钥无法解密（多半是换了机器或 Windows 账户），请重新填写。";
             KeyHintText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed);
         }
+    }
+
+    // ---- 尺寸 ----
+
+    /// <summary>
+    /// 定根面板的尺寸。宽度与高度用的判据**不一样**，两处都是踩过坑才定下来的。
+    ///
+    /// **宽度按窗口算。** 按内容算会让对话框随每一页的期望宽度伸缩（实测 352↔616 DIP，
+    /// 点一下类别整个对话框横向抖一下），所以下限钉在 748，窄窗口里再让出去（让出去
+    /// 会被裁右边，但总比对话框比窗口还宽好；ProbeScreenRects 会告警）。
+    ///
+    /// **高度只信宿主，不信窗口。** 内容区可用高度 = 窗口高 − 标题行 − 按钮行 − 内边距，
+    /// 一度是拿「对话框高 − 根面板高」去实测量这个 chrome 的，但它有个自激陷阱：根面板
+    /// 一旦被裁，被裁掉的那截**不算进任何 ActualHeight**，于是量到的 chrome 偏小、算出的
+    /// 高度更小，每触发一次 SizeChanged 就再掉一截（实测 520→512→504…）。而祖先链里
+    /// 的最小高度是对话框/弹出层真正分下来的空间，与我们改根面板尺寸无关，不会自激。
+    ///
+    /// 边界情况：内容本来就比宿主矮时，祖先链里没有"更矮的那个"……实际仍然有——宿主是
+    /// 被对话框与窗口定死的，不会缩到跟内容一样高（见 ProbeScreenRects 每次换页打出的
+    /// 祖先链）。真出现"没有任何祖先比内容矮"，这里就把高度放回去，让对话框自己缩。
+    /// </summary>
+    private void FitToDialog()
+    {
+        if (XamlRoot is null) return;
+        if (ActualWidth <= 0 || ActualHeight <= 0) return;
+        if (SettingsRoot.ActualWidth <= 0) return;
+
+        // ---- 宽度 ----
+        // 60 = 弹出层相对窗口的内缩（实测约每侧 24 DIP）加一点余量。
+        var minW = Math.Clamp(XamlRoot.Size.Width - 60, 420, 748);
+        if (Math.Abs(SettingsRoot.MinWidth - minW) > 1) SettingsRoot.MinWidth = minW;
+
+        // ---- 高度 ----
+        var host = double.PositiveInfinity;
+        var hostName = "(none)";
+        for (var p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(SettingsRoot) as FrameworkElement;
+             p is not null;
+             p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(p) as FrameworkElement)
+        {
+            if (p.ActualHeight <= 0) continue;
+            if (p.ActualHeight < host) { host = p.ActualHeight; hostName = p.GetType().Name + Describe(p); }
+        }
+
+        // 差值超过 1 DIP 才写：写属性会重新布局并再触发 SizeChanged，没有门槛就是循环。
+        // 这里不会自激（host 与根面板尺寸无关），门槛只是省掉无谓的重排。
+        if (!double.IsInfinity(host) && Math.Abs(SettingsRoot.Height - host) > 1)
+        {
+            SettingsRoot.Height = host;
+            Log.Write($"settings root height pinned to {host:F0} DIP by {hostName}");
+        }
+    }
+
+    // ---- 左栏类别导航 ----
+    //
+    // 七个页面全都常驻在 PageHost 里，切换只翻 Visibility，**不重建**。这一点是
+    // 刻意的：`ApplyTo` 读的是一批具名控件，只要控件还在树上，切来切去就不会丢值，
+    // 也不需要为"当前在该页"补任何保存/恢复逻辑。代价是七页叠在同一个 Grid 里。
+
+    /// <summary>类别键 → 右栏那一页。键同时写在 XAML 里 ListViewItem 的 Tag 上。</summary>
+    private readonly Dictionary<string, FrameworkElement> _pages = new(StringComparer.Ordinal);
+
+    /// <summary>离开每一页时的滚动位置，回来时恢复。切类别不该把我滚回页首。</summary>
+    private readonly Dictionary<string, double> _pageOffsets = new(StringComparer.Ordinal);
+
+    private string? _currentPage;
+
+    /// <summary>
+    /// 把 XAML 里的类别项和右栏页面配起来，并自检两边一致。
+    ///
+    /// 自检不是装饰：漏挂一页的后果是那一整页设置在界面上**永远打不开**——控件还在、
+    /// 值照样会被保存，但用户看不见也改不了。这属于不会崩、只会静默少东西的那类错，
+    /// 所以两边任何一个对不上都写进日志。
+    /// </summary>
+    private void MapPages()
+    {
+        _pages["model"] = PageModel;
+        _pages["effort"] = PageEffort;
+        _pages["agent"] = PageAgent;
+        _pages["search"] = PageSearch;
+        _pages["paths"] = PagePaths;
+        _pages["edit"] = PageEdit;
+        _pages["colors"] = PageColors;
+
+        foreach (var item in PageList.Items.OfType<ListViewItem>())
+        {
+            var key = item.Tag as string;
+            if (key is null || !_pages.ContainsKey(key))
+                Log.Write("!! settings category has no page: " + (key ?? "(no tag)"));
+        }
+
+        foreach (var child in PageHost.Children.OfType<FrameworkElement>())
+            if (!_pages.ContainsValue(child))
+                Log.Write("!! settings page is not attached to any category: " + child.Name);
+    }
+
+    private void PageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if ((PageList.SelectedItem as ListViewItem)?.Tag is string key) ShowPage(key);
+    }
+
+    /// <summary>选左栏的某一项（会连带触发 PageList_SelectionChanged）。</summary>
+    private void SelectPage(string key)
+    {
+        foreach (var item in PageList.Items.OfType<ListViewItem>())
+            if (string.Equals(item.Tag as string, key, StringComparison.Ordinal))
+            { PageList.SelectedItem = item; return; }
+        PageList.SelectedIndex = 0;
+    }
+
+    private void ShowPage(string key)
+    {
+        if (!_pages.TryGetValue(key, out var panel)) return;
+
+        if (_currentPage is not null) _pageOffsets[_currentPage] = ContentScroll.VerticalOffset;
+
+        foreach (var kv in _pages) kv.Value.Visibility = kv.Key == key ? Visibility.Visible : Visibility.Collapsed;
+        _currentPage = key;
+
+        // 自检：任何时刻有且只有一页可见。两页同时可见在 StackPanel 里会**堆叠**
+        // （不像 Grid 那样重叠），眼睛看得见；一页都不显示则是整片空白。
+        var visible = _pages.Count(kv => kv.Value.Visibility == Visibility.Visible);
+        if (visible != 1)
+            Log.Write($"!! settings is showing {visible} pages at once (expected exactly 1)");
+
+        Log.Write($"settings page -> {key}");
+
+        // 还原滚动位置必须等这一页重新布局完：折叠的面板宽度是 0，紧接着调
+        // ChangeView 会被夹到 0（extent 还没长出来）。推后一拍才是最终状态。
+        var want = _pageOffsets.TryGetValue(key, out var off) ? off : 0;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            // 显式跑一次布局再读几何。只靠"推后一拍"是不够的：实测回调与换页日志
+            // 只差 1 毫秒，那时新页还没量过尺寸——探针会读到**上一页**的 extent，
+            // 于是"这一页到底有没有被裁"这个问题的答案完全不可信。
+            ContentScroll.UpdateLayout();
+            ContentScroll.ChangeView(null, want, null, true);
+
+            // 几何自检也跟着换页走：被折叠的页宽度是 0，"右边被裁掉"只有在该页
+            // 真正露出来时才测得出来。AC_DUMP_TREE=1 时才转储整棵树（400 行）。
+            if (Environment.GetEnvironmentVariable("AC_DUMP_TREE") == "1") DumpVisualTree();
+            if (key == "colors") ProbeColourRows();
+            ProbeScreenRects();
+        });
     }
 
     /// <summary>
@@ -207,27 +375,10 @@ public sealed partial class SettingsDialog : ContentDialog
             row++;
         }
 
-        // 布局完成后记录六个色块的真实 Y 坐标。六个色块必须有各自不同的 Y，
-        // 全部相同就说明 SetRow 没生效（Grid 没有行定义时六行会叠在一起）。
-        ColorGrid.Loaded += (_, _) =>
-        {
-            try
-            {
-                var rows = _swatches.Select(kv =>
-                {
-                    var p = kv.Value.TransformToVisual(ColorGrid)
-                                   .TransformPoint(new Windows.Foundation.Point(0, 0));
-                    return $"{kv.Key}@y={p.Y:F0}";
-                });
-                Log.Write("colour rows laid out: " + string.Join(" ", rows));
-            }
-            catch (Exception ex) { Log.Write("colour row probe failed: " + ex.Message); }
-
-            // 完整可视树转储有 400 行，平时太吵，用 AC_DUMP_TREE=1 按需开启；
-            // 几何转储和溢出告警很便宜，常驻。
-            if (Environment.GetEnvironmentVariable("AC_DUMP_TREE") == "1") DumpVisualTree();
-            ProbeScreenRects();
-        };
+        // 配色行的几何自检。**不能只挂在 Loaded 上**：这一页默认是折叠的，而折叠时
+        // 宽高都是 0——探针会把每一行都读成 y=0，看起来正好像"SetRow 又失效了"。
+        // 所以 ShowPage 切到配色页之后会再跑一次（那时布局已经落定）。
+        ColorGrid.Loaded += (_, _) => ProbeColourRows();
         // 滚动位置与焦点变化：正常使用时每格滚轮、每次点击都会触发，太吵，
         // 用 AC_TRACE=1 按需开启。弹出层的开关日志（下面）常驻，它带着
         // 关键证据——视口在弹出层收起前后有没有被挪走。
@@ -262,25 +413,35 @@ public sealed partial class SettingsDialog : ContentDialog
     /// <summary>
     /// 把几个关键控件的屏幕矩形写进日志，并在内容比视口宽时告警。
     /// 可视树转储用的是 ScrollViewer 内坐标，"控件被裁掉"在那种坐标下看不出来：
-    /// ContentDialog 的内容区只有 496 DIP 宽，RootPanel 曾经写死 560，于是右侧
-    /// 64 DIP 被切掉，「测试连接」按钮只剩十几像素——树里一切正常，只有视口
-    /// 宽高比能暴露它。所以这条检查常驻，溢出就直接告警。
+    /// 内容区宽度由 ContentDialogMaxWidth 减去内边距定死，SettingsRoot 写宽了就会
+    /// 把右边缘切掉——历史事故是 RootPanel 写死 560 DIP 而内容区只有 496，
+    /// 「测试连接」按钮只剩十几像素，树里却一切正常。只有视口宽高比能暴露它，
+    /// 所以这条检查常驻，**每次换页都跑**：被折起来的那几页宽高是 0，只有该页
+    /// 真正露出来时才测得准。
     /// </summary>
     private void ProbeScreenRects()
     {
         try
         {
             var sb = new StringBuilder();
-            sb.AppendLine("---- key controls, screen rect ----");
+            sb.AppendLine($"---- key controls, screen rect (page={_currentPage ?? "(none)"}) ----");
 
-            var named = new (string Label, FrameworkElement? El)[]
+            var named = new List<(string Label, FrameworkElement? El)>
             {
                 ("ContentScroll", ContentScroll),
-                ("RootPanel", RootPanel),
-                ("TestBtn", TestBtn),
-                ("ResetColorsBtn", ResetColorsBtn),
-                ("ColorGrid", ColorGrid),
+                ("SettingsRoot", SettingsRoot),
+                ("PageHost", PageHost),
+                ("PageList", PageList),
             };
+            if (_currentPage is not null && _pages.TryGetValue(_currentPage, out var cur))
+                named.Add(("page:" + _currentPage, cur));
+            // 两处历史事故的现场：被裁掉的按钮、需要各自不同 Y 的配色表
+            if (_currentPage == "model") named.Add(("TestBtn", TestBtn));
+            if (_currentPage == "colors")
+            {
+                named.Add(("ColorGrid", ColorGrid));
+                named.Add(("ResetColorsBtn", ResetColorsBtn));
+            }
 
             foreach (var (label, el) in named)
             {
@@ -290,7 +451,17 @@ public sealed partial class SettingsDialog : ContentDialog
             }
 
             sb.AppendLine($"viewport={ContentScroll.ViewportWidth:F0}x{ContentScroll.ViewportHeight:F0}" +
-                          $" extent={ContentScroll.ExtentWidth:F0}x{ContentScroll.ExtentHeight:F0}");
+                          $" extent={ContentScroll.ExtentWidth:F0}x{ContentScroll.ExtentHeight:F0}" +
+                          $" root={SettingsRoot.ActualWidth:F0}x{SettingsRoot.ActualHeight:F0}");
+
+            // 祖先链：回答"内容区到底有多少空间、是谁给的"。这条链上任意一环比根面板矮，
+            // 根面板就在溢出（超出的部分既不滚动也不报错，直接看不见），所以它既是诊断
+            // 也是哨兵的判据来源。ElementName 里的括号是 ContentPresenter 之类的内部类。
+            for (var p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(SettingsRoot) as FrameworkElement;
+                 p is not null;
+                 p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(p) as FrameworkElement)
+                sb.AppendLine($"  host {p.GetType().Name}{Describe(p)} = {p.ActualWidth:F0}x{p.ActualHeight:F0}");
+
             Log.Write(sb.ToString().TrimEnd());
 
             // 横向溢出一定意味着右边的控件被裁了，没有例外
@@ -299,8 +470,55 @@ public sealed partial class SettingsDialog : ContentDialog
                 Log.Write($"!! settings content is {ContentScroll.ExtentWidth - ContentScroll.ViewportWidth:F0} DIP " +
                           "wider than the viewport - the right edge is being clipped");
             }
+
+            // "被裁到脚/被切掉右边"的哨兵。这条比上面的横向检查更要紧，因为**滚动器
+            // 不会报它**：根面板写死 520 DIP 而对话框只给得起约 415 时，ScrollViewer 的
+            // extent/viewport 都读 520（它以为正好装得下，于是连滚动条都不出现），
+            // 超出的部分被对话框静默裁掉——实测「回灌条数」下半截和「测试搜索」按钮
+            // 就是这样点不到的。判据只能是"根面板比任何一个祖先给的还大"。
+            for (var p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(SettingsRoot) as FrameworkElement;
+                 p is not null;
+                 p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(p) as FrameworkElement)
+            {
+                if (p.ActualWidth <= 0 || p.ActualHeight <= 0) continue;
+
+                if (p.ActualHeight + 0.5 < SettingsRoot.ActualHeight)
+                {
+                    Log.Write($"!! settings root ({SettingsRoot.ActualHeight:F0} DIP) is taller than " +
+                              $"{p.GetType().Name} gives it ({p.ActualHeight:F0} DIP) - the bottom is being clipped");
+                    break;
+                }
+                if (p.ActualWidth + 0.5 < SettingsRoot.ActualWidth)
+                {
+                    Log.Write($"!! settings root ({SettingsRoot.ActualWidth:F0} DIP) is wider than " +
+                              $"{p.GetType().Name} gives it ({p.ActualWidth:F0} DIP) - the right edge is being clipped");
+                    break;
+                }
+            }
         }
         catch (Exception ex) { Log.Write("screen rect probe failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// 配色表的几何自检：十个色块必须有各自不同的 Y，全部相同就说明 SetRow 没生效
+    /// （Grid 没有行定义时十行会叠在同一格上，截图里就是类名糊成一团）。
+    /// 只在配色页**真正可见**时才跑——面板折叠时宽高为 0，转储出来每行都是 y=0，
+    /// 那看起来正好像那个 bug 又回来了。
+    /// </summary>
+    private void ProbeColourRows()
+    {
+        if (ColorGrid.ActualWidth <= 0) return;
+        try
+        {
+            var rows = _swatches.Select(kv =>
+            {
+                var p = kv.Value.TransformToVisual(ColorGrid)
+                               .TransformPoint(new Windows.Foundation.Point(0, 0));
+                return $"{kv.Key}@y={p.Y:F0}";
+            });
+            Log.Write("colour rows laid out: " + string.Join(" ", rows));
+        }
+        catch (Exception ex) { Log.Write("colour row probe failed: " + ex.Message); }
     }
 
     /// <summary>当前焦点元素，用于排查滚动跳动。</summary>
@@ -387,7 +605,10 @@ public sealed partial class SettingsDialog : ContentDialog
             sw.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(c);
 
         if (_labels.TryGetValue(key, out var lb))
-            lb.Text = TagSections.Get(key).Title + "    " + hex;
+            // 用 ColorOf 而不是 Get：Get 只认九个真大类（散文不算大类，传进去会落到
+            // general），于是第十行会顶着「一般标签」的名字显示自然语言的颜色——
+            // 实测就是这样，一行里名字和色号说的不是同一件事。
+            lb.Text = TagSections.ColorOf(key).Title + "    " + hex;
 
         if (_hexLabels.TryGetValue(key, out var hx))
             hx.Text = "当前 " + hex +
