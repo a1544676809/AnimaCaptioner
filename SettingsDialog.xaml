@@ -23,16 +23,12 @@
         <x:Double x:Key="ContentDialogMaxHeight">640</x:Double>
     </ContentDialog.Resources>
 
-    <!-- 宽度只给下限与上限：下限（748 = 左栏 172 + 间距 12 + 右栏 564）是**必须**的，
-         否则对话框会跟着每一页的内容宽度伸缩（实测 352↔616 DIP，点一下类别整个对话框
-         横向跳一下）。实际下限由 FitToDialog 按窗口宽再收敛一次，窄窗口里让出去而不是
-         被裁掉右边。
-         **这里刻意不写高度**：写死高度会被对话框静默裁掉脚——根面板要求的比宿主给得起的
-         多时，超出部分既不滚动也不报错，直接看不见（实测联网搜索页「回灌条数」的下半截
-         和「测试搜索」按钮就这样点不到，而 ScrollViewer 还报 extent == viewport）。
-         高度改由 FitToDialog 按宿主实际给得起的高度钉住，见那里的注释。
-         两件事各有 ProbeScreenRects 里的哨兵盯着，不靠肉眼。 -->
-    <Grid x:Name="SettingsRoot" MinWidth="748" MaxWidth="800" ColumnSpacing="12">
+    <!-- 宽度与高度都由 code-behind 的 FitToDialog 钉成固定值，**这里不写死任何一个**。
+         两边都写死会互相打架（实测过：XAML 写 520 高而对话框只给得起约 415，超出的部分
+         既不滚动也不报错，直接看不见——联网搜索页「回灌条数」的下半截和「测试搜索」
+         按钮就是这样点不到的）。MaxWidth 留在这里只当兜底。
+         MinWidth 刻意不写：窄窗口里要让出去，写死 748 会让对话框比窗口还宽。 -->
+    <Grid x:Name="SettingsRoot" MaxWidth="800" ColumnSpacing="12">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="172" />
             <ColumnDefinition Width="*" />

@@ -70,8 +70,14 @@ public sealed partial class SettingsDialog : ContentDialog
                 ProbeColourRows();
                 ProbeScreenRects();
             });
+
+            // 窗口尺寸变化要重算。**只挂 SizeChanged 不够**：根面板一旦被钉成固定尺寸，
+            // 窗口变大时对话框跟着不再变尺寸，SizeChanged 就不触发，于是尺寸被闩在缩小
+            // 时算出的那个小值上（实测窗口 585→852 之后仍报 534x243）。XamlRoot.Changed
+            // 是窗口级别的通知，不依赖对话框自身尺寸是否变化，这才是可靠的那个信号。
+            if (XamlRoot is not null) XamlRoot.Changed += (_, _) => FitToDialog();
         };
-        // 窗口被改大小（或换了显示器）时重新算一次——否则对话框可能又超出可用范围
+        // 对话框自身尺寸变化也要跟一次（弹出层夹小我们的 Min 时就靠这条收敛）。
         SizeChanged += (_, _) => FitToDialog();
         ApiKeyBox.Password = cfg.ApiKey;
         BuildEffortItems();
@@ -119,52 +125,101 @@ public sealed partial class SettingsDialog : ContentDialog
 
     // ---- 尺寸 ----
 
+    /// <summary>量尺寸期间的重入闸。写 Width/Height 会触发 SizeChanged，而它又调回 FitToDialog。</summary>
+    private bool _fitting;
+
     /// <summary>
-    /// 定根面板的尺寸。宽度与高度用的判据**不一样**，两处都是踩过坑才定下来的。
+    /// 定根面板的尺寸：**两个方向都钉成固定值**，与当前显示的是哪一页无关。
     ///
-    /// **宽度按窗口算。** 按内容算会让对话框随每一页的期望宽度伸缩（实测 352↔616 DIP，
-    /// 点一下类别整个对话框横向抖一下），所以下限钉在 748，窄窗口里再让出去（让出去
-    /// 会被裁右边，但总比对话框比窗口还宽好；ProbeScreenRects 会告警）。
+    /// 高度早先取的是"祖先链里最矮的那一环"，那是错的。内容比宿主矮时，祖先链每一环
+    /// 都**贴着内容长**（实测模型页 443、数据路径页 291、配色页 371），于是根面板高度
+    /// 跟着页面走——切一次类别整个对话框纵向跳一下。而这一跳没有任何好处：宿主给得起
+    /// 多少只由窗口决定，与内容无关。
     ///
-    /// **高度只信宿主，不信窗口。** 内容区可用高度 = 窗口高 − 标题行 − 按钮行 − 内边距，
-    /// 一度是拿「对话框高 − 根面板高」去实测量这个 chrome 的，但它有个自激陷阱：根面板
-    /// 一旦被裁，被裁掉的那截**不算进任何 ActualHeight**，于是量到的 chrome 偏小、算出的
-    /// 高度更小，每触发一次 SizeChanged 就再掉一截（实测 520→512→504…）。而祖先链里
-    /// 的最小高度是对话框/弹出层真正分下来的空间，与我们改根面板尺寸无关，不会自激。
+    /// **尺寸用 Min=Max 钉，不用 Width/Height。** 设置显式 Width/Height 在这个宿主里
+    /// 留不住：实测设完 800x443、下一次探针读回来是 `explicit=NaNxNaN`（而同一处设的
+    /// MinWidth 完好），于是尺寸继续由内容决定、页面照旧跳。Min/Max 会保留，把两者设成
+    /// 同一个值等价于固定尺寸，而且顺带省掉"内容期望宽小于 Min 时要不要 Stretch"这类问题。
     ///
-    /// 边界情况：内容本来就比宿主矮时，祖先链里没有"更矮的那个"……实际仍然有——宿主是
-    /// 被对话框与窗口定死的，不会缩到跟内容一样高（见 ProbeScreenRects 每次换页打出的
-    /// 祖先链）。真出现"没有任何祖先比内容矮"，这里就把高度放回去，让对话框自己缩。
+    /// 边界：Min 不能超过宿主给得起的量，否则右边/下边被裁（滚动器不会报这个）。
+    /// 所以先把上限量准（MeasureHostCap），再往下夹。
     /// </summary>
     private void FitToDialog()
     {
+        if (_fitting) return;
         if (XamlRoot is null) return;
         if (ActualWidth <= 0 || ActualHeight <= 0) return;
         if (SettingsRoot.ActualWidth <= 0) return;
 
-        // ---- 宽度 ----
-        // 60 = 弹出层相对窗口的内缩（实测约每侧 24 DIP）加一点余量。
-        var minW = Math.Clamp(XamlRoot.Size.Width - 60, 420, 748);
-        if (Math.Abs(SettingsRoot.MinWidth - minW) > 1) SettingsRoot.MinWidth = minW;
+        _fitting = true;
+        try
+        {
+            var cap = MeasureHostCap();
 
-        // ---- 高度 ----
-        var host = double.PositiveInfinity;
-        var hostName = "(none)";
+            // 宽度上限 800 是排版选择（再宽一行文字太长），不是宿主限制。
+            var w = Math.Clamp(cap.Width, 380, 800);
+            var h = Math.Max(cap.Height, 240);
+
+            if (Math.Abs(SettingsRoot.MinWidth - w) > 1 || Math.Abs(SettingsRoot.MaxWidth - w) > 1)
+            { SettingsRoot.MinWidth = w; SettingsRoot.MaxWidth = w; }
+
+            if (Math.Abs(SettingsRoot.MinHeight - h) > 1 || Math.Abs(SettingsRoot.MaxHeight - h) > 1)
+            { SettingsRoot.MinHeight = h; SettingsRoot.MaxHeight = h; }
+
+            Log.Write($"settings size pinned to {w:F0}x{h:F0} DIP " +
+                      $"(host cap {cap.Width:F0}x{cap.Height:F0}, " +
+                      $"window {XamlRoot.Size.Width:F0}x{XamlRoot.Size.Height:F0})");
+        }
+        finally { _fitting = false; }
+    }
+
+    /// <summary>
+    /// 量出宿主真正给得起的内容尺寸。做法是**故意要一个给不起的尺寸**：把根面板的
+    /// Min/Max 全部放开、显式尺寸设到 4000，弹出层与对话框就会把整条祖先链夹在各自
+    /// 的上限上，此时链上最小的一环就是答案（正常状态下它们贴着内容长，读不到上界）。
+    ///
+    /// **必须连 MaxWidth 一起放开**：MaxWidth 是"排版上限 800"，留着它连祖先链都会被
+    /// 内容带着只长到 800 出头，量不出窗口真正给得起的宽度。
+    ///
+    /// 两道兜底：结果再按窗口尺寸夹一次（万一某层没同步夹住，读到 4000 会把内容裁掉，
+    /// 这个错误的代价太大，不能只靠"应该会夹"）；拿不到任何一环时退回保守常数。
+    /// </summary>
+    private (double Width, double Height) MeasureHostCap()
+    {
+        var sMinW = SettingsRoot.MinWidth; var sMaxW = SettingsRoot.MaxWidth;
+        var sMinH = SettingsRoot.MinHeight; var sMaxH = SettingsRoot.MaxHeight;
+        var sW = SettingsRoot.Width; var sH = SettingsRoot.Height;
+
+        SettingsRoot.MinWidth = 0; SettingsRoot.MaxWidth = double.PositiveInfinity;
+        SettingsRoot.MinHeight = 0; SettingsRoot.MaxHeight = double.PositiveInfinity;
+        SettingsRoot.Width = 4000; SettingsRoot.Height = 4000;
+        ContentScroll.UpdateLayout();
+        // 布局在本帧内可能还没落到底（第一轮祖先链上有环节仍是 0），多推一次。
+        ContentScroll.UpdateLayout();
+
+        var w = double.PositiveInfinity;
+        var h = double.PositiveInfinity;
         for (var p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(SettingsRoot) as FrameworkElement;
              p is not null;
              p = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(p) as FrameworkElement)
         {
-            if (p.ActualHeight <= 0) continue;
-            if (p.ActualHeight < host) { host = p.ActualHeight; hostName = p.GetType().Name + Describe(p); }
+            // 尚未布局的环节 ActualWidth/Height 是 0，读到 0 会把上限算成 0。
+            if (p.ActualWidth <= 0 || p.ActualHeight <= 0) continue;
+            if (p.ActualWidth < w) w = p.ActualWidth;
+            if (p.ActualHeight < h) h = p.ActualHeight;
         }
 
-        // 差值超过 1 DIP 才写：写属性会重新布局并再触发 SizeChanged，没有门槛就是循环。
-        // 这里不会自激（host 与根面板尺寸无关），门槛只是省掉无谓的重排。
-        if (!double.IsInfinity(host) && Math.Abs(SettingsRoot.Height - host) > 1)
-        {
-            SettingsRoot.Height = host;
-            Log.Write($"settings root height pinned to {host:F0} DIP by {hostName}");
-        }
+        SettingsRoot.MinWidth = sMinW; SettingsRoot.MaxWidth = sMaxW;
+        SettingsRoot.MinHeight = sMinH; SettingsRoot.MaxHeight = sMaxH;
+        SettingsRoot.Width = sW; SettingsRoot.Height = sH;
+        ContentScroll.UpdateLayout();
+
+        if (double.IsInfinity(w)) w = 800;
+        if (double.IsInfinity(h)) h = 420;
+
+        w = Math.Min(w, Math.Max(XamlRoot!.Size.Width - 20, 380));
+        h = Math.Min(h, Math.Max(XamlRoot.Size.Height - 40, 240));
+        return (w, h);
     }
 
     // ---- 左栏类别导航 ----
@@ -452,7 +507,10 @@ public sealed partial class SettingsDialog : ContentDialog
 
             sb.AppendLine($"viewport={ContentScroll.ViewportWidth:F0}x{ContentScroll.ViewportHeight:F0}" +
                           $" extent={ContentScroll.ExtentWidth:F0}x{ContentScroll.ExtentHeight:F0}" +
-                          $" root={SettingsRoot.ActualWidth:F0}x{SettingsRoot.ActualHeight:F0}");
+                          $" root={SettingsRoot.ActualWidth:F0}x{SettingsRoot.ActualHeight:F0}" +
+                          $" explicit={SettingsRoot.Width:F0}x{SettingsRoot.Height:F0}" +
+                          $" min={SettingsRoot.MinWidth:F0}x{SettingsRoot.MinHeight:F0}" +
+                          $" max={SettingsRoot.MaxWidth:F0}x{SettingsRoot.MaxHeight:F0}");
 
             // 祖先链：回答"内容区到底有多少空间、是谁给的"。这条链上任意一环比根面板矮，
             // 根面板就在溢出（超出的部分既不滚动也不报错，直接看不见），所以它既是诊断
