@@ -4239,6 +4239,17 @@ private void EndEdit(bool commit, bool lostFocus = false)
         ApplyAgentImageGate(_mode == PromptMode.Draft);
     }
 
+    /// <summary>助手面板里那个模型选择器的弹出层。内容每次打开时重建（见下）。</summary>
+    private Flyout? _agentModelFlyout;
+
+    /// <summary>
+    /// 选择器当前是否真的开着。**由 Opened/Closed 事件维护，不读 Flyout.IsOpen**：
+    /// 点站点后 Hide() 是异步收尾的，紧接着读 IsOpen 可能仍是 true，于是"再点一次
+    /// 打开"会被当成"再点一次关闭"而直接 return —— 界面看起来像按钮失灵。
+    /// 实测这条竞态会让同一段自动化脚本时而正常、时而弹出层空白。
+    /// </summary>
+    private bool _agentModelOpen;
+
     /// <summary>
     /// 弹出模型选择器。做成 Flyout + 两组列表而不是再开一个对话框：
     /// ContentDialog 只能有一个在场，而这里要在助手面板正上方说话，
@@ -4246,8 +4257,29 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// </summary>
     private void AgentModel_Click(object sender, RoutedEventArgs e)
     {
-        if (AgentModelBtn.Flyout is not null) { AgentModelBtn.Flyout.Hide(); return; }
+        // 已经开着就关掉（按钮是切换语义）
+        if (_agentModelOpen) { _agentModelFlyout?.Hide(); return; }
 
+        // **内容每次打开都重建，不能建一次留着复用。** 那个 ✓ 标的是"当前活动站点"
+        // 与"当前档位"，而这两样都会在别处变（设置页、上一次点选）。复用旧面板的话
+        // ✓ 会永远停在第一次打开时的位置——界面在明确地报错误的当前状态，而用户
+        // 就是靠它确认切没切过去。实测：切到本地 llama 后再次打开，✓ 仍在 DeepSeek 上。
+        if (_agentModelFlyout is null)
+        {
+            _agentModelFlyout = new Flyout();
+            _agentModelFlyout.Opened += (_, _) => _agentModelOpen = true;
+            _agentModelFlyout.Closed += (_, _) => _agentModelOpen = false;
+        }
+        _agentModelFlyout.Content = BuildAgentModelPanel();
+        _agentModelFlyout.ShowAt(AgentModelBtn);
+        Log.Write($"agent model picker opened (active={_cfg.ActiveProfile?.DisplayName}, " +
+                  $"effort='{LlmClient.NormalizeEffort(_cfg.ReasoningEffort)}', " +
+                  $"profiles={_cfg.Profiles.Count})");
+    }
+
+    /// <summary>造出模型选择器的面板内容。每次打开都重新调，所以 ✓ 一定是当下的状态。</summary>
+    private StackPanel BuildAgentModelPanel()
+    {
         var panel = new StackPanel { Spacing = 4, MinWidth = 300 };
 
         panel.Children.Add(new TextBlock
@@ -4289,7 +4321,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 _cfg.ActiveProfileId = captured.Id;
                 _cfg.Save();
                 Log.Write($"agent model -> {captured.DisplayName} ({captured.Model})");
-                AgentModelBtn.Flyout?.Hide();
+                _agentModelFlyout?.Hide();
                 RefreshAgentModelChrome();
                 AgentAddNote($"已切到「{captured.DisplayName}」（{captured.Subtitle}）。");
             };
@@ -4329,7 +4361,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 _cfg.ReasoningEffort = capturedValue;
                 _cfg.Save();
                 Log.Write($"agent effort -> '{capturedValue}'");
-                AgentModelBtn.Flyout?.Hide();
+                _agentModelFlyout?.Hide();
                 RefreshAgentModelChrome();
             };
             panel.Children.Add(btn);
@@ -4345,8 +4377,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
         });
 
-        AgentModelBtn.Flyout = new Flyout { Content = panel };
-        AgentModelBtn.Flyout.ShowAt(AgentModelBtn);
+        return panel;
     }
 
     /// <summary>
