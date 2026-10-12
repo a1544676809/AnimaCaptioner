@@ -12,7 +12,7 @@ namespace AnimaCaptioner.Core;
 /// 2. **Tab 只循环"列表里看得见的那几个"。** 补全列表和 Tab 走的必须是同一份
 ///    候选，否则用户按 Tab 会跳到列表里没有的东西上。
 ///
-/// 这个文件不引用任何 WinUI 类型，所以能被 net8 回归程序直接编译。
+/// 这个文件不引用任何 WinUI 类型，所以能被 net10 回归程序直接编译。
 /// </summary>
 public static class TagComplete
 {

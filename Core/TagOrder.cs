@@ -8,7 +8,7 @@ namespace AnimaCaptioner.Core;
 /// 多选下移必须从后往前挪，否则会互相踩；跨大类的挪动会被 Canonicalize
 /// 拨回去，必须提前拦住并如实告诉用户，而不是假装成功了。
 ///
-/// 这个文件不引用任何 WinUI 类型，所以能被 net8 的回归程序直接编译。
+/// 这个文件不引用任何 WinUI 类型，所以能被 net10 的回归程序直接编译。
 /// </summary>
 public static class TagOrder
 {

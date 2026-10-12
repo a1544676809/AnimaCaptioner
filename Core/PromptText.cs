@@ -27,7 +27,7 @@ namespace AnimaCaptioner.Core;
 /// 于是 <c>string.Join(", ", Tags) + ProseTail</c> 逐字节还原原文——
 /// 官方那种"前缀以句号收尾"的写法能被原样保住，而不是被改写。
 ///
-/// 这个文件不引用任何 WinUI 类型，所以能被 net8 回归程序直接编译。
+/// 这个文件不引用任何 WinUI 类型，所以能被 net10 回归程序直接编译。
 /// </summary>
 public static class PromptText
 {
@@ -81,7 +81,7 @@ public static class PromptText
     ///
     /// 放在这里（而不是 UI 那一层）是为了让**列表行与状态栏共用同一个口径**：
     /// 两处各算一份的话，迟早出现"列表说没超、状态栏说超了"。它也是纯逻辑，
-    /// 所以 net8 回归能直接测。
+    /// 所以 net10 回归能直接测。
     ///
     /// 标签数走 <see cref="Parse"/>，与中栏列表、着色、校验**同一个解析器**。
     /// 这里踩过一个坑：曾经用"含空格的逗号段不算标签"来排除散文，结果

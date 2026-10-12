@@ -14,7 +14,7 @@ namespace AnimaCaptioner.Core;
 ///    `one eye closed`，而列表里本来就有它），这时要拒绝并说明，而不是让
 ///    两个一样的标签并排存在。
 ///
-/// 这个文件不引用任何 WinUI 类型，所以能被 net8 回归程序直接编译。
+/// 这个文件不引用任何 WinUI 类型，所以能被 net10 回归程序直接编译。
 /// </summary>
 public static class TagEdit
 {

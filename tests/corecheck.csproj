@@ -1,7 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- 与应用同一个 TFM 代际（应用是 net10.0-windows10.0.19041.0）。
+         刻意不带 -windows 后缀：这里编译的 Core 源码是纯 .NET，唯一的平台相关点
+         DpapiSecret 走 P/Invoke 而不是 Windows 专用 API 包。 -->
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- 声明成 x64，与应用的 <Platforms>x64</Platforms> 对齐：
+         两套平台不一致时 VS 会报「解决方案包含未知的项目配置映射」。 -->
+    <Platforms>x64</Platforms>
+    <!-- 与应用同款处理：不让输出路径多出一层 x64\，保持 tests\bin\Release\net10.0
+         （README 里的测试命令都是这个路径）。 -->
+    <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -10,7 +19,9 @@
     <AssemblyName>corecheck</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 与应用同版本，避免"测试跑过的代码路径和应用实际跑的不是同一套托管依赖"。
+         先前这里是 8.0.10：那时测试是 net8.0，跨代际只能用 8.x。 -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
     <!--

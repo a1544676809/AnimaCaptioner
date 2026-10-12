@@ -10,7 +10,7 @@ namespace AnimaCaptioner.Core;
 /// - **界面**：中英混合搜词库，列出标签 + 中文释义 + 大类 + 引用数；
 /// - **模型**：把同一份结果压成紧凑文本回灌给工具循环（见 <see cref="ToToolContent"/>）。
 ///
-/// 不引用任何 WinUI 类型，所以能被 net8 回归程序直接编译。
+/// 不引用任何 WinUI 类型，所以能被 net10 回归程序直接编译。
 /// </summary>
 public static class TagSearch
 {

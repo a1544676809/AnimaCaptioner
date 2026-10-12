@@ -15,7 +15,7 @@ namespace AnimaCaptioner.Core;
 /// 两者是同一种东西（一段提示词正文），只是保留策略不同。分开存会让"把历史里的
 /// 一条钉成预设"变成跨文件的搬运，而那条路径正是最容易出现"两边都有/都没有"的。
 ///
-/// 这个文件不引用任何 WinUI 类型，所以能被 net8 回归程序直接编译。
+/// 这个文件不引用任何 WinUI 类型，所以能被 net10 回归程序直接编译。
 /// </summary>
 public sealed class PromptLibraryStore
 {

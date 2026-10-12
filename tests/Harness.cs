@@ -16,9 +16,13 @@ internal static class Harness
 
         var mode = argv.Length > 0 ? argv[0] : "parity";
 
-        // 仓库根目录：bin/Release/net8.0 -> tests -> repo
+        // 仓库根目录：从输出目录往上找带 tests/golden.json 的那一层。
+        // 刻意不写死"往上四层"——输出深度会随 TFM / 平台配置变化
+        // （bin\Release\net10.0 与 bin\x64\Release\net10.0 就差一层），
+        // 写死的话路径断了只会表现为 parity 找不到 golden.json、然后以退出码 2 结束，
+        // 看着像"数据集对不上所以跳过"，而不是"路径算错了"。
         var here = AppContext.BaseDirectory;
-        var repo = Path.GetFullPath(Path.Combine(here, "..", "..", "..", ".."));
+        var repo = FindRepoRoot(here) ?? Path.GetFullPath(Path.Combine(here, "..", "..", "..", ".."));
 
         string? Arg(int i) => argv.Length > i && !string.IsNullOrWhiteSpace(argv[i]) ? argv[i] : null;
         string? Env(string n) => Environment.GetEnvironmentVariable(n) is { Length: > 0 } v ? v : null;
@@ -151,5 +155,19 @@ internal static class Harness
         if (v is not null) return true;
         Console.WriteLine($"缺少{what}。请作为参数传入，或设环境变量 {env}。");
         return false;
+    }
+
+    /// <summary>
+    /// 从输出目录往上找含 tests/golden.json 的那一层（仓库根）；找不到返回 null。
+    /// 用标记文件而不是固定层数，输出布局变化时不会静默失效。
+    /// </summary>
+    private static string? FindRepoRoot(string start)
+    {
+        for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "tests", "golden.json")))
+                return dir.FullName;
+        }
+        return null;
     }
 }

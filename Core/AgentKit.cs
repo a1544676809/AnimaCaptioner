@@ -33,7 +33,7 @@ public sealed record AgentProposal(
 
 /// <summary>
 /// AI 助手的**纯逻辑**部分：工具声明、系统提示、把模型的 <c>propose</c> 参数
-/// 解析成一条可核对的提案。全是不碰网络、不碰界面的函数，所以 net8 回归
+/// 解析成一条可核对的提案。全是不碰网络、不碰界面的函数，所以 net10 回归
 /// （tests/Agent.cs）能直接对着真实报文形状断言。
 /// </summary>
 public static class AgentKit

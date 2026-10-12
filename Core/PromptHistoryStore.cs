@@ -20,7 +20,7 @@ namespace AnimaCaptioner.Core;
 /// 这时必须丢掉这个桶：否则 Ctrl+Z 会把外部改动退掉，而离开时的自动保存
 /// 又会把它永久写死。</para>
 ///
-/// <para>纯逻辑、不碰 WinUI，所以 net8 的 corecheck 能直接编译真实源码来测。</para>
+/// <para>纯逻辑、不碰 WinUI，所以 net10 的 corecheck 能直接编译真实源码来测。</para>
 /// </summary>
 public sealed class PromptHistoryStore
 {

@@ -50,7 +50,7 @@ public sealed class PromptSnapshot
 /// 状态退回去，落盘仍旧由保存那条路负责（标注模式的 Ctrl+S / 写标签模式的入库）。
 /// 这是刻意的——否则撤销一次就会静默改掉训练集里的一个 caption。</para>
 ///
-/// <para>纯逻辑、不碰 WinUI，所以 net8 的 corecheck 能直接编译真实源码来测。</para>
+/// <para>纯逻辑、不碰 WinUI，所以 net10 的 corecheck 能直接编译真实源码来测。</para>
 /// </summary>
 public sealed class PromptHistory
 {

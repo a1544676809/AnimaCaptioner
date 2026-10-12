@@ -47,6 +47,13 @@ dotnet build -c Release
 .\bin\Release\net10.0-windows10.0.19041.0\win-x64\AnimaCaptioner.exe
 ```
 
+根目录有 `AnimaCaptioner.slnx`，所以上面这条会把**应用和 `tests/` 回归工程一起构建**。
+只想要应用时：`dotnet build AnimaCaptioner.csproj -c Release`。
+
+解决方案只有一个平台（`x64`，与应用声明的 `<Platforms>` 一致），并且刻意关掉了
+`AppendPlatformToOutputPath`——否则显式 `Platform=x64` 会让输出多出一层 `bin\x64\`，
+"VS 里生成"和"命令行 build"就会落在两个目录、同一个 exe 有两份。
+
 五个调试用的启动参数：
 
 ```
@@ -82,7 +89,9 @@ Markdown，改完点「重新载入」即可生效，不必重新编译。
 ## 目录
 
 ```
-Core/            纯逻辑层，不引用 WinUI，所以能被 net8 回归程序直接编译
+AnimaCaptioner.slnx  解决方案：Visual Studio 直接打开它；根目录 dotnet build 也认它
+tests/            回归测试工程（直接编译 Core/ 真实源码，见下）
+Core/            纯逻辑层，不引用 WinUI，所以能被 net10 回归程序直接编译
   VocabDb.cs       词库引擎（animatag.py 的 C# 移植）
   TagSections.cs   大类定义、归类规则、稳定排序
   PromptText.cs    提示词解析、着色区间、token 预算
@@ -111,18 +120,18 @@ tools/icon/             图标的 SVG 源文件与生成脚本
 ```powershell
 cd tests
 dotnet build -c Release
-.\bin\Release\net8.0\corecheck.exe parity      # clone 下来就能跑，不需要任何外部数据
-.\bin\Release\net8.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
-.\bin\Release\net8.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
-.\bin\Release\net8.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
-.\bin\Release\net8.0\corecheck.exe history     # 撤销 / 重做：栈语义、按文档分桶、外部改动作废、LRU 淘汰（纯逻辑）
-.\bin\Release\net8.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
+.\bin\Release\net10.0\corecheck.exe parity      # clone 下来就能跑，不需要任何外部数据
+.\bin\Release\net10.0\corecheck.exe models      # /models 响应解析，同样不需要外部数据
+.\bin\Release\net10.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
+.\bin\Release\net10.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
+.\bin\Release\net10.0\corecheck.exe history     # 撤销 / 重做：栈语义、按文档分桶、外部改动作废、LRU 淘汰（纯逻辑）
+.\bin\Release\net10.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
 ```
 
 有一条**要联网、要已配置接口**的诊断（不属于上面这组"clone 下来就能跑"的）：
 
 ```powershell
-.\bin\Release\net8.0\corecheck.exe llm   # 拉一次 /models 看服务端报的能力，并 A/B 验证"关闭思考"是否真生效
+.\bin\Release\net10.0\corecheck.exe llm   # 拉一次 /models 看服务端报的能力，并 A/B 验证"关闭思考"是否真生效
 ```
 
 它会用你 `settings.json` 里的地址与密钥打真实请求（因此单独列出来）。
@@ -144,14 +153,14 @@ $env:AC_DATASET = 'D:\train\my-lora'          # 训练集目录
 $env:AC_VOCABDB = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\vocab.sqlite"
 $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
-.\bin\Release\net8.0\corecheck.exe sections    # 归类 / 排序 / 颜色 / 结构编辑
-.\bin\Release\net8.0\corecheck.exe prose       # 标签 vs 散文、保存不丢散文、token 预算
-.\bin\Release\net8.0\corecheck.exe edit        # 标签解析 / 改名 / 防重复 / 规范化收敛
-.\bin\Release\net8.0\corecheck.exe complete    # 输入框候选与 Tab 补全（含 679 个真实标签的抗性）
-.\bin\Release\net8.0\corecheck.exe escape      # 标签转义：与 ComfyUI 解析器对拍（给了词库会全量验 25,815 个标签）
-.\bin\Release\net8.0\corecheck.exe safety      # 安全标签档位核对
-.\bin\Release\net8.0\corecheck.exe roundtrip   # caption 逐字节往返
-.\bin\Release\net8.0\corecheck.exe defaults    # 默认路径解析
+.\bin\Release\net10.0\corecheck.exe sections    # 归类 / 排序 / 颜色 / 结构编辑
+.\bin\Release\net10.0\corecheck.exe prose       # 标签 vs 散文、保存不丢散文、token 预算
+.\bin\Release\net10.0\corecheck.exe edit        # 标签解析 / 改名 / 防重复 / 规范化收敛
+.\bin\Release\net10.0\corecheck.exe complete    # 输入框候选与 Tab 补全（含 679 个真实标签的抗性）
+.\bin\Release\net10.0\corecheck.exe escape      # 标签转义：与 ComfyUI 解析器对拍（给了词库会全量验 25,815 个标签）
+.\bin\Release\net10.0\corecheck.exe safety      # 安全标签档位核对
+.\bin\Release\net10.0\corecheck.exe roundtrip   # caption 逐字节往返
+.\bin\Release\net10.0\corecheck.exe defaults    # 默认路径解析
 ```
 
 缺输入时会以退出码 2 明确报错，不会假装通过。

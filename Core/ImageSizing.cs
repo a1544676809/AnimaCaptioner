@@ -1,7 +1,7 @@
 namespace AnimaCaptioner.Core;
 
 /// <summary>
-/// 发图给模型之前的尺寸计算。**纯逻辑**，所以能进 net8 回归（tests/Agent.cs）——
+/// 发图给模型之前的尺寸计算。**纯逻辑**，所以能进 net10 回归（tests/Agent.cs）——
 /// 它看着简单，但比例算错会让模型看到的图被拉扁，而那种错在界面上完全看不出来。
 ///
 /// 长边取 1024 的依据是实测出来的 token 代价（对 deepseek-v4.1-flash 量的）：

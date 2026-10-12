@@ -10,7 +10,7 @@ namespace AnimaCaptioner.Core;
 /// 单独做成视图模型（而不是直接绑 <see cref="TagSearch.Hit"/>）有两个原因：
 /// 1. 行上要显示"是否已经在当前图片里"，那是窗口侧的状态，不属于查询结果；
 /// 2. 配色要用 <see cref="TagColors"/>，而那是 WinUI 类型，不能进 TagSearch
-///    （那个文件要被 net8 回归程序直接编译）。
+///    （那个文件要被 net10 回归程序直接编译）。
 ///
 /// 用 x:Bind 绑定，所以属性必须是公开的、类型必须能在 XAML 里解析到
 /// （嵌套类型在 XAML 里写不出来，这也是它不能塞进 TagSearch 的原因之一）。

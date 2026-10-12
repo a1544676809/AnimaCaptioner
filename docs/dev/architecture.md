@@ -25,9 +25,10 @@
 
 判断标准：**写标签模式里"没有训练集概念"的部分占比会不会超过一半。** 只要它主要
 还是"组装一段提示词然后复制走"，同 exe 就更省；若它长成带队列/图库/批量的出图前端，
-就该拆成 `AnimaCore` 类库 + 两个 thin exe。注意 `tests/corecheck.csproj` 是
-**net8.0**、靠直接编译 `Core/*.cs` 做回归，库若只 target `net10.0` 就会丢掉那份
-"直接编译真实源码、改错就被测到"的特性，所以库应多目标 `net8.0;net10.0`。
+就该拆成 `AnimaCore` 类库 + 两个 thin exe。拆的时候别破坏回归方式：`tests/corecheck.csproj`
+靠**直接编译 `Core/*.cs` 真实源码**（不是引用编译产物）来做对拍，所以库的 TFM 必须能被
+测试工程引用——两边现在同为 **net10.0** 代际（应用是 `net10.0-windows10.0.19041.0`，
+测试是纯 `net10.0`），换代际时两边要一起动，否则"改错就被测到"那份特性会丢。
 
 ## 提示词库为什么不塞进 `settings.json`
 
@@ -309,7 +310,7 @@ DeepSeek 报的是（`tests/Models.cs` 里存着逐字节的原样响应）：
 第三行是 llama-server 那一类：它只报 `meta{n_ctx,ftype,size}`。把"不知道"当"不支持"
 会把本来能用的配置判死，而且用户完全无从察觉——`tests/Models.cs` 第 8、10 节专门
 钉着这条。拦截逻辑抽成纯函数 `LlmClient.CanAttachImage(bool?, bool)` 而不是留在
-`MainWindow` 里，就是为了让这条规则能在 net8 回归里被测到。
+`MainWindow` 里，就是为了让这条规则能在 net10 回归里被测到。
 
 缓存只在 `LlmClient` 内部（`_caps`，按「接口地址 + 模型名」索引），**不落盘**：
 条目极少、只在会话内有用，丢了只多花一次几百毫秒的 GET——不值得再引入一个要与

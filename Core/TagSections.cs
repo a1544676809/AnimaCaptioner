@@ -37,7 +37,7 @@ public sealed class TagSectionInfo
 /// （year 在前）。因为 `arbitrary order` 授权我们自定，这里按 Tag order 那一行的顺序，
 /// 与官方推荐前缀一致。
 ///
-/// 这个文件刻意不引用任何 WinUI 类型，以便对拍/回归用的 net8 控制台程序
+/// 这个文件刻意不引用任何 WinUI 类型，以便对拍/回归用的 net10 控制台程序
 /// 能直接编译同一份源码（见 tests\corecheck.csproj）。
 /// </summary>
 public static class TagSections

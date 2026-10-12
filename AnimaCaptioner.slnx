@@ -1,0 +1,13 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/tests/">
+    <Project Path="tests/corecheck.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+  <Project Path="AnimaCaptioner.csproj">
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+</Solution>

@@ -5,7 +5,7 @@ namespace AnimaCaptioner.Core;
 
 /// <summary>
 /// 大类颜色的解析与画刷构造。和 <see cref="TagSections"/> 分开放：
-/// 那边是纯逻辑（要对拍、要能在 net8 控制台里编译），这边要用 WinUI 类型。
+/// 那边是纯逻辑（要对拍、要能在 net10 控制台里编译），这边要用 WinUI 类型。
 /// </summary>
 public static class TagColors
 {

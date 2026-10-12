@@ -12,6 +12,12 @@
          （窗口和任务栏的图标是另外的机制：由 AppWindow.SetIcon 在启动时设。） -->
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <Platforms>x64</Platforms>
+    <!-- 显式 Platform=x64 时，SDK 默认会在输出路径里插一层平台目录（bin\x64\Release\...）。
+         关掉它，让「VS 里按 x64 生成」和「命令行 dotnet build」落在同一个 bin\Release\...：
+         否则同一个 exe 有两个位置，从 VS 生成完之后你会发现自己熟悉的那份并没更新。
+         中间目录用的是同一个开关（Microsoft.NET.DefaultOutputPaths.targets:113），
+         所以输出和中间目录不会错配。 -->
+    <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
     <WindowsPackageType>None</WindowsPackageType>
@@ -55,7 +61,7 @@
   </Target>
 
   <ItemGroup>
-    <!-- tests\ 是独立的 net8 测试工程，有自己的 Main。SDK 默认会把
+    <!-- tests\ 是独立的 net10 测试工程，有自己的 Main。SDK 默认会把
          **\*.cs 全收进来，于是应用工程也会看到那个入口点（CS0017 多个入口点），
          而它的 bin\obj 里还有自动生成的 AssemblyInfo，一并排除掉。 -->
     <Compile Remove="tests\**\*.cs" />
