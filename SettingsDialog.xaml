@@ -106,66 +106,108 @@
 
                 <!-- ============ 模型接口 ============ -->
                 <StackPanel x:Name="PageModel" Spacing="10">
-                    <TextBlock Text="模型接口（OpenAI 兼容）" FontWeight="SemiBold" />
-
-                    <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
-                             PlaceholderText="http://127.0.0.1:8080/v1" />
-
-                    <!-- 模型名做成可输入的下拉框：能列出服务端给的模型，也允许直接键入
-                         列表里没有的名字（别名、自定义名，或压根不实现 /models 的网关）。 -->
-                    <Grid ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <!--
-                          刻意**不设** PlaceholderText：可编辑 ComboBox 上它会盖过真实文本，
-                          实测填着 deepseek-v4-pro 时框里显示的是占位符（灰字），看起来像
-                          "模型名没读进来"。空着的时候下面那行提示已经说清了可以手填。
-                        -->
-                        <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
-                                  HorizontalAlignment="Stretch"
-                                  SelectionChanged="Model_SelectionChanged" />
-                        <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
-                                Click="FetchModels_Click" VerticalAlignment="Bottom" />
-                    </Grid>
-
-                    <TextBlock x:Name="ModelListText" FontSize="11" TextWrapping="Wrap"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-
-                    <PasswordBox x:Name="ApiKeyBox" Header="API Key"
-                                 PlaceholderText="本地服务留空即可" />
-
-                    <TextBlock x:Name="KeyHintText" FontSize="11" TextWrapping="Wrap"
+                    <TextBlock Text="模型站点" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                               Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
+                               Text="每个站点记住一整套「地址 + 密钥 + 模型名 + 推理档位」。换服务时点一下就行，不用改四处——本地 llama-server 和云端这些值全都不一样，档位甚至是相反的。" />
 
-                    <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock x:Name="TestResultText" FontSize="11"
-                                   VerticalAlignment="Center" TextWrapping="Wrap"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <Button Grid.Column="1" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
-                    </Grid>
+                    <!-- 站点列表。行由代码生成（见 BuildProfileRows）：行数随配置变，
+                         写死在 XAML 里就得维护两处。高度封顶，站点多了自己滚动，
+                         免得把下面的编辑器顶出视野（那正是"设置项够不到"的老问题）。 -->
+                    <Border CornerRadius="6" BorderThickness="1" Padding="2"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                        <ListView x:Name="ProfileList" SelectionMode="Single" MaxHeight="150"
+                                  SelectionChanged="ProfileList_SelectionChanged"
+                                  Background="Transparent" />
+                    </Border>
+
+                    <Button x:Name="AddProfileBtn" Content="＋ 添加站点" Click="AddProfile_Click" />
+
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                    <!-- 选中站点的编辑器。和列表常驻在同一页（不是弹出层）：
+                         ContentDialog 里再套一个 ContentDialog 在 WinUI 上不可靠，
+                         而内联展开只需滚动就能看全。 -->
+                    <StackPanel x:Name="ProfileEditor" Spacing="10">
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="EditorTitleText" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" Text="编辑站点" />
+                            <!-- 删除是摧毁性的、又紧挨着别的按钮，所以单独放右侧、
+                                 并且只在还有第二个站点时可点（最后一个不允许删）。 -->
+                            <Button Grid.Column="1" x:Name="DeleteProfileBtn" Content="删除此站点"
+                                    Padding="8,4" Click="DeleteProfile_Click" />
+                        </Grid>
+
+                        <TextBox x:Name="ProfileNameBox" Header="显示名（留空则用主机名）" />
+                        <TextBox x:Name="BaseUrlBox" Header="接口地址（base url，含 /v1）"
+                                 PlaceholderText="http://127.0.0.1:8080/v1" />
+
+                        <!-- 模型名做成可输入的下拉框：能列出服务端给的模型，也允许直接键入
+                             列表里没有的名字（别名、自定义名，或压根不实现 /models 的网关）。 -->
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <!--
+                              刻意**不设** PlaceholderText：可编辑 ComboBox 上它会盖过真实文本，
+                              实测填着 deepseek-v4-pro 时框里显示的是占位符（灰字），看起来像
+                              "模型名没读进来"。空着的时候下面那行提示已经说清了可以手填。
+                            -->
+                            <ComboBox x:Name="ModelBox" Header="模型名" IsEditable="True"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="Model_SelectionChanged" />
+                            <Button Grid.Column="1" x:Name="FetchModelsBtn" Content="获取列表"
+                                    Click="FetchModels_Click" VerticalAlignment="Bottom" />
+                        </Grid>
+
+                        <TextBlock x:Name="ModelListText" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+                        <PasswordBox x:Name="ApiKeyBox" Header="API Key"
+                                     PasswordChanged="ApiKeyBox_PasswordChanged"
+                                     PlaceholderText="留空则保持已有密钥不变" />
+
+                        <TextBlock x:Name="KeyHintText" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                   Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
+
+                        <!-- 推理档位跟着站点走：本地 llama-server 只认「关闭思考」那一档，
+                             云端认 8 档强度，两者要的取值正好相反。 -->
+                        <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"
+                                  HorizontalAlignment="Stretch"
+                                  SelectionChanged="Reasoning_SelectionChanged"
+                                  ToolTipService.ToolTip="混合推理模型会先输出思考过程，这个档位就是让它想多久。散文翻译「关闭思考」与非 none 档位实测质量相同（各 3 次采样共 12 个样本全干净），只是思考越久越慢——开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。两种服务端要用两种关法，程序按服务端在 /models 里报的能力自动选：本地 llama-server 用 enable_thinking=false（只认「关闭思考」这一档），云端用 reasoning_effort。" />
+                        <TextBlock x:Name="EffortHintText" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
+                        <Grid x:Name="ApiRowGrid" ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="TestResultText" FontSize="11"
+                                       VerticalAlignment="Center" TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button Grid.Column="1" x:Name="TestBtn" Content="测试连接" Click="Test_Click" />
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- ============ 推理参数 ============ -->
                 <StackPanel x:Name="PageEffort" Spacing="10">
                     <TextBlock Text="推理与生成参数" FontWeight="SemiBold" />
 
-                    <!-- 推理档位。早先这里是个 bool「关闭思考链」：它只能表达"关"与"不指定"
-                         两态，而服务端提供的是 8 档连续强度（用户没法要求"少想一点但别完全
-                         不想"），而且那个 bool 在云端一直是空转的——enable_thinking 被静默
-                         忽略，真正管用的是 reasoning_effort。 -->
-                    <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"
-                              HorizontalAlignment="Stretch"
-                              SelectionChanged="Reasoning_SelectionChanged"
-                              ToolTipService.ToolTip="混合推理模型会先输出思考过程，这个档位就是让它想多久。散文翻译「关闭思考」与非 none 档位实测质量相同（各 3 次采样共 12 个样本全干净），只是思考越久越慢——开思考时程序会自动多留 token 预算，思考内容也永远不会写进译文。两种服务端要用两种关法，程序按服务端在 /models 里报的能力自动选：本地 llama-server 用 enable_thinking=false（只认「关闭思考」这一档），云端用 reasoning_effort。" />
-                    <TextBlock x:Name="EffortHintText" FontSize="11" TextWrapping="Wrap"
-                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <!-- 推理档位不在这里：它已经是**站点**的一个属性（本地 llama-server
+                         只认「关闭思考」，云端认 8 档强度，两者要的取值相反），
+                         所以挪到「模型接口」页跟着站点一起编辑。 -->
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="推理档位跟着站点走，在「模型接口」页里选定。下面这三项对所有站点共用。" />
 
                     <TextBlock FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"

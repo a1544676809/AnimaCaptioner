@@ -4136,6 +4136,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
         if (!on) return;
 
+        RefreshAgentModelChrome();
         ApplyAgentImageGate(draft);
 
         if (AgentFeed.Children.Count == 0)
@@ -4204,6 +4205,166 @@ private void EndEdit(bool commit, bool lostFocus = false)
         _cfg.Save();
         Log.Write($"agent attach image: {_cfg.AgentAttachImage}");
     }
+
+    // ---- 助手面板里的模型选择器 ----
+    //
+    // 为什么要在面板里再放一个（设置页已经能改）：对话中途想换模型是很自然的动作
+    // ——"这个模型答得不好""忘了切到能读图的那个"。为此要打开设置、翻到模型页、
+    // 点保存、再回来，代价远大于收益，结果是用户干脆不换。
+    //
+    // 选择器列的是**站点 × 档位**：站点本身就是"地址+密钥+模型名"那一组
+    // （见 ModelProfile），档位又跟着服务走，所以两样一起给，选完立刻生效。
+
+    /// <summary>刷新按钮上的文字与提示。站点名与档位一起显示，当前用的是什么一眼可见。</summary>
+    private void RefreshAgentModelChrome()
+    {
+        if (AgentModelText is null) return;
+
+        var p = _cfg.ActiveProfile;
+        var effort = LlmClient.NormalizeEffort(_cfg.ReasoningEffort);
+        var effortLabel = effort.Length == 0 ? "自动" : effort;
+
+        AgentModelText.Text = p is null
+            ? "未配置"
+            : $"{p.DisplayName} · {effortLabel}";
+
+        var caps = _llm.Caps(_cfg);
+        var imageNote = caps?.SupportsImage == true ? "可读图"
+                      : caps?.SupportsImage == false ? "仅文本" : "能力未知";
+        ToolTipService.SetToolTip(AgentModelBtn,
+            $"{p?.DisplayName ?? "(无站点)"}\n{p?.Subtitle ?? ""}\n{imageNote}\n\n" +
+            "点这里切换站点与推理档位（改完立刻生效，不必打开设置）。");
+
+        // 换模型可能换掉"能不能读图"，那个复选框要跟着重算
+        ApplyAgentImageGate(_mode == PromptMode.Draft);
+    }
+
+    /// <summary>
+    /// 弹出模型选择器。做成 Flyout + 两组列表而不是再开一个对话框：
+    /// ContentDialog 只能有一个在场，而这里要在助手面板正上方说话，
+    /// 弹一个会把整个窗口盖住的模态框反而打断操作。
+    /// </summary>
+    private void AgentModel_Click(object sender, RoutedEventArgs e)
+    {
+        if (AgentModelBtn.Flyout is not null) { AgentModelBtn.Flyout.Hide(); return; }
+
+        var panel = new StackPanel { Spacing = 4, MinWidth = 300 };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "模型站点",
+            FontSize = 11,
+            Margin = new Thickness(2, 2, 2, 0),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+        });
+
+        // 站点点一下即切换 + 立即保存：这里没有"保存/取消"的概念（面板是即时生效的），
+        // 拖一个未提交的状态反而会让用户以为没生效。
+        foreach (var p in _cfg.Profiles)
+        {
+            var isActive = p.Id == _cfg.ActiveProfile?.Id;
+            var row = new StackPanel { Spacing = 1 };
+            row.Children.Add(new TextBlock { Text = (isActive ? "✓ " : "   ") + p.DisplayName });
+            row.Children.Add(new TextBlock
+            {
+                Text = p.Subtitle,
+                FontSize = 11,
+                Margin = new Thickness(14, 0, 0, 0),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            });
+
+            var btn = new Button
+            {
+                Content = row,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(8, 6, 8, 6),
+            };
+            // 显式给自动化名称：内容是个 StackPanel 时 UIA 拿到的名字是空的，
+            // 读屏念不出来、自动化也点不着。
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(btn, "站点 " + p.DisplayName);
+            var captured = p;
+            btn.Click += (_, _) =>
+            {
+                _cfg.ActiveProfileId = captured.Id;
+                _cfg.Save();
+                Log.Write($"agent model -> {captured.DisplayName} ({captured.Model})");
+                AgentModelBtn.Flyout?.Hide();
+                RefreshAgentModelChrome();
+                AgentAddNote($"已切到「{captured.DisplayName}」（{captured.Subtitle}）。");
+            };
+            panel.Children.Add(btn);
+        }
+
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Margin = new Thickness(0, 4, 0, 4),
+            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["DividerStrokeColorDefaultBrush"],
+        });
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "推理档位（跟着站点走）",
+            FontSize = 11,
+            Margin = new Thickness(2, 0, 2, 0),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+        });
+
+        foreach (var (value, label) in EffortChoices)
+        {
+            var isActive = string.Equals(value, LlmClient.NormalizeEffort(_cfg.ReasoningEffort),
+                                         StringComparison.OrdinalIgnoreCase);
+            var btn = new Button
+            {
+                Content = (isActive ? "✓ " : "   ") + label,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(8, 6, 8, 6),
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(btn, "档位 " + label);
+            var capturedValue = value;
+            btn.Click += (_, _) =>
+            {
+                _cfg.ReasoningEffort = capturedValue;
+                _cfg.Save();
+                Log.Write($"agent effort -> '{capturedValue}'");
+                AgentModelBtn.Flyout?.Hide();
+                RefreshAgentModelChrome();
+            };
+            panel.Children.Add(btn);
+        }
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "档位能不能真正下发取决于服务端；设置页的「模型接口」会说明当前这一档会不会生效。",
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 300,
+            Margin = new Thickness(2, 4, 2, 0),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+        });
+
+        AgentModelBtn.Flyout = new Flyout { Content = panel };
+        AgentModelBtn.Flyout.ShowAt(AgentModelBtn);
+    }
+
+    /// <summary>
+    /// 档位取值与界面文案。**与设置页共用**（设置页那份 BuildEffortItems 也读它）：
+    /// 两处各写一份的话，改一处漏一处会让同一个档位在面板和设置里叫不同名字。
+    /// </summary>
+    internal static readonly (string Value, string Label)[] EffortChoices =
+    {
+        ("", "自动（跟随服务端默认）"),
+        ("none", "关闭思考（none）"),
+        ("minimal", "最少（minimal）"),
+        ("low", "少（low）"),
+        ("medium", "中（medium）"),
+        ("high", "高（high）"),
+        ("xhigh", "很高（xhigh）"),
+        ("ultra", "极高（ultra）"),
+        ("max", "最高（max）"),
+    };
 
     private void AgentClear_Click(object sender, RoutedEventArgs e)
     {

@@ -789,16 +789,33 @@
 
                     <Grid Margin="2,0,0,6" ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock FontWeight="SemiBold" VerticalAlignment="Center"
                                    TextTrimming="CharacterEllipsis" Text="AI 助手" />
-                        <CheckBox Grid.Column="1" x:Name="AgentImageBox" Content="带当前图片"
+                        <!-- 模型选择器。放在面板标题旁边而不是藏进设置里：对话中途发现
+                             "这个模型答得不好"或"忘了切到能读图的那个"是最常见的动作，
+                             而要为此打开设置、翻两页、点保存，代价太大了。
+                             按钮文字是「模型名 · 档位」，和 DSH 那个选择器一个道理——
+                             当前用的是谁应该一眼看得到。 -->
+                        <Button Grid.Column="1" x:Name="AgentModelBtn"
+                                HorizontalAlignment="Left" Padding="8,4"
+                                AutomationProperties.Name="模型选择"
+                                Click="AgentModel_Click"
+                                ToolTipService.ToolTip="切换模型站点与推理档位（改完立刻生效，不必打开设置）">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE945;" FontSize="12" />
+                                <TextBlock x:Name="AgentModelText" FontSize="12"
+                                           TextTrimming="CharacterEllipsis" Text="模型" />
+                            </StackPanel>
+                        </Button>
+                        <CheckBox Grid.Column="2" x:Name="AgentImageBox" Content="带当前图片"
                                   VerticalAlignment="Center" Click="AgentImageBox_Click"
                                   ToolTipService.ToolTip="把左栏选中的这张图缩到长边 1024 后一起发出去。写标签模式没有图片，这一项会自动灰掉。" />
-                        <Button Grid.Column="2" x:Name="AgentClearBtn" Content="清空对话"
+                        <Button Grid.Column="3" x:Name="AgentClearBtn" Content="清空对话"
                                 Padding="8,4" Click="AgentClear_Click" />
                     </Grid>
 

@@ -45,14 +45,235 @@ public sealed class AppSettings
     /// <summary>人工整理的中文 → 标签映射（词库构建产物之一）。</summary>
     public string SeedPath { get; set; } = DefaultVocabPath("seed.json");
 
-    /// <summary>OpenAI 兼容接口的 base，例如 http://127.0.0.1:8080/v1 。</summary>
-    public string ApiBaseUrl { get; set; } = "http://127.0.0.1:8080/v1";
+    // ---- 模型站点 ----
+    //
+    // 地址 / 密钥 / 模型名 / 推理档位现在按**站点**成组保存（见 ModelProfile），
+    // 顶层那四个名字变成"当前活动站点"的视图。这个形状是刻意的：
+    //
+    // 1. **换服务是一次切换，不是改四处。** 本地 llama-server 与云端之间，
+    //    地址、密钥、模型名、档位全都不一样（档位甚至是相反的：前者只认
+    //    「关闭思考」，后者认 8 档强度）。拆成四个独立输入框时每换一次要改四处，
+    //    改漏一处就是 401 或一个静默不生效的档位。
+    // 2. **调用方零改动。** LlmClient 的每个方法（以及 TagTranslator、TagSearchAgent、
+    //    AgentHost、MainWindow）都从 cfg 上读这四个名字。把它们做成视图之后，
+    //    那 50 多处调用一行都不用动，也不可能出现"某个调用点还在读旧字段"。
 
-    /// <summary>模型名。本地 llama-server 用 8b-iq4_xs。</summary>
-    public string Model { get; set; } = "8b-iq4_xs";
+    /// <summary>保存过的模型站点。至少要有一个（活动指针指向它）。</summary>
+    private List<ModelProfile>? _profiles;
 
-    /// <summary>DPAPI 密文，加密后 Base64。不要直接改这个字段。</summary>
-    public string ApiKeyProtected { get; set; } = "";
+    /// <summary>
+    /// 保存过的模型站点。**永远非空**：一个都没有时当场补一个默认站点
+    /// （本地 llama-server 的惯例），否则 <see cref="ActiveProfile"/> 会是 null、
+    /// 四个视图属性全变空串，界面看起来像"模型配置丢了"。
+    /// </summary>
+    public List<ModelProfile> Profiles
+    {
+        get
+        {
+            // 空列表也要补：手改 settings.json 写成 "Profiles": [] 时列表非 null
+            // 但空，同样会让四个视图属性全变空串。
+            if (_profiles is null || _profiles.Count == 0)
+                _profiles = new List<ModelProfile>
+                {
+                    new() { BaseUrl = DefaultBaseUrl, Model = DefaultModel }
+                };
+            return _profiles;
+        }
+        set => _profiles = value;
+    }
+
+    /// <summary>当前活动的站点 id。<see cref="ActiveProfile"/> 找不到时回落到第一个。</summary>
+    public string ActiveProfileId { get; set; } = "";
+
+    /// <summary>
+    /// 站点表的版本号，用于迁移旧配置。0/缺失 = 拆分前（顶层只有一份地址/密钥/模型）。
+    ///
+    /// 为什么需要它：旧配置里那四个顶层字段与新的 <see cref="Profiles"/> 表达的是
+    /// 同一件事。不迁移的话用户的地址、密钥、模型会被"读不出来"——界面显示默认值，
+    /// 而一保存就把旧值真的覆盖掉了（密钥那一项尤其不可挽回）。
+    /// </summary>
+    public int ProfileSchema { get; set; }
+
+    /// <summary>当前站点表版本。改成大于 0 时请同时更新 <see cref="MigrateProfiles"/>。</summary>
+    public const int CurrentProfileSchema = 1;
+
+    /// <summary>新建站点时的默认地址与模型名（本地 llama-server 的惯例）。</summary>
+    internal const string DefaultBaseUrl = "http://127.0.0.1:8080/v1";
+    internal const string DefaultModel = "8b-iq4_xs";
+
+    /// <summary>
+    /// 当前活动的站点；一个都没有时返回 null。
+    ///
+    /// 指针指向不存在的 id 时**回落到第一个**而不是返回 null：手改 settings.json
+    /// 写错一个 id 不该让整个模型配置变成"未配置"。
+    /// </summary>
+    [JsonIgnore]
+    public ModelProfile? ActiveProfile =>
+        Profiles.FirstOrDefault(p => p.Id == ActiveProfileId) ?? Profiles.FirstOrDefault();
+
+    /// <summary>要改配置时用它：没有站点就当场建一个。视图属性的 setter 都走这里。</summary>
+    [JsonIgnore]
+    private ModelProfile ActiveOrNew
+    {
+        get
+        {
+            if (ActiveProfile is { } a)
+            {
+                // 指针没对上（空、或指向已删除的站点）时顺手校正，免得每次都靠回落
+                if (a.Id != ActiveProfileId) ActiveProfileId = a.Id;
+                return a;
+            }
+            var p = new ModelProfile { BaseUrl = DefaultBaseUrl, Model = DefaultModel };
+            Profiles.Add(p);
+            ActiveProfileId = p.Id;
+            return p;
+        }
+    }
+
+    /// <summary>加一个站点并让它成为活动站点，返回它。界面上的「添加站点」用它。</summary>
+    public ModelProfile AddProfile(string baseUrl = "", string model = "")
+    {
+        var p = new ModelProfile
+        {
+            BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? DefaultBaseUrl : baseUrl.Trim(),
+            Model = model ?? "",
+        };
+        Profiles.Add(p);
+        ActiveProfileId = p.Id;
+        return p;
+    }
+
+    /// <summary>
+    /// 删掉一个站点。**最后一个不允许删**——一个都没有的状态下所有视图属性都会
+    /// 落到空串，界面看起来像"模型配置丢了"，而其实只是没站点可指。
+    /// 返回是否真的删掉了。
+    /// </summary>
+    public bool RemoveProfile(string id)
+    {
+        if (Profiles.Count <= 1) return false;
+        var hit = Profiles.FirstOrDefault(p => p.Id == id);
+        if (hit is null) return false;
+
+        Profiles.Remove(hit);
+        if (ActiveProfileId == id) ActiveProfileId = Profiles[0].Id;
+        return true;
+    }
+
+    /// <summary>
+    /// 把旧的单站点配置迁移成站点表。返回是否真的动过配置。
+    ///
+    /// **判据是后备字段 <c>_profiles</c> 是不是 null，不是 <see cref="Profiles"/>.Count。**
+    /// 后者不行：Getter 会在表为空时自动补一个默认站点（那是为了让四个视图属性永远
+    /// 有落脚点），于是"旧配置里根本没有这张表"与"表在但是空的"变得无法区分，
+    /// 迁移会以为已经有站点、转头把旧配置的地址/密钥/模型丢掉。反序列化时若 JSON 里
+    /// 没有 `Profiles` 键，Setter 就不会被调用，所以 `_profiles is null` 正是那个信号。
+    ///
+    /// 只有在 <see cref="ProfileSchema"/> 小于当前版本时才跑：跑过之后旧顶层键一律
+    /// 置 null（配合 <c>WhenWritingDefault</c>，下次保存它们就消失了），
+    /// 否则旧键会和新表长期并存、说法不一。
+    ///
+    /// 旧键的**空串与缺失是两回事**：`"ReasoningEffort":""` 是"自动"这个真实取值，
+    /// 而键不在场才是"没配过、用默认"。所以判据是 `is not null` 而不是
+    /// `!IsNullOrWhiteSpace`——把空串当缺失会把用户的"自动"改成"关闭思考"。
+    /// </summary>
+    private bool MigrateProfiles()
+    {
+        if (ProfileSchema >= CurrentProfileSchema) return false;
+
+        // 这一句必须在碰 Profiles 属性之前读，否则 getter 会替我们把默认站点补上
+        var hadProfilesKey = _profiles is not null;
+
+        var hadLegacy = LegacyApiBaseUrl is not null || LegacyModel is not null
+                     || LegacyApiKeyProtected is not null || LegacyReasoningEffort is not null;
+
+        if (hadProfilesKey && !hadLegacy)
+        {
+            // 新配置：JSON 里有表、旧键也不在场。只需把活动指针扶正。
+            if (string.IsNullOrWhiteSpace(ActiveProfileId)
+                || !_profiles!.Any(p => p.Id == ActiveProfileId))
+                ActiveProfileId = _profiles![0].Id;
+            ProfileSchema = CurrentProfileSchema;
+            return true;
+        }
+
+        // 走到这里有两种情况，处理方式相同——都以旧键为准：
+        //   a) 旧配置（没有表），把旧键装进一个新站点；
+        //   b) 新配置被手改加了旧键，按旧键覆盖第一个站点。
+        // 旧键只可能来自更早的版本或手工编辑，按它走比猜哪个更新更可预期。
+        var table = _profiles ?? new List<ModelProfile>();
+        var p = table.Count > 0 ? table[0] : new ModelProfile();
+        if (hadLegacy)
+        {
+            if (LegacyApiBaseUrl is not null) p.BaseUrl = LegacyApiBaseUrl;
+            if (LegacyModel is not null) p.Model = LegacyModel;
+            if (LegacyApiKeyProtected is not null) p.ApiKeyProtected = LegacyApiKeyProtected;
+
+            // 档位要单独对待：它可能来自更老的 bool（MigrateThinking 随后会写在
+            // 活动站点的档位上），所以这里只有在旧配置**没有**那个 bool 时才搬档位。
+            if (LegacyReasoningEffort is not null && LegacyDisableThinking is null)
+                p.ReasoningEffort = LegacyReasoningEffort;
+
+            // 密文搬走之后明文缓存要作废：ApiKey 的 getter 只解一次并缓存，
+            // 若之前已经被读过（空密文 -> 缓存了空串），这里换了密文它不会重解。
+            p.ForgetCachedKey();
+        }
+
+        if (table.Count == 0) table.Add(p);
+        _profiles = table;
+        ActiveProfileId = p.Id;
+
+        LegacyApiBaseUrl = null;
+        LegacyModel = null;
+        LegacyApiKeyProtected = null;
+        LegacyReasoningEffort = null;
+
+        ProfileSchema = CurrentProfileSchema;
+        return true;
+    }
+
+    /// <summary>旧配置的顶层接口地址。只用于迁移，不再写出。</summary>
+    [JsonPropertyName("ApiBaseUrl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? LegacyApiBaseUrl { get; set; }
+
+    /// <summary>旧配置的顶层模型名。只用于迁移，不再写出。</summary>
+    [JsonPropertyName("Model")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? LegacyModel { get; set; }
+
+    /// <summary>旧配置的顶层密钥密文。只用于迁移，不再写出。</summary>
+    [JsonPropertyName("ApiKeyProtected")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? LegacyApiKeyProtected { get; set; }
+
+    /// <summary>旧配置的顶层推理档位。只用于迁移，不再写出。</summary>
+    [JsonPropertyName("ReasoningEffort")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? LegacyReasoningEffort { get; set; }
+
+    /// <summary>OpenAI 兼容接口的 base。**是活动站点的视图**，不是独立字段。</summary>
+    [JsonIgnore]
+    public string ApiBaseUrl
+    {
+        get => ActiveProfile?.BaseUrl ?? "";
+        set => ActiveOrNew.BaseUrl = value ?? "";
+    }
+
+    /// <summary>模型名。**是活动站点的视图**。</summary>
+    [JsonIgnore]
+    public string Model
+    {
+        get => ActiveProfile?.Model ?? "";
+        set => ActiveOrNew.Model = value ?? "";
+    }
+
+    /// <summary>DPAPI 密文。**是活动站点的视图**。</summary>
+    [JsonIgnore]
+    public string ApiKeyProtected
+    {
+        get => ActiveProfile?.ApiKeyProtected ?? "";
+        set => ActiveOrNew.ApiKeyProtected = value ?? "";
+    }
 
     // ---- 联网搜索（作为模型可调用的工具）----
 
@@ -95,12 +316,13 @@ public sealed class AppSettings
     /// <summary>
     /// 推理档位（服务端的 `reasoning_effort`）。空串 = 自动，即不下发、跟随服务端
     /// 自己的默认档；其余取值为 <see cref="Core.LlmClient.EffortVocabulary"/> 里那八个。
+    /// **是活动站点的视图**——档位跟服务走：llama-server 只认「关闭思考」，云端认 8 档。
     ///
     /// 早先这里是个 bool（"关闭思考链"），之所以升级成档位：那个 bool 只能表达
     /// "关"与"不指定"两态，而服务端提供的是 8 档连续强度，用户没法要求"少想一点
     /// 但别完全不想"。映射关系在 <see cref="MigrateThinking"/>：`true → "none"`。
     ///
-    /// **默认 "none"**（与旧的 bool 默认 true 一致）：主要影响短任务（标签释义）；
+    /// 默认 "none"（与旧的 bool 默认 true 一致）：主要影响短任务（标签释义）；
     /// 散文翻译开与关实测质量相同（各 3 次采样、共 12 个样本全干净），只是开思考
     /// 慢 10–15 倍。非 none 档位时程序会自动给思考留 token 余量
     /// （见 LlmClient.ReasoningHeadroom），且思考内容永不进译文。
@@ -111,7 +333,12 @@ public sealed class AppSettings
     /// `reasoning_effort`。服务端没在 `/models` 里声明 `effort` 时不下发档位
     /// （见 LlmClient.EffortToSend），界面会把这件事写出来，不静默吞掉。
     /// </summary>
-    public string ReasoningEffort { get; set; } = "none";
+    [JsonIgnore]
+    public string ReasoningEffort
+    {
+        get => ActiveProfile?.ReasoningEffort ?? "";
+        set => ActiveOrNew.ReasoningEffort = value ?? "";
+    }
 
     /// <summary>
     /// 旧字段：bool「关闭思考链」。**只用于把老配置读进来迁移**，不再写出。
@@ -327,21 +554,16 @@ public sealed class AppSettings
 
     // ---- 运行时字段（不参与序列化）----
 
-    /// <summary>明文 API Key。只在内存里，保存时加密写入 <see cref="ApiKeyProtected"/>。</summary>
+    /// <summary>
+    /// 明文 API Key。**是活动站点的视图**——加解密与缓存都在
+    /// <see cref="ModelProfile"/> 上，那里才是密钥的主人。
+    /// </summary>
     [JsonIgnore]
     public string ApiKey
     {
-        get => _apiKey ??= DpapiSecret.TryUnprotect(ApiKeyProtected, Entropy) ?? "";
-        set
-        {
-            _apiKey = value ?? "";
-            ApiKeyProtected = string.IsNullOrEmpty(_apiKey)
-                ? ""
-                : DpapiSecret.Protect(_apiKey, Entropy);
-        }
+        get => ActiveProfile?.ApiKey ?? "";
+        set => ActiveOrNew.ApiKey = value ?? "";
     }
-
-    [JsonIgnore] private string? _apiKey;
 
     /// <summary>明文搜索 API Key。与 <see cref="ApiKey"/> 同一套 DPAPI 处理。</summary>
     [JsonIgnore]
@@ -361,9 +583,7 @@ public sealed class AppSettings
 
     /// <summary>密文存在但解不开（换了机器或账户）。UI 据此提示重填，而不是静默当成没填。</summary>
     [JsonIgnore]
-    public bool ApiKeyUnreadable =>
-        !string.IsNullOrEmpty(ApiKeyProtected)
-        && DpapiSecret.TryUnprotect(ApiKeyProtected, Entropy) is null;
+    public bool ApiKeyUnreadable => ActiveProfile?.ApiKeyUnreadable ?? false;
 
     // ---- 落盘 ----
 
@@ -391,6 +611,11 @@ public sealed class AppSettings
         var s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts);
         if (s is null) return null;
 
+        // 顺序有讲究：Profiles **先**迁移，因为 MigrateThinking 现在读写的是
+        // 活动站点的档位（ReasoningEffort 已经是视图），而活动站点要等 Profiels
+        // 建出来才存在。反过来做的话那次迁移会落在"临时新建的空站点"上，
+        // 用户原来的地址、密钥、模型名就全丢了。
+        if (s.MigrateProfiles()) Log.Write("settings: model profiles migrated to v" + CurrentProfileSchema);
         // 旧配置的配色键要迁移（六段 -> 九段）；bool 关闭思考要迁移成推理档位。
         // 迁移只在内存里做，下次任何一次 Save() 会把结果写回去。
         if (s.MigrateColorSchema()) Log.Write("settings: colour schema migrated to v" + CurrentColorSchema);

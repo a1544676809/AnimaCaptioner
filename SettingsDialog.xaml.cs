@@ -44,8 +44,14 @@ public sealed partial class SettingsDialog : ContentDialog
         _cfg = cfg;
         _llm = llm;
 
-        BaseUrlBox.Text = cfg.ApiBaseUrl;
-        ModelBox.Text = cfg.Model;
+        // 站点表在**副本**上编辑，点「保存」时由 ApplyTo 整表写回。
+        // 这样「取消」是真的取消：直接在真配置上改的话，用户删掉一个站点又点取消，
+        // 那个站点的密钥就已经从内存配置里没了——而屏幕上什么都没保存过。
+        _draftProfiles = cfg.Profiles.Select(p => p.Clone()).ToList();
+        _draftActiveId = cfg.ActiveProfile?.Id ?? "";
+
+        BuildProfileRows();
+        SelectProfileRow(_draftActiveId);
 
         // 上面那句只落在依赖属性上，**界面画不出来**——可编辑 ComboBox 只把「选中项」
         // 可靠地画进模板里的 TextBox，而构造期模板还没应用、Items 也还空着。
@@ -53,7 +59,7 @@ public sealed partial class SettingsDialog : ContentDialog
         // 模板就绪后再走一次统一同步（见 SyncModelText）。
         Loaded += (_, _) =>
         {
-            SyncModelText(_cfg.Model);
+            SyncModelText(ActiveDraft?.Model ?? "");
             // 尺寸与几何自检都要等对话框真正布局完才有意义（构造期控件还没量过尺寸，
             // 读出来全是 0）。推后一拍，量到的才是屏幕上那副样子。
             DispatcherQueue.TryEnqueue(() =>
@@ -79,9 +85,9 @@ public sealed partial class SettingsDialog : ContentDialog
         };
         // 对话框自身尺寸变化也要跟一次（弹出层夹小我们的 Min 时就靠这条收敛）。
         SizeChanged += (_, _) => FitToDialog();
-        ApiKeyBox.Password = cfg.ApiKey;
+        SyncKeyHint();
         BuildEffortItems();
-        SelectEffort(cfg.ReasoningEffort);
+        SelectEffort(ActiveDraft?.ReasoningEffort ?? "");
         UpdateEffortHint();
         AgentEnabledBox.IsChecked = cfg.AgentEnabled;
         AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
@@ -115,13 +121,228 @@ public sealed partial class SettingsDialog : ContentDialog
         SelectPage("model");
 
         BuildColorRows();
+    }
 
-        if (cfg.ApiKeyUnreadable)
+    // ---- 模型站点 ----
+
+    /// <summary>正在编辑的站点表**副本**。点保存时才由 ApplyTo 整表写回真配置。</summary>
+    private readonly List<ModelProfile> _draftProfiles = new();
+
+    /// <summary>副本里当前选中的站点 id。</summary>
+    private string _draftActiveId = "";
+
+    /// <summary>正在编辑的站点；表永远非空，所以不会返回 null。</summary>
+    private ModelProfile ActiveDraft =>
+        _draftProfiles.FirstOrDefault(p => p.Id == _draftActiveId) ?? _draftProfiles[0];
+
+    /// <summary>
+    /// 把站点表灌进列表。行由代码生成：站点数量随配置变，写死在 XAML 里就得维护两处。
+    ///
+    /// 用 <see cref="ModelProfile.DisplayName"/> / <see cref="ModelProfile.Subtitle"/>
+    /// 两行显示——只写地址的话，同一台网关上的两个模型（比如一个能读图一个不能）
+    /// 在列表里长得一模一样，选错一次就是一次 400。
+    /// </summary>
+    private void BuildProfileRows()
+    {
+        ProfileList.Items.Clear();
+        foreach (var p in _draftProfiles)
+        {
+            var stack = new StackPanel { Spacing = 2 };
+            stack.Children.Add(new TextBlock { Text = p.DisplayName, TextTrimming = TextTrimming.CharacterEllipsis });
+            stack.Children.Add(new TextBlock
+            {
+                Text = p.Subtitle,
+                FontSize = 11,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            });
+            var item = new ListViewItem
+            {
+                Tag = p.Id,
+                Content = stack,
+            };
+            // 自动化名称要显式给：默认会用 Content 的 ToString（那个 StackPanel），
+            // 冒烟脚本与读屏都按名字找行。
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, p.DisplayName);
+            ProfileList.Items.Add(item);
+        }
+
+        // 最后一个站点不许删：删光之后四个视图属性全是空串，界面看起来像配置丢了。
+        DeleteProfileBtn.IsEnabled = _draftProfiles.Count > 1;
+    }
+
+    private void SelectProfileRow(string id)
+    {
+        foreach (var item in ProfileList.Items.OfType<ListViewItem>())
+            if (string.Equals(item.Tag as string, id, StringComparison.Ordinal))
+            { ProfileList.SelectedItem = item; return; }
+
+        if (ProfileList.Items.Count > 0) ProfileList.SelectedIndex = 0;
+    }
+
+    /// <summary>
+    /// 换站点。**先把编辑器里的值收回副本**：用户改完地址不点别处直接点另一行是很自然的
+    /// 操作，此时控件里的值还没写回副本，不收回就丢了。
+    /// </summary>
+    private void ProfileList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if ((ProfileList.SelectedItem as ListViewItem)?.Tag is not string id) return;
+        if (_suspendProfileCapture) return;
+
+        CaptureEditor();
+        _draftActiveId = id;
+        LoadEditor();
+    }
+
+    /// <summary>
+    /// 重建列表 / 构造期抑制"把编辑器收回副本"：那时控件里还是空的或上一行的内容。
+    ///
+    /// 这条不是可选的优化，而是一个**已经踩过的数据丢失点**：构造函数里
+    /// `SelectProfileRow` 会同步触发 SelectionChanged，而那一刻 BaseUrlBox / ModelBox
+    /// 都还是空串（LoadEditor 还没跑），于是回收动作把地址和模型名**清空**了——
+    /// 界面上看不出任何异常，点保存就写进配置。
+    /// </summary>
+    private bool _suspendProfileCapture;
+
+    /// <summary>
+    /// 编辑器是否已经装载过。作为上面那道闸的第二重保险：**没装载过就不许回收**。
+    /// 只靠调用方记得设 _suspendProfileCapture 是不够的——漏掉一处就是一次静默清空，
+    /// 而调用点在构造、重建列表、增删站点三处。
+    /// </summary>
+    private bool _editorLoaded;
+
+    /// <summary>装载编辑器期间抑制密钥"被改动"的误判（见 ApiKeyBox_PasswordChanged）。</summary>
+    private bool _suppressKeyTouch;
+
+    /// <summary>把编辑器里的值收回当前站点副本。</summary>
+    private void CaptureEditor()
+    {
+        if (!_editorLoaded) return;
+
+        var p = ActiveDraft;
+        p.Name = ProfileNameBox.Text.Trim();
+        p.BaseUrl = BaseUrlBox.Text.Trim();
+        p.Model = ModelBox.Text.Trim();
+        p.ReasoningEffort = SelectedEffort;
+        // 密钥只在**用户真的改过**时才写回：PasswordBox 拿到的是明文，
+        // 而空框既可能是"没有密钥"也可能是"我们没把已有的填进去"。
+        // 这里靠 _keyTouched 区分，避免把已有密钥无声抹掉。
+        if (_keyTouched) p.ApiKey = ApiKeyBox.Password;
+    }
+
+    /// <summary>用户是否在这份对话框里动过密钥框。没动过就不回写。</summary>
+    private bool _keyTouched;
+
+    private void ApiKeyBox_PasswordChanged(object sender, RoutedEventArgs e)
+    {
+        // 程序自己灌值（LoadEditor 清空）不算用户改动。不挡这一下的话，每次换站点
+        // 都会把 _keyTouched 置真，于是空框被当成"用户清空了密钥"，已保存的密钥丢。
+        if (_suppressKeyTouch) return;
+        _keyTouched = true;
+    }
+
+    /// <summary>把当前站点副本灌进编辑器。</summary>
+    private void LoadEditor()
+    {
+        var p = ActiveDraft;
+
+        // 装载期间两道闸都要关：ProfileNameBox.Text = ... 之类会同步触发事件
+        // （可编辑 ComboBox 尤其会），而密钥框被程序写空时不该算"用户改过"。
+        _editorLoaded = false;
+        _suppressKeyTouch = true;
+        try
+        {
+            ProfileNameBox.Text = p.Name;
+            BaseUrlBox.Text = p.BaseUrl;
+            SyncModelText(p.Model);
+            SelectEffort(p.ReasoningEffort);
+            // 密钥**不回填**：PasswordBox 显示明文会让人担心"我的密钥就这么露着"，
+            // 而且用户多半只是来改地址的。已在配置里的密钥照常生效（不回写就不动它），
+            // 这一点的说明由 SyncKeyHint 写出来。
+            ApiKeyBox.Password = "";
+        }
+        finally
+        {
+            _suppressKeyTouch = false;
+            _keyTouched = false;
+            _editorLoaded = true;
+        }
+
+        EditorTitleText.Text = "编辑站点：" + p.DisplayName;
+        DeleteProfileBtn.IsEnabled = _draftProfiles.Count > 1;
+
+        SyncKeyHint();
+        UpdateModelHint(p.Model);
+        UpdateEffortHint();
+        TestResultText.Text = "";
+    }
+
+    /// <summary>
+    /// 密钥框下面那行说明。**必须说清"空框不等于没有密钥"**——因为密钥从不回填，
+    /// 用户看到的永远是空框，不说的话会以为密钥丢了、重新粘一遍（无害），
+    /// 或者以为它没存上（去别处找问题）。
+    /// </summary>
+    private void SyncKeyHint()
+    {
+        if (KeyHintText is null) return;
+        var p = ActiveDraft;
+
+        if (p.ApiKeyUnreadable)
         {
             KeyHintText.Text = "⚠ 已保存的密钥无法解密（多半是换了机器或 Windows 账户），请重新填写。";
-            KeyHintText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.OrangeRed);
+            KeyHintText.Foreground = BadBrush;
+            return;
         }
+
+        KeyHintText.Foreground = HintBrush;
+        var has = !string.IsNullOrEmpty(p.ApiKeyProtected);
+        KeyHintText.Text =
+            (has ? "已保存密钥（出于安全不回填，留空即保持不变）。" : "尚未保存密钥。")
+            + "留空表示不发送 Authorization 头（本地 llama-server 不需要）。"
+            + "密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。";
     }
+
+    private void AddProfile_Click(object sender, RoutedEventArgs e)
+    {
+        CaptureEditor();
+
+        // 新站点默认继承当前这条的地址：同一台网关上加第二个模型是最常见的用法，
+        // 让用户少改一处。模型名留空——那正是要区分的东西。
+        var cur = ActiveDraft;
+        var p = new ModelProfile
+        {
+            BaseUrl = cur.BaseUrl,
+            ReasoningEffort = cur.ReasoningEffort,
+        };
+        _draftProfiles.Add(p);
+
+        _suspendProfileCapture = true;
+        BuildProfileRows();
+        _draftActiveId = p.Id;
+        SelectProfileRow(p.Id);
+        _suspendProfileCapture = false;
+        LoadEditor();
+        Log.Write("settings: profile added, total=" + _draftProfiles.Count);
+    }
+
+    private void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (_draftProfiles.Count <= 1) return;
+
+        var p = ActiveDraft;
+        _draftProfiles.Remove(p);
+        _draftActiveId = _draftProfiles[0].Id;
+
+        _suspendProfileCapture = true;
+        BuildProfileRows();
+        SelectProfileRow(_draftActiveId);
+        _suspendProfileCapture = false;
+        LoadEditor();
+        Log.Write($"settings: profile '{p.DisplayName}' removed, total={_draftProfiles.Count}");
+    }
+
+    /// <summary>供设置页的自检与自动化查询当前站点数。</summary>
+    internal int DraftProfileCount => _draftProfiles.Count;
 
     // ---- 尺寸 ----
 
@@ -731,10 +952,15 @@ public sealed partial class SettingsDialog : ContentDialog
     /// <summary>把对话框里的值写回配置对象。保存动作由调用方负责。</summary>
     public void ApplyTo(AppSettings cfg)
     {
-        cfg.ApiBaseUrl = BaseUrlBox.Text.Trim();
-        cfg.Model = ModelBox.Text.Trim();
-        cfg.ApiKey = ApiKeyBox.Password;
-        cfg.ReasoningEffort = SelectedEffort;
+        // 站点：先把编辑器里最后的值收回副本，再整表替换。
+        // **用 setter 整体替换，不要 Clear() + AddRange()**：Profiles 的 getter 有个
+        // "表空就补一个默认站点"的兜底（保证四个视图属性永远有落脚点），于是
+        // Clear() 之后它已经塞回一个默认站点，接着 AddRange 就会多出一条
+        // 用户从没建过的站点——还带着默认地址，看起来像配置被改乱了。
+        CaptureEditor();
+        cfg.Profiles = _draftProfiles.Select(p => p.Clone()).ToList();
+        cfg.ActiveProfileId = _draftActiveId;
+
         cfg.AgentEnabled = AgentEnabledBox.IsChecked == true;
         cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
@@ -845,27 +1071,21 @@ public sealed partial class SettingsDialog : ContentDialog
     // ---- 推理档位 ----
 
     /// <summary>
-    /// 档位下拉框的条目：值 + 显示名。**值必须落在
-    /// <see cref="LlmClient.EffortVocabulary"/> 里**（那是服务端 422 时自己列出的
-    /// 全集，硬约束就是它）；显示名给中文，因为 minimal / xhigh / ultra 这几个词
-    /// 光看英文很难排出强弱。
+    /// 档位下拉框的条目：值 + 显示名。**值是
+    /// <see cref="LlmClient.EffortVocabulary"/> 那八个加一个"自动"**（那是服务端 422
+    /// 时自己列出的全集，硬约束就是它）；显示名给中文，因为 minimal / xhigh / ultra
+    /// 这几个词光看英文很难排出强弱。
+    ///
+    /// 表本身复用 <see cref="MainWindow.EffortChoices"/>：助手面板里那个模型选择器
+    /// 也要列同一批档位，两处各写一份的话改一处漏一处，同一个档位会在两个界面上
+    /// 叫不同名字。
     /// </summary>
-    private static readonly (string Value, string Label)[] EffortItems =
-    {
-        ("", "自动（跟随服务端默认）"),
-        ("none", "关闭思考（none）"),
-        ("minimal", "最少（minimal）"),
-        ("low", "少（low）"),
-        ("medium", "中（medium）"),
-        ("high", "高（high）"),
-        ("xhigh", "很高（xhigh）"),
-        ("ultra", "极高（ultra）"),
-        ("max", "最高（max）"),
-    };
+    private static (string Value, string Label)[] EffortItems => MainWindow.EffortChoices;
 
-    /// <summary>当前选中的档位值（空串 = 自动）。控件还没建好时回落到配置。</summary>
+    /// <summary>当前选中的档位值（空串 = 自动）。控件还没建好时回落到当前站点。</summary>
     private string SelectedEffort =>
-        (ReasoningBox?.SelectedItem as ComboBoxItem)?.Tag as string ?? _cfg.ReasoningEffort;
+        (ReasoningBox?.SelectedItem as ComboBoxItem)?.Tag as string
+        ?? (_draftProfiles.Count > 0 ? ActiveDraft.ReasoningEffort : "");
 
     private void BuildEffortItems()
     {
@@ -996,14 +1216,16 @@ public sealed partial class SettingsDialog : ContentDialog
     /// </summary>
     private async Task<(bool Ok, List<LlmClient.ModelInfo> Models, string Error)> FetchModelsAsync()
     {
-        // 用界面上的当前值去取，而不是已保存的值：改了地址还没保存就点获取，
+        // 用编辑器上的当前值去取，而不是已保存的值：改了地址还没保存就点获取，
         // 想看的当然是新地址有什么。
+        // 密钥要用**编辑器里的值**：用户可能刚粘了一把新 key 还没保存就想先试试。
+        // 没动过密钥框时回落到副本里已保存的那把（否则这次请求会不带密钥）。
         var probe = new AppSettings
         {
             ApiBaseUrl = BaseUrlBox.Text.Trim(),
             TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value),
         };
-        probe.ApiKey = ApiKeyBox.Password;
+        probe.ApiKey = _keyTouched ? ApiKeyBox.Password : ActiveDraft.ApiKey;
 
         FetchModelsBtn.IsEnabled = false;
         TestBtn.IsEnabled = false;
