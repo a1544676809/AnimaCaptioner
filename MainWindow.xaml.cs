@@ -4181,9 +4181,19 @@ private void EndEdit(bool commit, bool lostFocus = false)
         RefreshAgentModelChrome();
         ApplyAgentImageGate(draft);
 
+        // 面板上的「完全权限」跟着配置走。设置页里也能改同一个值，所以两处必须一致
+        // ——否则会出现"面板上显示开着、实际没开"这种最坏的错：用户以为模型不会
+        // 自己动手，而它正在动手。
+        AgentFullAccessBox.IsChecked = _cfg.AgentFullAccess;
+
         if (AgentFeed.Children.Count == 0)
             AgentAddNote("说一句要它做什么，或直接描述画面。它会先查词库，" +
-                         "然后把「要加的标签 + 一段散文」摆出来——**要你点应用才写进去**。" +
+                         "然后把「要加的标签 + 一段散文」摆出来——" +
+                         // 这句必须跟着「完全权限」走：开着的时候还说"要你点应用"，
+                         // 就是在明确地报一个错误的行为预期。
+                         (_cfg.AgentFullAccess
+                             ? "**完全权限已打开：它会直接写进提示词**，不问你（Ctrl+Z 可整体撤销）。"
+                             : "**要你点应用才写进去**。") +
                          (AgentImageBox.IsChecked == true
                              ? "这一屏会带上当前这张图。"
                              : "没带图时它只会照你的文字写。"));
@@ -4246,6 +4256,20 @@ private void EndEdit(bool commit, bool lostFocus = false)
         _cfg.AgentAttachImage = AgentImageBox.IsChecked == true;
         _cfg.Save();
         Log.Write($"agent attach image: {_cfg.AgentAttachImage}");
+    }
+
+    /// <summary>
+    /// 面板上的「完全权限」。与设置页里那个是同一个配置项，改完立刻落盘。
+    ///
+    /// **打开时记一条日志**：从这一刻起模型可以不经确认写入提示词，而"什么时候
+    /// 变成这样的"是事后复盘时第一个要回答的问题。
+    /// </summary>
+    private void AgentFullAccess_Click(object sender, RoutedEventArgs e)
+    {
+        _cfg.AgentFullAccess = AgentFullAccessBox.IsChecked == true;
+        _cfg.Save();
+        Log.Write($"agent full access: {_cfg.AgentFullAccess}" +
+                  (_cfg.AgentFullAccess ? "（助手将直接写入提示词，不再等确认）" : ""));
     }
 
     // ---- 助手面板里的模型选择器 ----
