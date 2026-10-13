@@ -860,8 +860,13 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
+                            <!-- MinWidth=0 是必需的：WinUI 给 CheckBox 的默认最小宽度是
+                                 120 DIP（本机 150% 缩放下报 180），远大于「完全权限」
+                                 四个字，右边会空出两三个字的位置。**但 Padding 不能一起
+                                 清零**——模板用它做垂直居中，清零后文字会贴到行顶
+                                 （实测抓到的现象）。所以只压宽度、保留纵向内边距。 -->
                             <CheckBox Grid.Row="0" x:Name="AgentFullAccessBox" Content="完全权限"
-                                      MinWidth="0" Padding="0,0,0,0"
+                                      MinWidth="0" Padding="0,6,0,6"
                                       HorizontalAlignment="Stretch" Click="AgentFullAccess_Click"
                                       ToolTipService.ToolTip="打开后助手提出的标签和散文直接写进提示词，不再需要你点「应用」。写入仍然只算一个撤销点，Ctrl+Z 可整体撤销；每次写入都会记进日志。注意这会放弃「模型改了训练集而你没看见」这条保证。" />
                             <Button Grid.Row="1" x:Name="AgentSendBtn" Content="发送"
