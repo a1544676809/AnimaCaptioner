@@ -68,6 +68,15 @@ public sealed class TagAgent
     }
 
     /// <summary>
+    /// 一次工具调用的完整记录：**调了什么、参数是什么、返回了什么**。
+    ///
+    /// 与 <see cref="Outcome.Log"/> 的区别：那个是给人读的一句话摘要（"查「x」→ 3 条"），
+    /// 这个是给界面做"可展开的调用详情"用的，所以要原文——用户要看的正是
+    /// "它到底拿什么去查的、服务端到底回了什么"。
+    /// </summary>
+    public sealed record ToolCallLog(string Name, string Arguments, string Result);
+
+    /// <summary>
     /// <paramref name="Proposal"/> 为 null 表示这一轮只是回答（用户在问问题，不是要改）。
     ///
     /// <paramref name="Reasoning"/> 是这一轮**所有请求**的思考内容拼接（工具循环会发
@@ -77,7 +86,8 @@ public sealed class TagAgent
     /// </summary>
     public sealed record Outcome(bool Ok, string Reply, AgentProposal? Proposal,
                                  List<TagSearch.Hit> Found, List<string> Log,
-                                 int Rounds, string Error, string Reasoning = "");
+                                 int Rounds, string Error, string Reasoning = "",
+                                 IReadOnlyList<ToolCallLog>? ToolCalls = null);
 
     /// <summary>
     /// 工具循环轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用，
@@ -99,7 +109,8 @@ public sealed class TagAgent
     /// </summary>
     public async Task<Outcome> RunAsync(IHost host, IReadOnlyList<AgentTurn> history,
                                         LlmClient.ChatImage? image, CancellationToken ct = default,
-                                        Action<string, string>? onProgress = null)
+                                        Action<string, string>? onProgress = null,
+                                        Action<string, string, string?>? onToolCall = null)
     {
         var found = new List<TagSearch.Hit>();
         var log = new List<string>();
@@ -119,18 +130,48 @@ public sealed class TagAgent
                 : new JsonObject { ["role"] = "assistant", ["content"] = turn.Text });
         }
 
-        if (messages.Count == 0)
-            return new Outcome(false, "", null, found, log, 0, "没有可发送的内容");
-
         var rounds = 0;
-        // 工具循环会发好几次请求，每次的思考内容都攒起来给用户看。
-        // 只用于显示，不参与任何判定。
+
+        // 这三样必须在**第一个 Done 之前**声明：Done 是捕获它们的局部函数，
+        // 声明晚于使用会报 CS0165（用了未赋值的局部变量）——编译器只看赋值顺序。
+        // 工具循环会发好几次请求，每次的思考内容都攒起来给用户看。只用于显示。
         var thinking = new StringBuilder();
+        // 每次工具调用的"调了什么 / 返回了什么"，界面拿它做可展开的详情。
+        var toolCalls = new List<ToolCallLog>();
+
+        if (messages.Count == 0)
+            return Done(false, "", null, 0, "没有可发送的内容");
+
         void Collect(string r)
         {
             if (string.IsNullOrWhiteSpace(r)) return;
             if (thinking.Length > 0) thinking.Append("\n\n────────\n\n");
             thinking.Append(r.Trim());
+        }
+
+        // 所有返回都走这里：找到的标签要按用户序整理、思考与工具调用要一并带走。
+        // 八处返回各写一遍的话，迟早有一处漏掉新加的东西——那处的表现是
+        // "这一轮的思考/工具调用莫名不见了"，很难查。
+        Outcome Done(bool ok, string reply, AgentProposal? proposal, int rn, string err) =>
+            new(ok, reply, proposal, TagSearch.RankForUser(found), log, rn, err,
+                thinking.ToString(), toolCalls);
+
+        // 记一次工具调用，并**当场**告诉界面——界面据此把它插在对话流里它实际发生的
+        // 位置上（用户要求：不许攒到最后补一段）。各调用点走同一个出口，
+        // 免得将来加了工具却忘了通知界面。
+        void Report(ToolCallLog c)
+        {
+            toolCalls.Add(c);
+            try { onToolCall?.Invoke(c.Name, c.Arguments, c.Result); }
+            catch (Exception ex) { Log.Write("tool call progress failed: " + ex.Message); }
+        }
+
+        // 发起时先通知一次（结果为 null）：查一个词可能要好几秒，先让用户看到
+        // "正在查什么"比干等更诚实。界面会把块先放上去、拿到结果再填。
+        void ReportStart(string name, string arguments)
+        {
+            try { onToolCall?.Invoke(name, arguments, null); }
+            catch (Exception ex) { Log.Write("tool call start failed: " + ex.Message); }
         }
 
         while (rounds < MaxRounds)
@@ -141,7 +182,7 @@ public sealed class TagAgent
                                   .ConfigureAwait(false);
             Collect(turn.Reasoning);
             if (!turn.Ok)
-                return new Outcome(false, "", null, found, log, rounds, turn.Error, thinking.ToString());
+                return Done(false, "", null, rounds, turn.Error);
 
             // 每轮记一行：这条路径一次要发好几次请求，出问题时（模型不调工具、
             // 预算被思考吃光、图片没被接受）只有这行能看出是哪一轮。
@@ -153,10 +194,9 @@ public sealed class TagAgent
             {
                 var answer = (turn.Content ?? "").Trim();
                 return answer.Length > 0
-                    ? new Outcome(true, answer, null, TagSearch.RankForUser(found), log, rounds, "",
-                                  thinking.ToString())
-                    : new Outcome(false, "", null, found, log, rounds,
-                                   "模型既没有回答问题，也没有提出改动", thinking.ToString());
+                    ? Done(true, answer, null, rounds, "")
+                    : Done(false, "", null, rounds,
+                                   "模型既没有回答问题，也没有提出改动");
             }
 
             // tool_call_id 必须原样回灌，否则小模型对不上号会反复调同一个工具
@@ -179,14 +219,17 @@ public sealed class TagAgent
                             (proposal.HasProse ? "，另有一段散文" : ""));
 
                     // 提案到手就停：后面即使还有搜到一半的概念也不必再花请求。
-                    return new Outcome(true, reply, proposal, TagSearch.RankForUser(found),
-                                       log, rounds, "", thinking.ToString());
+                    Report(new ToolCallLog(call.Name, call.Arguments,
+                        $"认得 {proposal.Known.Count} 个、查不到 {proposal.Unknown.Count} 个" +
+                        (proposal.HasProse ? "，含一段散文" : "")));
+                    return Done(true, reply, proposal, rounds, "");
                 }
 
                 if (string.Equals(call.Name, AgentKit.CurrentImageToolName, StringComparison.Ordinal))
                 {
                     var text = DescribeCurrentImage(host);
                     log.Add("查当前图片");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
                     messages.Add(LlmClient.ToolMessage(call.Id, text));
                     continue;
                 }
@@ -196,14 +239,17 @@ public sealed class TagAgent
                     var want = ArgString(call.Arguments, "name");
                     if (want.Length == 0)
                     {
-                        messages.Add(LlmClient.ToolMessage(call.Id,
-                            "The name was empty. Call select_image again with a file name from current_image."));
+                        const string retry =
+                            "The name was empty. Call select_image again with a file name from current_image.";
+                        messages.Add(LlmClient.ToolMessage(call.Id, retry));
                         log.Add("切图（空名字）→ 已要求重试");
+                        Report(new ToolCallLog(call.Name, call.Arguments, retry));
                         continue;
                     }
 
                     var (ok, msg) = host.SelectImage(want);
                     log.Add(ok ? $"切到「{want}」" : $"切图失败（{want}）");
+                    Report(new ToolCallLog(call.Name, call.Arguments, msg));
                     messages.Add(LlmClient.ToolMessage(call.Id, msg));
                     continue;
                 }
@@ -213,15 +259,20 @@ public sealed class TagAgent
                     var query = DescribeQuery(call.Arguments);
                     if (query.Length == 0)
                     {
-                        messages.Add(LlmClient.ToolMessage(call.Id,
-                            "The query was empty. Call search_tags again with one or two words."));
+                        const string retry =
+                            "The query was empty. Call search_tags again with one or two words.";
+                        messages.Add(LlmClient.ToolMessage(call.Id, retry));
                         log.Add("查（空查询）→ 已要求重试");
+                        Report(new ToolCallLog(call.Name, call.Arguments, retry));
                         continue;
                     }
+
+                    ReportStart(call.Name, call.Arguments);
 
                     var res = host.Search(query, out var hits, out var split);
                     found.AddRange(hits);
                     log.Add(hits.Count > 0 ? $"查「{query}」→ {hits.Count} 条" : $"查「{query}」→ 无结果");
+                    Report(new ToolCallLog(call.Name, call.Arguments, res));
                     messages.Add(LlmClient.ToolMessage(call.Id, res));
                     continue;
                 }
@@ -233,15 +284,17 @@ public sealed class TagAgent
                         ? "The query was empty."
                         : await host.SearchWebAsync(query, ct).ConfigureAwait(false);
                     log.Add($"联网查「{query}」");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
                     messages.Add(LlmClient.ToolMessage(call.Id, text));
                     continue;
                 }
 
                 // 未知工具名：如实回一句，别让它空转。模型下一轮通常会改用正确的工具。
                 log.Add($"未知工具 {call.Name}");
-                messages.Add(LlmClient.ToolMessage(call.Id,
-                    $"Unknown tool \"{call.Name}\". Available tools: " +
-                    string.Join(", ", tools.Select(t => t.Name)) + "."));
+                var unknown = $"Unknown tool \"{call.Name}\". Available tools: " +
+                              string.Join(", ", tools.Select(t => t.Name)) + ".";
+                Report(new ToolCallLog(call.Name, call.Arguments, unknown));
+                messages.Add(LlmClient.ToolMessage(call.Id, unknown));
             }
         }
 
@@ -266,14 +319,13 @@ public sealed class TagAgent
                               .ConfigureAwait(false);
         Collect(final.Reasoning);
         if (!final.Ok)
-            return new Outcome(false, "", null, found, log, rounds, final.Error, thinking.ToString());
+            return Done(false, "", null, rounds, final.Error);
 
         var text2 = (final.Content ?? "").Trim();
         return text2.Length > 0
-            ? new Outcome(true, text2, null, TagSearch.RankForUser(found), log, rounds, "",
-                          thinking.ToString())
-            : new Outcome(false, "", null, found, log, rounds,
-                           "工具循环超出轮数上限，且模型没有给出最终回答", thinking.ToString());
+            ? Done(true, text2, null, rounds, "")
+            : Done(false, "", null, rounds,
+                           "工具循环超出轮数上限，且模型没有给出最终回答");
     }
 
     /// <summary>

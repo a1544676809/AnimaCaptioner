@@ -823,7 +823,8 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
                         <ScrollViewer x:Name="AgentScroll" Padding="10"
-                                      VerticalScrollBarVisibility="Auto">
+                                      VerticalScrollBarVisibility="Auto"
+                                      ViewChanged="AgentScroll_ViewChanged">
                             <StackPanel x:Name="AgentFeed" Spacing="10" />
                         </ScrollViewer>
                     </Border>

@@ -46,8 +46,17 @@ public sealed class AgentChatStore
         /// <summary>思考内容。**只显示、不送模型**。</summary>
         public string Reasoning { get; set; } = "";
 
-        /// <summary>工具调用记录。**只显示、不送模型**。</summary>
+        /// <summary>工具调用记录（一句话摘要）。**只显示、不送模型**。</summary>
         public List<string> Log { get; set; } = new();
+
+        /// <summary>
+        /// 这一轮的工具调用详情（调了什么 / 返回了什么）。
+        ///
+        /// 与 <see cref="Log"/> 的分工：那个是一句话摘要（"查「x」→ 3 条"），
+        /// 这个是原文，用来恢复出**可展开的调用详情**——排查"模型为什么查错词"
+        /// 时恰恰要看那个，摘要里没有。
+        /// </summary>
+        public List<TagAgent.ToolCallLog> Calls { get; set; } = new();
 
         /// <summary>写入时间（UTC，ISO 8601），仅作排查线索。</summary>
         public string At { get; set; } = "";
@@ -103,6 +112,7 @@ public sealed class AgentChatStore
                 if (e.Text.Length == 0) continue;
                 if (e.Reasoning.Length > MaxReasoning) e.Reasoning = e.Reasoning[..MaxReasoning];
                 e.Log ??= new List<string>();
+                e.Calls ??= new List<TagAgent.ToolCallLog>();
                 s._items.Add(e);
             }
             s.Trim();
@@ -141,7 +151,7 @@ public sealed class AgentChatStore
 
     /// <summary>追加一条并落盘。</summary>
     public void Add(Kind kind, string text, string reasoning = "",
-                    IEnumerable<string>? log = null)
+                    IEnumerable<string>? log = null, IEnumerable<TagAgent.ToolCallLog>? calls = null)
     {
         text = (text ?? "").Trim();
         if (text.Length == 0) return;
@@ -160,6 +170,7 @@ public sealed class AgentChatStore
             Text = text,
             Reasoning = reasoning,
             Log = log?.ToList() ?? new List<string>(),
+            Calls = calls?.ToList() ?? new List<TagAgent.ToolCallLog>(),
             At = DateTime.UtcNow.ToString("o"),
         };
 

@@ -4524,6 +4524,10 @@ private void EndEdit(bool commit, bool lostFocus = false)
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var asked = new AgentTurn(true, text);
         AgentAddUserBubble(text);
+        // 自己发的那句必须出现在眼前：**强制**滚到底并重新跟上。用户之前可能正在
+        // 往上翻，但他刚发了话，说明要看的是接下来的回答。
+        _agentFollowTail = true;
+        AgentScrollToEnd(force: true);
 
         LlmClient.ChatImage? image = null;
         try
@@ -4559,7 +4563,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
                                      selectImage: AgentSelectImage);
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,
-                                                onProgress: AgentLiveProgress);
+                                                onProgress: AgentLiveProgress,
+                                                onToolCall: AgentToolCallProgress);
 
             if (!outcome.Ok)
             {
@@ -4574,7 +4579,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
             _agentChat.Add(AgentChatStore.Kind.User, text);
             _agentChat.Add(AgentChatStore.Kind.Assistant, outcome.Reply,
-                           outcome.Reasoning, outcome.Log);
+                           outcome.Reasoning, outcome.Log, outcome.ToolCalls);
 
             // 「完全权限」：直接落进提示词，不等用户点。
             //
@@ -4584,7 +4589,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
             if (_cfg.AgentFullAccess && outcome.Proposal is { } autoProp && !autoProp.IsEmpty)
             {
                 ApplyAgentProposal(autoProp, single: false);
-                AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.Log, proposal: null);
+                AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.ToolCalls, proposal: null);
                 AgentAddNote("已按「完全权限」直接写入：" + DescribeProposal(autoProp) +
                              "。Ctrl+Z 可整体撤销。");
                 Log.Write("agent full-access write: " + DescribeProposal(autoProp));
@@ -4730,8 +4735,6 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// 投递回 UI 线程；节流已经在 <c>LlmClient</c> 里做过（约 10 次/秒），
     /// 这里再加一道时间闸，避免几百个分片把界面刷爆。
     /// </summary>
-    private Border? _agentLive;
-    private TextBlock? _agentLiveText;
     private long _agentLiveAt;
 
     /// <summary>已经结束的轮次的思考（实时块里要留着，只增不减）。</summary>
@@ -4740,61 +4743,63 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// <summary>当前这一轮已累积的思考，用来认出"换轮了"。</summary>
     private string _agentLiveCur = "";
 
+    /// <summary>
+    /// 过程块正文是**有序的元素流**：[第1轮思考][调用1][调用2][第2轮思考][调用3]…
+    ///
+    /// 这样工具调用就落在**它实际发起的位置**上（用户要求），而不是攒到最后补一段。
+    /// 要点是每次工具调用发起时把"当前轮思考块"置空——下一次思考会另起一个块、
+    /// 排在调用之后。共用一个文本块的话，新思考会追加到调用**上面**，顺序就反了。
+    /// </summary>
+    private StackPanel? _agentProcBody;
+    private TextBlock? _agentRoundText;
+    private Expander? _agentLastTool;
+    private int _agentToolCount;
+
+    private static TextBlock NewGrayText() => new()
+    {
+        FontSize = 11,
+        TextWrapping = TextWrapping.Wrap,
+        IsTextSelectionEnabled = true,
+        Foreground = AgentGray,
+    };
+
+    private static void EnsureAgentProc(MainWindow w, bool expanded)
+    {
+        if (w._agentProc is null) w.AgentFeed.Children.Add(w.CreateAgentProcess(expanded));
+    }
+
+    private void UpdateAgentProcHeader()
+    {
+        if (_agentProc?.Header is TextBlock h)
+            h.Text = _agentToolCount > 0 ? $"过程 · {_agentToolCount} 步" : "过程";
+    }
+
     private void AgentLiveProgress(string reasoning, string content)
     {
         var reason = (reasoning ?? "").Trim();
         var body = (content ?? "").Trim();
         if (reason.Length == 0 && body.Length == 0) return;
 
-        // **工具循环每一轮都是一次独立生成**，累积值从零开始，所以长度会突然变小。
-        // 实测抓到的现象：采样里长度 465 → 8，看着像"想一半突然清空"。
-        // 把上一轮留档，实时块就只增不减；正式那块仍然按轮次分隔显示全部。
-        if (reason.Length < _agentLiveCur.Length && _agentLiveCur.Length > 0)
-        {
-            if (_agentLiveDone.Length > 0) _agentLiveDone.Append("\n\n────────\n\n");
-            _agentLiveDone.Append(_agentLiveCur);
-        }
-        _agentLiveCur = reason;
-
         var now = Environment.TickCount64;
-        if (_agentLive is not null && now - _agentLiveAt < 80) return;
+        if (_agentProc is not null && now - _agentLiveAt < 80) return;
         _agentLiveAt = now;
 
         void Render()
         {
             if (AgentFeed is null) return;
-            if (_agentLive is null)
+            EnsureAgentProc(this, expanded: true);
+            if (_agentRoundText is null)
             {
-                _agentLiveText = new TextBlock
-                {
-                    FontSize = 11,
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                    Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
-                };
-                _agentLive = new Border
-                {
-                    Padding = new Thickness(10, 6, 10, 6),
-                    CornerRadius = new CornerRadius(8),
-                    Background = (Brush)Application.Current.Resources["ControlFillColorDefaultBrush"],
-                    Child = _agentLiveText,
-                };
-                AgentFeed.Children.Add(_agentLive);
+                _agentRoundText = NewGrayText();
+                _agentProcBody!.Children.Add(_agentRoundText);
             }
-
-            // 思考链在前、正文在后，和正式版里的顺序一致
-            var sb = new StringBuilder("思考中…\n");
-            if (_agentLiveDone.Length > 0) sb.Append(_agentLiveDone);
-            if (_agentLiveCur.Length > 0)
-            {
-                if (_agentLiveDone.Length > 0) sb.Append("\n\n────────\n\n");
-                sb.Append(_agentLiveCur);
-            }
+            var sb = new StringBuilder(reason);
             if (body.Length > 0)
             {
-                sb.Append("\n\n").Append(body);
+                if (sb.Length > 0) sb.Append("\n\n");
+                sb.Append(body);
             }
-            _agentLiveText!.Text = sb.ToString();
+            _agentRoundText.Text = sb.ToString();
             AgentScrollToEnd();
         }
 
@@ -4802,17 +4807,54 @@ private void EndEdit(bool commit, bool lostFocus = false)
         else DispatcherQueue.TryEnqueue(Render);
     }
 
-    /// <summary>把实时块收掉（生成结束）。正式版由 AgentAddReply 渲染。</summary>
+    /// <summary>
+    /// 一次工具调用。<paramref name="result"/> 为 null = **刚发起**（先把块放上去），
+    /// 非 null = 返回了（把结果填进那个块）。
+    ///
+    /// 分两步是有意的：模型查一个词可能要几秒，先显示"正在查什么"比等结果更诚实，
+    /// 用户也不会以为它卡住了。
+    /// </summary>
+    private void AgentToolCallProgress(string name, string args, string? result)
+    {
+        void Render()
+        {
+            if (AgentFeed is null) return;
+            EnsureAgentProc(this, expanded: true);
+
+            if (result is null)
+            {
+                // 发起：结束当前思考块（后续思考另起一块，才会落在调用**下面**）
+                _agentRoundText = null;
+                _agentLastTool = BuildToolCallBlock(new TagAgent.ToolCallLog(name, args, ""));
+                _agentProcBody!.Children.Add(_agentLastTool);
+                _agentToolCount++;
+                UpdateAgentProcHeader();
+            }
+            else if (_agentLastTool?.Content is StackPanel sp)
+            {
+                FillToolCallBlock(sp, args, result);
+            }
+            AgentScrollToEnd();
+        }
+
+        if (DispatcherQueue.HasThreadAccess) Render();
+        else DispatcherQueue.TryEnqueue(Render);
+    }
+
+    /// <summary>一轮结束：不重建、不搬运，只把标题定下来并按需要收起。</summary>
+    private void FinishAgentProcess()
+    {
+        UpdateAgentProcHeader();
+        // 默认收起（思考是过程、回复才是结论）；但**用户自己开过就别动**——
+        // 他可能正读着，这时收起等于把它抢走。
+        if (!_agentProcTouched) SetAgentProcessExpanded(false);
+    }
+
     private void AgentClearLive()
     {
-        if (_agentLive is not null)
-        {
-            try { AgentFeed.Children.Remove(_agentLive); } catch { }
-        }
-        _agentLive = null;
-        _agentLiveText = null;
-        _agentLiveDone.Clear();
-        _agentLiveCur = "";
+        _agentRoundText = null;
+        _agentLastTool = null;
+        _agentToolCount = 0;
     }
 
     private void SetAgentStatus(string text) => AgentStatusText.Text = text;
@@ -4910,71 +4952,130 @@ private void EndEdit(bool commit, bool lostFocus = false)
     ///
     /// 没有可显示的内容时返回 null，调用方据此决定要不要加这个块。
     /// </summary>
-    private FrameworkElement? BuildAgentProcess(string reasoning, IReadOnlyList<string> log)
+    /// <summary>
+    /// 流式期间与生成完成后**共用的同一个「过程」块**。
+    ///
+    /// 早先是两套控件：流式时铺一个不能折叠的灰块，结束时把它删掉、另建一个可折叠的
+    /// Expander——视觉上就是"两个东西"，用户一眼就看出换过一次。现在从一而终：
+    /// 生成中就是它（展开、你随时可以自己收起），完成后**原地**补上工具调用并收起。
+    /// 全程不重建、不替换，所以不存在"闪一下"。
+    /// </summary>
+    private Expander? _agentProc;
+    private TextBlock? _agentProcText;
+
+    /// <summary>用户手动开合过没有。开过就别在结束时替他收起（那会把他正在看的收走）。</summary>
+    private bool _agentProcTouched;
+
+    /// <summary>程序正在改展开状态，用来把那次改动和"用户手动的"区分开。</summary>
+    private bool _agentProcProgrammatic;
+
+    private static Brush AgentGray =>
+        (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+
+    private Expander CreateAgentProcess(bool expanded)
     {
-        var reason = (reasoning ?? "").Trim();
-        var steps = log;
-        if (reason.Length == 0 && steps.Count == 0) return null;
-
-        var gray = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
-        var body = new StackPanel { Spacing = 8 };
-
-        if (steps.Count > 0)
+        _agentProcText = new TextBlock
         {
-            body.Children.Add(new TextBlock
-            {
-                Text = $"工具调用（{steps.Count}）",
-                FontSize = 11,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = gray,
-            });
-            var list = new StackPanel { Spacing = 2 };
-            foreach (var s in steps)
-                list.Children.Add(new TextBlock
-                {
-                    Text = "· " + s,
-                    FontSize = 11,
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                    Foreground = gray,
-                });
-            body.Children.Add(list);
-        }
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            Foreground = AgentGray,
+        };
+        _agentProcBody = new StackPanel { Spacing = 8 };
 
-        if (reason.Length > 0)
+        var ex = new Expander
         {
+            Header = new TextBlock { Text = "过程", FontSize = 11, Foreground = AgentGray },
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = _agentProcBody,
+        };
+        ex.Expanding += (_, _) => { if (!_agentProcProgrammatic) _agentProcTouched = true; };
+        ex.Collapsed += (_, _) => { if (!_agentProcProgrammatic) _agentProcTouched = true; };
+
+        _agentProcProgrammatic = true;
+        ex.IsExpanded = expanded;
+        _agentProcProgrammatic = false;
+
+        _agentProc = ex;
+        return ex;
+    }
+
+    private void SetAgentProcessExpanded(bool expanded)
+    {
+        if (_agentProc is null) return;
+        _agentProcProgrammatic = true;
+        _agentProc.IsExpanded = expanded;
+        _agentProcProgrammatic = false;
+    }
+
+    /// <summary>过程块的正文：思考链（截断保护）+（生成中时）已吐出的正文。</summary>
+
+    /// <summary>
+    /// 一个工具调用的小折叠块：**标题是它干了什么，展开是"发过去的原文 + 回来的原文"**。
+    ///
+    /// 与原来那行一句话摘要（"查「x」→ 3 条"）的区别：摘要看不出"它到底拿什么去查的"，
+    /// 而排查"模型为什么查错词"时恰恰要看那个。
+    /// </summary>
+    /// <summary>
+    /// 工具调用块的正文：参数与返回。**发起时先只放参数**（返回还是空的，就不显示），
+    /// 拿到结果后再调一次把它填上——同一个块，不重建。
+    /// </summary>
+    private static void FillToolCallBlock(StackPanel body, string args, string result)
+    {
+        body.Children.Clear();
+        void Add(string label, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
             body.Children.Add(new TextBlock
             {
-                Text = "思考过程",
-                FontSize = 11,
+                Text = label, FontSize = 11,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = gray,
-                Margin = new Thickness(0, steps.Count > 0 ? 4 : 0, 0, 0),
+                Foreground = AgentGray,
             });
             body.Children.Add(new TextBlock
             {
-                // 上限只是防一手：正常一轮远到不了，真到了也必须说清是截断的，
-                // 否则用户会以为模型就想了一半。
-                Text = reason.Length > ProcessCap
-                    ? reason[..ProcessCap] + $"\n\n（过长，已截断；完整 {reason.Length:N0} 字，见日志）"
-                    : reason,
-                FontSize = 11,
-                TextWrapping = TextWrapping.Wrap,
-                IsTextSelectionEnabled = true,
-                Foreground = gray,
+                Text = text.Length > 4000 ? text[..4000] + "…" : text,
+                FontSize = 11, TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true, Foreground = AgentGray,
             });
         }
+        Add("参数", args);
+        Add("返回", result);
+    }
 
-        var header = steps.Count > 0 ? $"过程 · {steps.Count} 步" : "过程";
+    private static Expander BuildToolCallBlock(TagAgent.ToolCallLog c)
+    {
+        var body = new StackPanel { Spacing = 6 };
+        FillToolCallBlock(body, c.Arguments, c.Result);
+
+        // 标题用工具名 + 参数里的关键词，一眼看出这次查的是什么
+        var hint = c.Name;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(c.Arguments);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                foreach (var key in new[] { "query", "name" })
+                    if (doc.RootElement.TryGetProperty(key, out var v) &&
+                        v.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        hint += " · " + v.GetString();
+                        break;
+                    }
+        }
+        catch { /* 参数不是 JSON 就只用工具名 */ }
+
         return new Expander
         {
-            Header = new TextBlock { Text = header, FontSize = 11, Foreground = gray },
-            IsExpanded = false,          // 默认折叠
+            Header = new TextBlock { Text = hint, FontSize = 11, Foreground = AgentGray },
+            IsExpanded = false,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Content = body,
         };
     }
+
+    /// <summary>结束这一轮：把过程块补成最终样子，并按需要收起。</summary>
 
     /// <summary>思考内容显示上限（字符）。超过就截断并说明，避免展开时卡住界面。</summary>
     private const int ProcessCap = 20000;
@@ -4984,7 +5085,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// 所以这里只放一句话，把版面让给卡片。
     /// </summary>
     private void AgentAddReply(TagAgent.Outcome outcome) =>
-        AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.Log, outcome.Proposal);
+        AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.ToolCalls, outcome.Proposal);
 
     /// <summary>
     /// 渲染一条助手回复。**实时那一轮和启动时恢复旧对话走的是同一条路**，
@@ -4996,18 +5097,38 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// 那只是"看看历史"。
     /// </summary>
     private void AgentAddAssistant(string reply, string reasoning,
-                                   IReadOnlyList<string> log, AgentProposal? proposal)
+                                   IReadOnlyList<TagAgent.ToolCallLog>? calls, AgentProposal? proposal)
     {
-        var stack = new StackPanel { Spacing = 6 };
-
-        // 过程放最上面且收起：读的顺序是"它怎么想的 → 它说了什么 → 要不要采纳"，
-        // 而收起的默认状态保证第一眼看到的仍然是回复本身。
-        if (BuildAgentProcess(reasoning, log) is { } process)
-            stack.Children.Add(process);
+        // 过程块：流式那一轮**已经在流里了**（就是用户在看的那个，调用也已在各自
+        // 位置插好），这里只把标题定下来并按需收起——**不重建**，重建就是
+        // "两个控件"那种观感的来源。恢复历史时才新建一个（默认收起），
+        // 顺序按"思考 + 各次调用"重建（历史里没存轮次边界，只能这样）。
+        if (_agentProc is not null)
+        {
+            FinishAgentProcess();
+        }
+        else if ((reasoning ?? "").Trim().Length > 0 || (calls?.Count ?? 0) > 0)
+        {
+            var ex = CreateAgentProcess(expanded: false);
+            var reason = (reasoning ?? "").Trim();
+            if (reason.Length > 0)
+            {
+                _agentRoundText = NewGrayText();
+                _agentRoundText.Text = reason.Length > ProcessCap
+                    ? reason[..ProcessCap] + $"\n\n（过长，已截断；完整 {reason.Length:N0} 字）"
+                    : reason;
+                _agentProcBody!.Children.Add(_agentRoundText);
+            }
+            foreach (var c in calls ?? Array.Empty<TagAgent.ToolCallLog>())
+                _agentProcBody!.Children.Add(BuildToolCallBlock(c));
+            _agentToolCount = calls?.Count ?? 0;
+            UpdateAgentProcHeader();
+            AgentFeed.Children.Add(ex);
+        }
 
         var text = (reply ?? "").Trim();
         if (text.Length > 0)
-            stack.Children.Add(new TextBlock
+            AgentFeed.Children.Add(new TextBlock
             {
                 Text = text,
                 TextWrapping = TextWrapping.Wrap,
@@ -5015,10 +5136,20 @@ private void EndEdit(bool commit, bool lostFocus = false)
             });
 
         if (proposal is { } p && !p.IsEmpty)
-            stack.Children.Add(BuildProposalCard(p));
+            AgentFeed.Children.Add(BuildProposalCard(p));
 
-        AgentFeed.Children.Add(stack);
         AgentScrollToEnd();
+        AgentClearProcRefs();
+    }
+
+    /// <summary>一轮结束：放开对过程块的引用，下一轮会建新的。</summary>
+    private void AgentClearProcRefs()
+    {
+        _agentProc = null;
+        _agentProcBody = null;
+        _agentProcText = null;
+        _agentProcTouched = false;
+        AgentClearLive();
     }
 
     /// <summary>
@@ -5191,16 +5322,33 @@ private void EndEdit(bool commit, bool lostFocus = false)
     }
 
     /// <summary>
-    /// 聊天的滚动条跟到最新一条。
+    /// 聊天的滚动条跟到最新一条——**但只在用户本来就在底部时**。
+    ///
+    /// 用户往前翻着看的时候不许把他拽回底部（那样根本读不了历史，而这条路径
+    /// 生成期间会持续产出内容，一拽就是连环拽）。判据是"翻页前是否贴着底"，
+    /// 由 <see cref="AgentScroll_ViewChanged"/> 维护。
     ///
     /// **要补一跳**：卡片是刚刚才 Add 进去的，第一跳时布局还没算完，
     /// ScrollableHeight 读到的还是旧值——实测结果是停在上一条的位置，
     /// 而最新那张提案卡片（要用户点应用的那张）正好在视野外。
     /// </summary>
-    private void AgentScrollToEnd()
+    private void AgentScrollToEnd(bool force = false)
     {
+        if (!force && !_agentFollowTail) return;
         DispatcherQueue.TryEnqueue(AgentScrollToEndNow);
         _ = AgentScrollToEndLaterAsync();
+    }
+
+    /// <summary>用户是否停留在底部（决定要不要跟着新内容走）。</summary>
+    private bool _agentFollowTail = true;
+
+    /// <summary>离底部多远还算"在底部"。太小会被一行文字的高度差判成"翻上去了"。</summary>
+    private const double AgentTailSlack = 24;
+
+    private void AgentScroll_ViewChanged(object sender, ScrollViewerViewChangedEventArgs e)
+    {
+        // 自己滚到底之后这里也会触发，结果是 followTail 保持 true——正是想要的。
+        _agentFollowTail = AgentScroll.ScrollableHeight - AgentScroll.VerticalOffset <= AgentTailSlack;
     }
 
     private void AgentScrollToEndNow() =>
@@ -5542,7 +5690,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
                     AgentAddUserBubble(e.Text);
                     break;
                 case AgentChatStore.Kind.Assistant:
-                    AgentAddAssistant(e.Text, e.Reasoning, e.Log, proposal: null);
+                    AgentAddAssistant(e.Text, e.Reasoning, e.Calls, proposal: null);
                     break;
                 default:
                     AgentAddNote(e.Text);
