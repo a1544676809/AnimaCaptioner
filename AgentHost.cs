@@ -58,10 +58,15 @@ internal sealed class AgentHost : TagAgent.IHost
         return TagSearch.ToToolContent(res.Hits, query, 2, res.SplitMatch);
     }
 
+    /// <summary>
+    /// 带工具的一轮。把进度回调透传给 <see cref="LlmClient.ChatWithToolsAsync"/>——
+    /// 给了它就走流式，界面能实时看到思考链。
+    /// </summary>
     public Task<LlmClient.ToolTurn> TurnAsync(string systemPrompt, IReadOnlyList<AgentTool> tools,
                                               List<JsonObject> messages, int maxTokens,
-                                              CancellationToken ct) =>
-        _llm.ChatWithToolsAsync(_cfg, systemPrompt, messages, tools, maxTokens, ct);
+                                              CancellationToken ct,
+                                              Action<string, string>? onProgress = null) =>
+        _llm.ChatWithToolsAsync(_cfg, systemPrompt, messages, tools, maxTokens, ct, onProgress);
 
     public async Task<string> SearchWebAsync(string query, CancellationToken ct)
     {

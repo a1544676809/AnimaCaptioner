@@ -38,6 +38,7 @@
     <Compile Include="..\Core\ModelProfile.cs" />
     <Compile Include="..\Core\CustomHeaders.cs" />
     <Compile Include="..\Core\LlmClient.cs" />
+    <Compile Include="..\Core\ToolStream.cs" />
     <Compile Include="..\Core\DpapiSecret.cs" />
     <Compile Include="..\Core\Parity.cs" />
     <Compile Include="..\Core\TagSections.cs" />

@@ -454,6 +454,100 @@ public static class Agent
             Console.WriteLine("     （开启后写入仍只算一个撤销点，见 ApplyAgentProposal 的 PushUndo）");
         }
 
+        Console.WriteLine("\n=== 19. 流式累积：分片边界（真发请求覆盖不到）===");
+        {
+            string Chunk(string deltaJson) =>
+                "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0," +
+                "\"delta\":" + deltaJson + ",\"finish_reason\":null}]}";
+
+            // 思考链逐段下发（实测就是这个形状）
+            var s = new ToolStream();
+            s.Feed(Chunk("{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"先看\"}"));
+            s.Feed(Chunk("{\"content\":null,\"reasoning_content\":\"画面\"}"));
+            s.Feed(Chunk("{\"content\":\"好\"}"));
+            s.Feed(Chunk("{\"content\":\"的\"}"));
+            Eq("思考链累积", s.Reasoning, "先看画面");
+            Eq("正文累积", s.Content, "好的");
+
+            // 非 data 行要忽略
+            s.Feed("event: ping");
+            s.Feed("");
+            s.Feed(": keep-alive");
+            Eq("忽略非 data 行后内容不变", s.Content, "好的");
+
+            // 坏分片不该毁掉整轮
+            s.Feed("data: {不是 json");
+            Eq("坏分片被跳过", s.Content, "好的");
+
+            // tool_calls 是碎片化的：名字 1 片、参数多片、id 只在第 1 片
+            var t = new ToolStream();
+            t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\"," +
+                         "\"function\":{\"name\":\"search_tags\",\"arguments\":\"\"}}]}"));
+            t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"query\\\":\"}}]}"));
+            t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"white\"}}]}"));
+            t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" dress\\\"}\"}}]}"));
+            Eq("碎片按 index 拼成 1 次调用", t.Calls().Count, 1);
+            Eq("名字拼回来了", t.Calls()[0].Name, "search_tags");
+            Eq("参数拼回来了", t.Calls()[0].Arguments, "{\"query\":\"white dress\"}");
+            Eq("id 没有后来被空值覆盖", t.Calls()[0].Id, "call_1");
+
+            // 两个并发调用：不同 index 必须分开
+            var t2 = new ToolStream();
+            t2.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"search_tags\"," +
+                          "\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"propose\"," +
+                          "\"arguments\":\"\"}}]}"));
+            t2.Feed(Chunk("{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"{\\\"add_tags\\\":[]}\"}}]}"));
+            Eq("两次调用分开", t2.Calls().Count, 2);
+            Eq("第 1 次名字", t2.Calls()[0].Name, "search_tags");
+            Eq("第 2 次参数补齐", t2.Calls()[1].Arguments, "{\"add_tags\":[]}");
+
+            // finish_reason 与 [DONE]
+            var t3 = new ToolStream();
+            t3.Feed("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":\"tool_calls\"}]}");
+            Eq("收尾原因被记住", t3.FinishReason, "tool_calls");
+            True("还没结束", !t3.Done);
+            t3.Feed("data: [DONE]");
+            True("[DONE] 置结束位", t3.Done);
+
+            // 声明了 stream 却回完整响应的网关也要能读
+            var t4 = new ToolStream();
+            t4.Feed("data: {\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\"," +
+                   "\"content\":\"整段答案\",\"reasoning_content\":\"整段思考\"},\"finish_reason\":\"stop\"}]}");
+            Eq("非流式形状的正文", t4.Content, "整段答案");
+            Eq("非流式形状的思考", t4.Reasoning, "整段思考");
+            True("非流式形状直接算结束", t4.Done);
+
+            // **关键的一条**：还原成响应 JSON 后必须走和非流式完全相同的判定
+            var t5 = new ToolStream();
+            t5.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"z\",\"function\":{\"name\":\"propose\"," +
+                          "\"arguments\":\"{\\\"add_tags\\\":[\\\"1girl\\\"]}\"}}]}"));
+            t5.Feed("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}");
+            var parsed = ParseTurn(t5.ToResponseJson());
+            Eq("还原后仍解析出 1 次调用", parsed.Calls.Count, 1);
+            Eq("还原后参数一致", parsed.Calls[0].Arguments, "{\"add_tags\":[\"1girl\"]}");
+            Eq("还原后 ok", parsed.Ok, true);
+        }
+
+        Console.WriteLine("\n=== 20. 助手确实要求走流式（不回退成「生成完一次性蹦出来」）===");
+        {
+            var h = new FakeHost();
+            h.Turn(Tool("p", AgentKit.ProposeToolName, """{"add_tags":["solo"]}"""));
+            var got = new List<(string R, string C)>();
+            RunStreaming(h, "试试", (r, c) => got.Add((r, c)));
+
+            True("TagAgent 把流式回调透传给了 host", h.StreamRequested > 0);
+            Eq("有请求的轮都带上了（这一轮只发 1 次）", h.StreamRequested, 1);
+            True("进度回调真的收到了东西", got.Count > 0);
+            True("回调里能看到逐步累积的思考（而不是最后一次性给全）",
+                 got.Any(p => p.R == "思考片段A") && got.Any(p => p.R == "思考片段A思考片段B"));
+
+            // 对照：不给回调时必须**不**要求流式（既有行为一字不变）
+            var h2 = new FakeHost();
+            h2.Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "试试");
+            Eq("不给回调时不走流式", h2.StreamRequested, 0);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -461,10 +555,31 @@ public static class Agent
     private static LlmClient.ToolTurn Tool(string id, string name, string args) =>
         new(true, "", "", new List<LlmClient.ToolCall> { new(id, name, args) }, "", "");
 
+    /// <summary>
+    /// 调私有的 ParseToolTurn。用反射而不是把它改成 internal/public——**判据不该
+    /// 为了测试方便而改变产品可见性**（tests/Vocab.cs 里调 AnimaFormat 也是这么做的）。
+    /// </summary>
+    private static LlmClient.ToolTurn ParseTurn(string json)
+    {
+        var m = typeof(LlmClient).GetMethod("ParseToolTurn",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        return (LlmClient.ToolTurn)m.Invoke(null, new object[] { json })!;
+    }
+
     /// <summary>同步包一层，免得每一节都写 async/await 样板。</summary>
     private static TagAgent.Outcome Run(FakeHost host, string text,
                                         LlmClient.ChatImage? image = null) =>
         new TagAgent().RunAsync(host, new[] { new AgentTurn(true, text) }, image)
+                      .GetAwaiter().GetResult();
+
+    /// <summary>
+    /// 带进度回调地跑一轮——用来验证 TagAgent 会把流式回调透传到 host。
+    /// 不给回调时它就是非流式，这正是既有那几节的行为。
+    /// </summary>
+    private static TagAgent.Outcome RunStreaming(FakeHost host, string text,
+                                                 Action<string, string> onProgress) =>
+        new TagAgent().RunAsync(host, new[] { new AgentTurn(true, text) }, null,
+                                CancellationToken.None, onProgress)
                       .GetAwaiter().GetResult();
 
     /// <summary>
@@ -483,6 +598,12 @@ public static class Agent
         public Func<string, bool> Known { get; set; } = _ => true;
 
         public bool CanWebSearch { get; set; } = true;
+
+        /// <summary>被要求走流式的轮数。</summary>
+        public int StreamRequested { get; private set; }
+
+        /// <summary>收到过的进度回调（已累积思考, 已累积正文）。</summary>
+        public List<(string Reasoning, string Content)> Progress { get; } = new();
 
         /// <summary>假数据集。空数组 = 没有数据集 → 两个图片工具不下发。</summary>
         public List<AgentImage> Dataset { get; } = new();
@@ -524,11 +645,21 @@ public static class Agent
         public Task<LlmClient.ToolTurn> TurnAsync(string systemPrompt,
                                                   IReadOnlyList<AgentTool> tools,
                                                   List<JsonObject> messages, int maxTokens,
-                                                  CancellationToken ct)
+                                                  CancellationToken ct,
+                                                  Action<string, string>? onProgress = null)
         {
             SeenPrompts.Add(systemPrompt);
             SeenTools.Add(tools.Select(t => t.Name).ToList());
             SeenMessages.Add(messages.Select(m => (JsonObject)m.DeepClone()).ToList());
+            // 有没有把流式回调透传下来，只有这里看得出来（第 19 节断言这个）
+            if (onProgress is not null)
+            {
+                StreamRequested++;
+                Progress.Add(("思考片段A", ""));
+                onProgress("思考片段A", "");
+                Progress.Add(("思考片段A思考片段B", "答案开头"));
+                onProgress("思考片段A思考片段B", "答案开头");
+            }
 
             // 脚本用完就当成一次失败：能立刻看出"循环多发了一次请求"，
             // 而不是拿最后一条反复应答把问题掩盖过去。

@@ -39,9 +39,14 @@ public sealed class TagAgent
         string Search(string query, out List<TagSearch.Hit> hits, out bool splitMatch);
 
         /// <summary>带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。</summary>
+        /// <param name="onProgress">
+        /// 给了就要求实现走**流式**，把生成中的（已累积思考, 已累积正文）回调出来，
+        /// 界面据此实时显示思考链。为 null 时行为同以前（非流式）。
+        /// </param>
         Task<LlmClient.ToolTurn> TurnAsync(string systemPrompt, IReadOnlyList<AgentTool> tools,
                                            List<JsonObject> messages, int maxTokens,
-                                           CancellationToken ct);
+                                           CancellationToken ct,
+                                           Action<string, string>? onProgress = null);
 
         /// <summary>联网搜索。未启用时返回一句说明即可，不抛异常。</summary>
         Task<string> SearchWebAsync(string query, CancellationToken ct);
@@ -93,7 +98,8 @@ public sealed class TagAgent
     /// 把图挂到每一轮会让后面每一次请求都重复付一次图片的 token。
     /// </summary>
     public async Task<Outcome> RunAsync(IHost host, IReadOnlyList<AgentTurn> history,
-                                        LlmClient.ChatImage? image, CancellationToken ct = default)
+                                        LlmClient.ChatImage? image, CancellationToken ct = default,
+                                        Action<string, string>? onProgress = null)
     {
         var found = new List<TagSearch.Hit>();
         var log = new List<string>();
@@ -131,7 +137,8 @@ public sealed class TagAgent
         {
             rounds++;
 
-            var turn = await host.TurnAsync(system, tools, messages, Budget, ct).ConfigureAwait(false);
+            var turn = await host.TurnAsync(system, tools, messages, Budget, ct, onProgress)
+                                  .ConfigureAwait(false);
             Collect(turn.Reasoning);
             if (!turn.Ok)
                 return new Outcome(false, "", null, found, log, rounds, turn.Error, thinking.ToString());
@@ -254,7 +261,8 @@ public sealed class TagAgent
                       "that is not in the results above.");
 
         messages.Add(new JsonObject { ["role"] = "user", ["content"] = digest.ToString() });
-        var final = await host.TurnAsync(system, Array.Empty<AgentTool>(), messages, Budget, ct)
+        var final = await host.TurnAsync(system, Array.Empty<AgentTool>(), messages, Budget, ct,
+                                         onProgress)
                               .ConfigureAwait(false);
         Collect(final.Reasoning);
         if (!final.Ok)

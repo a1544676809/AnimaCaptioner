@@ -4557,7 +4557,9 @@ private void EndEdit(bool commit, bool lostFocus = false)
             var host = new AgentHost(_cfg, _llm, _search, _vocab,
                                      images: AgentImageList,
                                      selectImage: AgentSelectImage);
-            var outcome = await _agent.RunAsync(host, history, image);
+            var outcome = await _agent.RunAsync(host, history, image,
+                                                ct: CancellationToken.None,
+                                                onProgress: AgentLiveProgress);
 
             if (!outcome.Ok)
             {
@@ -4612,6 +4614,9 @@ private void EndEdit(bool commit, bool lostFocus = false)
             _agentBusy = false;
             AgentRing.IsActive = false;
             AgentSendBtn.IsEnabled = true;
+            // 收掉实时块——**放在最后**，成功/失败/异常三条路都覆盖。
+            // 正式呈现由 AgentAddReply 负责（思考默认折叠），实时块只是让过程可见。
+            AgentClearLive();
         }
     }
 
@@ -4714,6 +4719,100 @@ private void EndEdit(bool commit, bool lostFocus = false)
         SaveCurrent(showDialog: false);   // 与用户手动翻图一致：先保存当前那张
         Select(hit);
         return (true, $"Switched to \"{_items[hit].Name}\" (saved the previous image first).");
+    }
+
+    /// <summary>
+    /// 生成中的实时块（思考链 + 已吐出的正文）。**结束时会把它整个删掉**，
+    /// 换成 <see cref="AgentAddReply"/> 那份默认折叠的正式版——所以这个块只是
+    /// "过程可见"，不改变最终呈现。
+    ///
+    /// 从这里进来的调用**不在 UI 线程上**（流式读取跑在后台），所以每一次更新都要
+    /// 投递回 UI 线程；节流已经在 <c>LlmClient</c> 里做过（约 10 次/秒），
+    /// 这里再加一道时间闸，避免几百个分片把界面刷爆。
+    /// </summary>
+    private Border? _agentLive;
+    private TextBlock? _agentLiveText;
+    private long _agentLiveAt;
+
+    /// <summary>已经结束的轮次的思考（实时块里要留着，只增不减）。</summary>
+    private readonly StringBuilder _agentLiveDone = new();
+
+    /// <summary>当前这一轮已累积的思考，用来认出"换轮了"。</summary>
+    private string _agentLiveCur = "";
+
+    private void AgentLiveProgress(string reasoning, string content)
+    {
+        var reason = (reasoning ?? "").Trim();
+        var body = (content ?? "").Trim();
+        if (reason.Length == 0 && body.Length == 0) return;
+
+        // **工具循环每一轮都是一次独立生成**，累积值从零开始，所以长度会突然变小。
+        // 实测抓到的现象：采样里长度 465 → 8，看着像"想一半突然清空"。
+        // 把上一轮留档，实时块就只增不减；正式那块仍然按轮次分隔显示全部。
+        if (reason.Length < _agentLiveCur.Length && _agentLiveCur.Length > 0)
+        {
+            if (_agentLiveDone.Length > 0) _agentLiveDone.Append("\n\n────────\n\n");
+            _agentLiveDone.Append(_agentLiveCur);
+        }
+        _agentLiveCur = reason;
+
+        var now = Environment.TickCount64;
+        if (_agentLive is not null && now - _agentLiveAt < 80) return;
+        _agentLiveAt = now;
+
+        void Render()
+        {
+            if (AgentFeed is null) return;
+            if (_agentLive is null)
+            {
+                _agentLiveText = new TextBlock
+                {
+                    FontSize = 11,
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true,
+                    Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+                };
+                _agentLive = new Border
+                {
+                    Padding = new Thickness(10, 6, 10, 6),
+                    CornerRadius = new CornerRadius(8),
+                    Background = (Brush)Application.Current.Resources["ControlFillColorDefaultBrush"],
+                    Child = _agentLiveText,
+                };
+                AgentFeed.Children.Add(_agentLive);
+            }
+
+            // 思考链在前、正文在后，和正式版里的顺序一致
+            var sb = new StringBuilder("思考中…\n");
+            if (_agentLiveDone.Length > 0) sb.Append(_agentLiveDone);
+            if (_agentLiveCur.Length > 0)
+            {
+                if (_agentLiveDone.Length > 0) sb.Append("\n\n────────\n\n");
+                sb.Append(_agentLiveCur);
+            }
+            if (body.Length > 0)
+            {
+                sb.Append("\n\n").Append(body);
+            }
+            _agentLiveText!.Text = sb.ToString();
+            AgentScrollToEnd();
+        }
+
+        if (DispatcherQueue.HasThreadAccess) Render();
+        else DispatcherQueue.TryEnqueue(Render);
+    }
+
+    /// <summary>把实时块收掉（生成结束）。正式版由 AgentAddReply 渲染。</summary>
+    private void AgentClearLive()
+    {
+        if (_agentLive is not null)
+        {
+            try { AgentFeed.Children.Remove(_agentLive); } catch { }
+        }
+        _agentLive = null;
+        _agentLiveText = null;
+        _agentLiveDone.Clear();
+        _agentLiveCur = "";
     }
 
     private void SetAgentStatus(string text) => AgentStatusText.Text = text;

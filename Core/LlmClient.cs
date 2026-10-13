@@ -473,10 +473,18 @@ public sealed class LlmClient : IDisposable
     /// 2. **`tool_call_id` 必须原样回灌**。小模型靠它对上号，对不上会反复
     ///    调用同一个工具直到预算耗尽——表现是死循环而不是报错。
     /// </summary>
+    /// <param name="onProgress">
+    /// 给了就走流式（<c>stream: true</c>），每收到一段就回调一次
+    /// <c>(已累积的思考, 已累积的正文)</c>——界面靠它把思考过程实时显示出来，
+    /// 而不是等生成完一次性蹦出来。
+    ///
+    /// 为 null 时走原来的非流式路径，行为一字不变（既有测试都走那条）。
+    /// </param>
     public async Task<ToolTurn> ChatWithToolsAsync(
         AppSettings cfg, string systemPrompt, List<JsonObject> messages,
         IReadOnlyList<AgentTool> tools, int maxTokens,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Action<string, string>? onProgress = null)
     {
         if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl))
             return new ToolTurn(false, "", "", new(), "", "未配置接口地址");
@@ -528,6 +536,9 @@ public sealed class LlmClient : IDisposable
         // （ChatAsync 那条路照旧按档位下发，行为不变。副作用是：档位设成
         //   「关闭思考」时，AI 助手的工具轮仍会思考——设置页的提示行写明了这一点。）
 
+        // 要流式就在这里标上（工具声明已在上面的 if 里加好）
+        if (onProgress is not null) body["stream"] = true;
+
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Post, url)
@@ -537,6 +548,29 @@ public sealed class LlmClient : IDisposable
             ApplyHeaders(req, cfg);
 
             SetTimeout(cfg.TimeoutSeconds);
+
+            // 流式必须用 ResponseHeadersRead：默认的 ResponseContentRead 会把整个
+            // 响应体收完才返回，那就等于没有流式——思考链还是最后一次性蹦出来。
+            if (onProgress is not null)
+            {
+                using var sresp = await _http
+                    .SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
+                    .ConfigureAwait(false);
+
+                if (!sresp.IsSuccessStatusCode)
+                {
+                    var sraw = await sresp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                    var smsg = $"HTTP {(int)sresp.StatusCode} {sresp.ReasonPhrase}";
+                    Log.Write($"llm(tools) stream {smsg} body={Truncate(sraw, 600)}");
+
+                    // **不回退成非流式**：如实报错比悄悄退回更清楚。退回的话用户
+                    // 看到的是"开着流式但没内容"，更难查。
+                    return new ToolTurn(false, "", "", new(), sraw,
+                                        smsg + "：" + Truncate(sraw, 400));
+                }
+
+                return await ReadStreamToolTurnAsync(sresp, onProgress, ct).ConfigureAwait(false);
+            }
 
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct)
                                           .ConfigureAwait(false);
@@ -560,6 +594,48 @@ public sealed class LlmClient : IDisposable
             Log.Write("llm(tools) request failed: " + ex);
             return new ToolTurn(false, "", "", new(), "", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 读流式响应，边读边回调，最后拼成和非流式一样的 <see cref="ToolTurn"/>。
+    ///
+    /// 两条要点：
+    /// 1. **进度要节流**。实测一次短回答就有 300 多个分片，逐片回调意味着几百次
+    ///    跨线程投递；界面不但看不出差别，还会被拖卡。这里限制到约 10 次/秒，
+    ///    并在结束时**补发最后一次**——否则最新的一段可能永远显示不出来。
+    /// 2. **判定复用非流式那条路**：把累积结果还原成响应 JSON 再交给
+    ///    <see cref="ParseToolTurn"/>，不另写一份判定（两份迟早漂移，
+    ///    表现是"同一次回答，开不开流式结论不同"）。
+    /// </summary>
+    private static async Task<ToolTurn> ReadStreamToolTurnAsync(
+        HttpResponseMessage resp, Action<string, string> onProgress, CancellationToken ct)
+    {
+        var acc = new ToolStream();
+        var lastReport = 0L;
+
+        using (var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+        {
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                if (line is null) break;
+                acc.Feed(line);
+                if (acc.Done) break;
+
+                var now = Environment.TickCount64;
+                if (now - lastReport >= 100)
+                {
+                    lastReport = now;
+                    onProgress(acc.Reasoning, acc.Content);
+                }
+            }
+        }
+
+        onProgress(acc.Reasoning, acc.Content);   // 结尾补一次，保证是最新的
+        Log.Write($"llm(tools) stream done: reasoning={acc.Reasoning.Length} " +
+                  $"content={acc.Content.Length} calls={acc.Calls().Count} finish={acc.FinishReason}");
+        return ParseToolTurn(acc.ToResponseJson());
     }
 
     private static ToolTurn ParseToolTurn(string raw)
