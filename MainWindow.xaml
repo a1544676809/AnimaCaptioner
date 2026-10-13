@@ -840,19 +840,33 @@
                                  PlaceholderText="说一句要它做什么，或直接描述画面。Ctrl+Enter 发送" />
                         <ProgressRing Grid.Column="1" x:Name="AgentRing" Width="18" Height="18"
                                       IsActive="False" VerticalAlignment="Center" />
-                        <!-- 完全权限放在发送键**上方**：那一列本来就有空地（输入框 56 高、
-                             按钮约 32，差值空着），比挤进标题行代价小——实测挤进去会把
-                             模型选择器从 230 DIP 压到 70，"当前用的是哪个模型"就看不见了。
+                        <!-- 完全权限放在发送键**上方**：那一列本来就有空地（输入框与按钮
+                             的高度差），比挤进标题行代价小——实测挤进去会把模型选择器从
+                             239 DIP 压到 70，"当前用的是哪个模型"就看不见了。
                              它是"这一屏允不允许模型自己动手"的即时意愿，放在动手的那颗
-                             按钮旁边也最贴着语义。说明文字在设置页里展开写，这里用 tooltip。 -->
-                        <StackPanel Grid.Column="2" VerticalAlignment="Bottom" Spacing="4"
-                                    HorizontalAlignment="Right">
-                            <CheckBox x:Name="AgentFullAccessBox" Content="完全权限"
-                                      HorizontalAlignment="Right" Click="AgentFullAccess_Click"
+                             按钮旁边也最贴着语义。
+
+                             用单列 Grid 而不是 StackPanel：同一列里两个子元素**宽度自动
+                             取较大者**，于是按钮和复选框一样宽、且都右对齐。
+                             复选框要 MinWidth=0 —— WinUI 给 CheckBox 的默认最小宽度远大于
+                             「完全权限」四个字，实测报 180 DIP，右边空出两三个字的位置，
+                             而那点宽度本来可以给输入框。 -->
+                        <Grid Grid.Column="2" VerticalAlignment="Bottom"
+                              HorizontalAlignment="Right" RowSpacing="4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <CheckBox Grid.Row="0" x:Name="AgentFullAccessBox" Content="完全权限"
+                                      MinWidth="0" Padding="0,0,0,0"
+                                      HorizontalAlignment="Stretch" Click="AgentFullAccess_Click"
                                       ToolTipService.ToolTip="打开后助手提出的标签和散文直接写进提示词，不再需要你点「应用」。写入仍然只算一个撤销点，Ctrl+Z 可整体撤销；每次写入都会记进日志。注意这会放弃「模型改了训练集而你没看见」这条保证。" />
-                            <Button x:Name="AgentSendBtn" Content="发送"
-                                    HorizontalAlignment="Right" Click="AgentSend_Click" />
-                        </StackPanel>
+                            <Button Grid.Row="1" x:Name="AgentSendBtn" Content="发送"
+                                    HorizontalAlignment="Stretch" Click="AgentSend_Click" />
+                        </Grid>
                     </Grid>
 
                     <TextBlock Grid.Row="3" x:Name="AgentStatusText" FontSize="11" Margin="2,4,0,0"
