@@ -269,6 +269,24 @@ public static class AgentKit
             "add and the prose paragraph. Keep your reply text to one or two short Chinese " +
             "sentences; the user reads the proposal, not the reply.\n");
 
+        // Anima 的提示词结构。**模型不可能自己知道**（这是这个模型的约定，不是通用
+        // 常识），而不知道就会犯两种错：把标签按字母序或热度排，以及把画师名写成
+        // 普通标签。两者都不会报错，只是出图质量变差——正是最该提前讲清的那类事。
+        sb.Append(
+            "- Anima reads the prompt in a FIXED order, and the app files new tags into it:\n" +
+            "    quality / year / safety -> subject count (1girl, solo, 2girls) -> character " +
+            "-> series -> artist -> general (appearance, clothing, expression, pose, " +
+            "background, lighting).\n" +
+            "  If you propose tags, keep them in that order. Do NOT sort alphabetically or " +
+            "by popularity.\n" +
+            "- An artist tag MUST start with '@' (e.g. '@dairi'). Never write an artist " +
+            "name as a plain tag. 'score_' tags keep their underscore (score_7) -- that is " +
+            "the only family where the underscore stays; everything else uses spaces, never " +
+            "underscores (write 'long hair', not 'long_hair').\n" +
+            "- A prompt is a comma-separated tag list, optionally followed by ONE " +
+            "natural-language paragraph. Never mix prose into the tag list, and never write " +
+            "a sentence as a tag.\n");
+
         if (!canWebSearch)
             sb.Append("- The web search tool is not available. Do not look for one.\n");
 

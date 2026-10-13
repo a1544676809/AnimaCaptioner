@@ -194,17 +194,20 @@ public static class Agent
         Eq("没有真的查过词库", host5.Searches.Count, 0);
         True("成功了（要求重试后拿到提案）", o5.Ok);
 
-        Console.WriteLine("\n=== 11. 轮数用完：收尾那一次不带工具，但图还在 ===");
+        Console.WriteLine("\n=== 11. 轮数用完：收尾只给 propose（不能再搜，但仍能提案）===");
         var host6 = new FakeHost();
-        // 前 4 轮一直查（把轮数用光），第 5 次是收尾请求——它不带工具，所以
-        // 假 host 这里排的是一句纯文本回答，和真实模型的行为一致。
-        for (var i = 0; i < 4; i++)
+        // 一直查到轮数用光（上限见 TagAgent.MaxRounds），随后是收尾请求。
+        // **收尾那一轮现在只给 propose**——不是空工具列表。原来的空列表导致模型
+        // 只能把标签写成一段话，用户看到"由于工具调用已用尽，无法再调用 propose，
+        // 请手动录入"，而提案正是这一路唯一的产出。
+        for (var i = 0; i < 8; i++)
             host6.Turn(Tool("c" + i, AgentKit.SearchToolName, """{"query":"loop"}"""));
         host6.Turn(new LlmClient.ToolTurn(true, "词库里只有 loop 相关的几种写法。", "", new(), "", ""));
         var image = new LlmClient.ChatImage("image/jpeg", new byte[] { 1, 2, 3, 4 });
         var o6 = Run(host6, "一直查下去", image);
-        Eq("4 次带工具的请求 + 1 次收尾", host6.SeenTools.Count, 5);
-        Eq("收尾那次工具列表为空", host6.SeenTools[^1].Count, 0);
+        Eq("8 次带工具的请求 + 1 次收尾", host6.SeenTools.Count, 9);
+        Eq("收尾那次只给 propose（不能再搜，但仍能提案）",
+           string.Join("|", host6.SeenTools[^1]), "propose");
         Eq("收尾那次的文本成为回答", o6.Reply, "词库里只有 loop 相关的几种写法。");
         Eq("收尾那次成功", o6.Ok, true);
         var first = host6.SeenMessages[^1][0]["content"];

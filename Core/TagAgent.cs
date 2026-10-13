@@ -90,11 +90,17 @@ public sealed class TagAgent
                                  IReadOnlyList<ToolCallLog>? ToolCalls = null);
 
     /// <summary>
-    /// 工具循环轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用，
-    /// 所以 4 轮足够"先搜五六个概念、再提一次案"。再多等待时间就失控了
-    /// （每次请求十几秒）。
+    /// 工具循环轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
+    ///
+    /// 原来是 4，实测不够：一问"查 A 和 B 两个标签"，模型会一轮里发好几个
+    /// search_tags，几轮下来就用光了，然后被迫走收尾那条路——用户看到的是
+    /// "由于工具调用已用尽，无法再调用 propose"。改成 8。
+    ///
+    /// 8 轮不是拍脑袋：每轮十几秒，最坏情况约两分钟；而收尾那一轮现在**仍然允许
+    /// propose**（见下面 digest 那段），所以就算真用光了也不会白跑——这比单纯
+    /// 加轮数更管用，加轮数只是降低触发概率。
     /// </summary>
-    private const int MaxRounds = 4;
+    private const int MaxRounds = 8;
 
     /// <summary>
     /// 这一路的预算。带工具时思考链是开着的（见 LlmClient.ChatWithToolsAsync 的注释：
@@ -306,15 +312,25 @@ public sealed class TagAgent
         // 换个请求就等于把第一轮挂上去的那张图丢了，而"读图"正是这一路
         // 最容易把轮数用完的场景。
         var digest = new StringBuilder();
-        digest.Append("You are out of tool calls. Answer the user now, in Simplified " +
-                      "Chinese, without tools.\nSearch results so far:\n");
+        digest.Append("You are out of SEARCHING. You may not search any more, and you may " +
+                      "not name any tag that is not in the results below. Call " +
+                      AgentKit.ProposeToolName + " now, exactly once, with the tags and " +
+                      "prose you are confident about.\nSearch results so far:\n");
         foreach (var h in TagSearch.RankForUser(found))
             digest.Append("- tag=").Append(h.Tag).Append(" | cn=").Append(h.Cn).Append('\n');
-        digest.Append("If changes are needed, describe them in words; do not name any tag " +
-                      "that is not in the results above.");
+        digest.Append("If the results are enough, propose them. If they are not enough, " +
+                      "say so in one short Chinese sentence — but do not write the tag list " +
+                      "out as text instead of proposing.");
 
         messages.Add(new JsonObject { ["role"] = "user", ["content"] = digest.ToString() });
-        var final = await host.TurnAsync(system, Array.Empty<AgentTool>(), messages, Budget, ct,
+
+        // **收尾这一轮只给 propose，不给搜索。** 这不是小改动：原来一个工具都不给，
+        // 于是模型只能把标签写成一段话，用户看到的是"由于工具调用已用尽，无法再调用
+        // propose，请手动录入"——而提案恰恰是这一路唯一的产出。
+        // 只留 propose 同时满足两件事：它没法继续搜（不然会一直搜下去），
+        // 但**仍然能交出结构化提案**。
+        var proposeOnly = tools.Where(t => t.Name == AgentKit.ProposeToolName).ToList();
+        var final = await host.TurnAsync(system, proposeOnly, messages, Budget, ct,
                                          onProgress)
                               .ConfigureAwait(false);
         Collect(final.Reasoning);
