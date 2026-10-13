@@ -65,6 +65,11 @@ internal static class Harness
                 // 临时探针：真实网络 + 当前 settings.json。不属于默认套件。
                 return CoreCheck.LlmLive.Run();
 
+            case "region":
+                // 临时探针：真实网络。验证"后插的图文 user 消息模型看不看得见"。
+                // 参数：探针图片目录（默认 %TEMP%\ac-imgprobe，或 AC_PROBEIMG）。
+                return CoreCheck.RegionProbe.Run(Arg(1) ?? null);
+
             case "sections":
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 return Sections.Run(dataset!);

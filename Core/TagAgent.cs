@@ -65,6 +65,25 @@ public sealed class TagAgent
         /// 用户手动翻图也一样。所以工具说明里要求模型只在用户明确要求时调用。
         /// </summary>
         (bool Ok, string Message) SelectImage(string name);
+
+        /// <summary>
+        /// 当前这张图的**文件事实**（尺寸、EXIF 方向、格式、大小、被缩到多小），
+        /// 说成一段给模型看的文字。**纯读、纯文本**，没有任何成本，
+        /// 实现见 MainWindow 的 AgentImageInfoAsync。
+        ///
+        /// 是异步的：读文件与解码走 WinRT，别在 UI 线程上同步等它。
+        /// </summary>
+        Task<string> ImageInfo();
+
+        /// <summary>
+        /// 把一块区域放大。返回是否成功、一句给模型看的结果说明，以及**要插进对话的图**
+        /// （工具结果只能是文本，图只能靠额外的一条 user 消息送出去，见 RunAsync 里那段）。
+        ///
+        /// 裁剪必须在 UI 侧：Core 不引用任何图像库。未启用带图时返回失败即可，
+        /// 不抛异常。
+        /// </summary>
+        Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>
+            ViewRegion(string arguments);
     }
 
     /// <summary>
@@ -110,6 +129,16 @@ public sealed class TagAgent
     private const int Budget = 2400;
 
     /// <summary>
+    /// 一次对话里最多插入多少张放大图。**这是给上下文兜底的上限**，不是省事。
+    ///
+    /// 每张 1024 长边约 850 token，而且**一旦插进 messages 就会留在后面每一轮请求里**
+    /// （同一个 RunAsync 内不会摘掉），所以模型要是每轮都裁一次，token 是叠加的。
+    /// 3×3 一次用掉 9 张，再给 3 张的余量（"再裁一处"这种正常需求刚好够）。
+    /// 用光了就如实告诉它用完，让它拿现有的图作答——比让它静默裁不出东西强。
+    /// </summary>
+    private const int MaxRegionImages = 12;
+
+    /// <summary>
     /// 跑一轮。历史里最后一轮必须是本次的输入，图片只挂在那一轮上——
     /// 把图挂到每一轮会让后面每一次请求都重复付一次图片的 token。
     /// </summary>
@@ -124,8 +153,13 @@ public sealed class TagAgent
 
         var hasImage = image is not null && history.Any(t => t.FromUser);
         var dataset = host.Images;
-        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch);
-        var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0);
+
+        // 能不能真的把图放大：放大后的图是靠"往对话里插一条图文 user 消息"送出去的，
+        // 而这条这次对话里必须已经有图（否则等于绕过用户关掉的「带当前图片」开关）。
+        var canViewRegion = hasImage;
+        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion);
+        var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
+                                   canViewRegion: canViewRegion);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -138,6 +172,10 @@ public sealed class TagAgent
         }
 
         var rounds = 0;
+
+        // 这一轮攒下的放大图，以及整次对话还剩多少张图的额度（见 MaxRegionImages）。
+        var pendingImages = new List<LlmClient.ChatImage>();
+        var imageBudget = MaxRegionImages;
 
         // 这三样必须在**第一个 Done 之前**声明：Done 是捕获它们的局部函数，
         // 声明晚于使用会报 CS0165（用了未赋值的局部变量）——编译器只看赋值顺序。
@@ -261,6 +299,50 @@ public sealed class TagAgent
                     continue;
                 }
 
+                if (string.Equals(call.Name, AgentKit.ImageInfoToolName, StringComparison.Ordinal))
+                {
+                    var text = await host.ImageInfo().ConfigureAwait(false);
+                    log.Add("查图像信息");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.ViewRegionToolName, StringComparison.Ordinal))
+                {
+                    // 先按参数估一下这次会要几张图，超预算就**不要真的去裁**——
+                    // 裁一次要解码 + 编码，白干一遍再告诉模型"不给"是纯浪费。
+                    var want = AgentKit.PlannedRegionImages(call.Arguments);
+                    if (want > imageBudget)
+                    {
+                        var full = $"You have already been given the maximum of {MaxRegionImages} " +
+                                   "enlarged images for this turn, and this call would need " +
+                                   $"{want} more. No more crops are available: answer now with " +
+                                   "what you have already seen, and say plainly which detail you " +
+                                   "still cannot make out.";
+                        log.Add("放大（已超出图片预算）");
+                        Report(new ToolCallLog(call.Name, call.Arguments, full));
+                        messages.Add(LlmClient.ToolMessage(call.Id, full));
+                        continue;
+                    }
+
+                    ReportStart(call.Name, call.Arguments);
+                    var (ok, msg, imgs) = await host.ViewRegion(call.Arguments).ConfigureAwait(false);
+                    log.Add(ok ? $"放大 → {imgs.Count} 张图" : "放大失败");
+                    Report(new ToolCallLog(call.Name, call.Arguments, msg));
+                    messages.Add(LlmClient.ToolMessage(call.Id, msg));
+
+                    // 图不能挂在 tool 结果上（协议里工具结果只能是文本），只能攒起来，
+                    // 等这一轮**所有** tool 结果都回完之后再插一条 user 消息——顺序不能乱，
+                    // 插在中间会让严格的网关直接 400（tool 消息必须紧跟要它的 assistant）。
+                    if (ok && imgs.Count > 0)
+                    {
+                        imageBudget -= imgs.Count;
+                        pendingImages.AddRange(imgs);
+                    }
+                    continue;
+                }
+
                 if (string.Equals(call.Name, AgentKit.SearchToolName, StringComparison.Ordinal))
                 {
                     var query = DescribeQuery(call.Arguments);
@@ -302,6 +384,21 @@ public sealed class TagAgent
                               string.Join(", ", tools.Select(t => t.Name)) + ".";
                 Report(new ToolCallLog(call.Name, call.Arguments, unknown));
                 messages.Add(LlmClient.ToolMessage(call.Id, unknown));
+            }
+
+            // 放大后的图在这里补上：**必须等这一轮所有工具结果都回完**（见上面 view_region
+            // 那段）。文案刻意说清"这是你要的放大区域，不是用户新说的话"——
+            // 不然模型会去"回答"这条消息，而不是看它。
+            if (pendingImages.Count > 0)
+            {
+                var note = pendingImages.Count == 1
+                    ? "The enlarged region you asked for is attached below. Look at it."
+                    : $"The {pendingImages.Count} enlarged regions you asked for are attached " +
+                      "below, in the order you asked for them. Look at them.";
+                messages.Add(LlmClient.UserMessage(note, pendingImages));
+                Log.Write($"agent: region images attached this round = {pendingImages.Count} " +
+                          $"(budget left {imageBudget})");
+                pendingImages.Clear();
             }
         }
 

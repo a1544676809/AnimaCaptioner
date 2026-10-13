@@ -65,6 +65,9 @@
          **\*.cs 全收进来，于是应用工程也会看到那个入口点（CS0017 多个入口点），
          而它的 bin\obj 里还有自动生成的 AssemblyInfo，一并排除掉。 -->
     <Compile Remove="tests\**\*.cs" />
+    <!-- tools\ 下是开发用的小工具（图像探针等），各有自己的入口点。
+         同理：SDK 默认的 **\*.cs 会把它们也收进来（CS0017 多个入口点）。 -->
+    <Compile Remove="tools\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

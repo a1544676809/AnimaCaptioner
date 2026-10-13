@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    开发用的图像探针。**不在解决方案里**，也不会被应用工程编译
+    （应用 csproj 里有一行 <Compile Remove="tools\**\*.cs" />）。
+
+    为什么非要单独一个工程：裁剪那条路（ImagePayload.CropManyAsync）碰 WinRT，
+    而 tests/corecheck 刻意是 net10.0（不带 -windows 后缀），编译不到 WinRT。
+    可是**裁剪的正确性只能实测**——"Bounds 是在旋转前还是旋转后的坐标系里解释"
+    这类事文档说不清，算错的表现又是"裁出来的东西不是模型要的那块"，
+    光看界面完全看不出来。这个探针把裁剪结果落成 JPEG，再用
+    tools/imgprobe/check.py 取像素核对（四象限 + EXIF 方向 6）。
+
+    用法：
+      dotnet build -c Release tools/imgprobe/imgprobe.csproj
+      imgprobe.exe facts  <img>
+      imgprobe.exe crop   <img> <x> <y> <w> <h> <out.jpg>
+      imgprobe.exe tiles  <img> <cols> <rows> <outDir>
+      imgprobe.exe payload <img> <out.jpg>     # 整图那条既有路径，作对照
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <RootNamespace>AnimaCaptioner.ImgProbe</RootNamespace>
+    <AssemblyName>imgprobe</AssemblyName>
+    <Platforms>x64</Platforms>
+    <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 直接编译应用的**真实源文件**，不是副本：探针要验的正是产品代码
+         在这台机器上的真实行为。 -->
+    <Compile Include="..\..\Log.cs" />
+    <Compile Include="..\..\Core\ByteSize.cs" />
+    <Compile Include="..\..\Core\ImageSizing.cs" />
+    <Compile Include="..\..\Core\ImageRegion.cs" />
+    <Compile Include="..\..\Core\ImagePixels.cs" />
+    <Compile Include="..\..\Core\ImageTools.cs" />
+    <Compile Include="..\..\Core\ImagePayload.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+</Project>

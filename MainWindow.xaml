@@ -837,6 +837,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBox x:Name="AgentInput" AcceptsReturn="True" TextWrapping="Wrap"
                                  MinHeight="56" MaxHeight="120"
+                                 AutomationProperties.Name="助手输入框"
                                  KeyDown="AgentInput_KeyDown"
                                  PlaceholderText="说一句要它做什么，或直接描述画面。Ctrl+Enter 发送" />
                         <ProgressRing Grid.Column="1" x:Name="AgentRing" Width="18" Height="18"

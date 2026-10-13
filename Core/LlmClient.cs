@@ -708,24 +708,32 @@ public sealed class LlmClient : IDisposable
     }
 
     /// <summary>构造一条 user 消息。带图时按 OpenAI 的 multimodal parts 形状发。</summary>
-    public static JsonObject UserMessage(string text, ChatImage? image)
+    public static JsonObject UserMessage(string text, ChatImage? image) =>
+        image is null
+            ? new JsonObject { ["role"] = "user", ["content"] = text }
+            : UserMessage(text, new[] { image });
+
+    /// <summary>
+    /// 一条 user 消息带**多张图**。形状与单图那版完全一样，只是 parts 里多几个
+    /// <c>image_url</c> 项——`view_region` 的 tiles 模式一次要看好几块，走这条。
+    ///
+    /// 顺序刻意是「文本在前、图在后」：文本是"这是你要的放大区域"这句说明，
+    /// 图是它所说明的东西，放在同一段 parts 里模型不会把两者分开理解。
+    /// </summary>
+    public static JsonObject UserMessage(string text, IReadOnlyList<ChatImage> images)
     {
-        if (image is null)
+        if (images.Count == 0)
             return new JsonObject { ["role"] = "user", ["content"] = text };
 
-        return new JsonObject
-        {
-            ["role"] = "user",
-            ["content"] = new JsonArray
+        var parts = new JsonArray { new JsonObject { ["type"] = "text", ["text"] = text } };
+        foreach (var img in images)
+            parts.Add(new JsonObject
             {
-                new JsonObject { ["type"] = "text", ["text"] = text },
-                new JsonObject
-                {
-                    ["type"] = "image_url",
-                    ["image_url"] = new JsonObject { ["url"] = image.DataUri },
-                },
-            },
-        };
+                ["type"] = "image_url",
+                ["image_url"] = new JsonObject { ["url"] = img.DataUri },
+            });
+
+        return new JsonObject { ["role"] = "user", ["content"] = parts };
     }
 
     /// <summary>构造一条 assistant 消息（原样回灌 tool_calls，id 不能改）。</summary>
@@ -830,11 +838,9 @@ public sealed class LlmClient : IDisposable
         }
     }
 
-    /// <summary>把字节数写成人类可读的大小。</summary>
-    public static string FormatSize(long bytes) =>
-        bytes >= 1L << 30 ? (bytes / (double)(1L << 30)).ToString("F2") + " GB"
-        : bytes >= 1L << 20 ? (bytes / (double)(1L << 20)).ToString("F1") + " MB"
-        : bytes + " B";
+    /// <summary>把字节数写成人类可读的大小。<see cref="ByteSize.Format"/> 的转发，
+    /// 保留这个名字是因为设置页与 tests/Models.cs 一直用的是它。</summary>
+    public static string FormatSize(long bytes) => ByteSize.Format(bytes);
 
     /// <summary>
     /// 拉取服务端可用模型列表（GET /models）。

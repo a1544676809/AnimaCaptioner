@@ -25,10 +25,14 @@ internal sealed class AgentHost : TagAgent.IHost
     /// </summary>
     private readonly Func<IReadOnlyList<AgentImage>> _images;
     private readonly Func<string, (bool Ok, string Message)> _selectImage;
+    private readonly Func<Task<string>> _imageInfo;
+    private readonly Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>> _viewRegion;
 
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
-                     Func<string, (bool Ok, string Message)>? selectImage = null)
+                     Func<string, (bool Ok, string Message)>? selectImage = null,
+                     Func<Task<string>>? imageInfo = null,
+                     Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null)
     {
         _cfg = cfg;
         _llm = llm;
@@ -36,12 +40,23 @@ internal sealed class AgentHost : TagAgent.IHost
         _vocab = vocab;
         _images = images ?? (() => Array.Empty<AgentImage>());
         _selectImage = selectImage ?? (_ => (false, "Switching images is not available here."));
+
+        // 两个图像工具的兜底都是"如实说没有"：没接上实现时不抛异常、也不假装成功，
+        // 免得出现"工具调了、回了句看不懂的话、模型照着编"。
+        _imageInfo = imageInfo ?? (() => Task.FromResult(ImageTools.NoImage));
+        _viewRegion = viewRegion ?? (_ => Task.FromResult(
+            (false, ImageTools.NotAttached, (IReadOnlyList<LlmClient.ChatImage>)Array.Empty<LlmClient.ChatImage>())));
     }
 
     /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
     public IReadOnlyList<AgentImage> Images => _images();
 
     public (bool Ok, string Message) SelectImage(string name) => _selectImage(name);
+
+    public Task<string> ImageInfo() => _imageInfo();
+
+    public Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>
+        ViewRegion(string arguments) => _viewRegion(arguments);
 
     /// <summary>没配搜索后端时不下发这个工具：让模型调一个必然失败的工具是白烧一轮预算。</summary>
     public bool CanWebSearch => _cfg.SearchEnabled;

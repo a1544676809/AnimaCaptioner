@@ -4545,7 +4545,12 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 else
                 {
                     var path = CurrentImagePath();
-                    if (path is not null) image = await ImagePayload.LoadAsync(path);
+                    if (path is not null)
+                    {
+                        var loaded = await ImagePayload.LoadAsync(path);
+                        if (loaded is not null)
+                            image = new LlmClient.ChatImage(ImagePayload.Mime, loaded.Jpeg);
+                    }
                     if (image is null) SetAgentStatus("这张图读不出来，这次不带图。");
                 }
             }
@@ -4560,7 +4565,9 @@ private void EndEdit(bool commit, bool lostFocus = false)
             // 永远是发第一句时的那张图。
             var host = new AgentHost(_cfg, _llm, _search, _vocab,
                                      images: AgentImageList,
-                                     selectImage: AgentSelectImage);
+                                     selectImage: AgentSelectImage,
+                                     imageInfo: () => AgentImageInfoAsync(image is not null),
+                                     viewRegion: args => AgentViewRegionAsync(args, image is not null));
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,
                                                 onProgress: AgentLiveProgress,
@@ -4726,6 +4733,95 @@ private void EndEdit(bool commit, bool lostFocus = false)
         Select(hit);
         return (true, $"Switched to \"{_items[hit].Name}\" (saved the previous image first).");
     }
+
+    /// <summary>
+    /// 一张图在这一刻的全部"跟界面有关"的事实。**一次快照**，之后的读盘与解码
+    /// 都在后台线程上做——<c>_items</c>/<c>_index</c> 只能在这里读（见 <see cref="OnUiThread"/>）。
+    /// 文件名不在这里：它从磁盘上读出来的那份事实里取（见 <see cref="ImagePayload.ReadFactsAsync"/>），
+    /// 免得同一个名字有两个来源、哪天对不上。
+    /// </summary>
+    private sealed record AgentImageSnapshot(string Path, int Index, int Total, int CaptionTags);
+
+    private AgentImageSnapshot? CaptureAgentImage()
+    {
+        if (_mode != PromptMode.Label || _index < 0 || _index >= _items.Count) return null;
+        var it = _items[_index];
+        return new AgentImageSnapshot(it.ImagePath, _index + 1, _items.Count, it.Tags.Count);
+    }
+
+    /// <summary>
+    /// `image_info`：当前图的文件事实。读不出来就如实说读不出来——
+    /// 编一个尺寸会让模型据此算出错误的裁剪区域。
+    /// </summary>
+    private async Task<string> AgentImageInfoAsync(bool attached)
+    {
+        var snap = OnUiThread(CaptureAgentImage, (AgentImageSnapshot?)null);
+        if (snap is null) return ImageTools.NoImage;
+
+        try
+        {
+            var f = await ImagePayload.ReadFactsAsync(snap.Path);
+            return ImageTools.Info(ToFacts(f, snap, attached));
+        }
+        catch (Exception ex)
+        {
+            Log.Write("agent image_info failed: " + ex.Message);
+            return ImageTools.InfoFailed(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// `view_region`：裁一块（或按网格切开）给模型看。
+    ///
+    /// 三件事按顺序把住：没有图 → 如实说；没带图 → 拒绝（否则等于绕过用户关掉的
+    /// 「带当前图片」开关，悄悄把训练集的图发出去）；参数不合法 → 回一句话让它改。
+    /// </summary>
+    private async Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>
+        AgentViewRegionAsync(string arguments, bool attached)
+    {
+        var empty = (IReadOnlyList<LlmClient.ChatImage>)Array.Empty<LlmClient.ChatImage>();
+
+        var snap = OnUiThread(CaptureAgentImage, (AgentImageSnapshot?)null);
+        if (snap is null) return (false, ImageTools.NoImage, empty);
+        if (!attached) return (false, ImageTools.NotAttached, empty);
+
+        var req = AgentKit.ParseRegion(arguments);
+        if (!req.Ok)
+        {
+            Log.Write($"agent view_region: 参数不合法 - {req.Problem}");
+            return (false, ImageTools.ArgsProblem(req.Problem), empty);
+        }
+
+        try
+        {
+            var f = await ImagePayload.ReadFactsAsync(snap.Path);
+            var facts = ToFacts(f, snap, true);
+            var (dw, dh) = facts.Displayed;
+
+            var rects = req.Mode == "tiles"
+                ? ImageRegion.Tiles(dw, dh, req.Cols, req.Rows)
+                : new List<PixelRect> { ImageRegion.Crop(dw, dh, req.X, req.Y, req.W, req.H) };
+
+            var crops = await ImagePayload.CropManyAsync(snap.Path, rects);
+            if (crops.Count == 0) return (false, ImageTools.Failed("no region could be cut"), empty);
+
+            var msg = req.Mode == "tiles"
+                ? ImageTools.Tiles(facts, req.Cols, req.Rows, rects)
+                : ImageTools.Crop(facts, rects[0], crops[0].Width, crops[0].Height);
+
+            var images = crops.Select(c => new LlmClient.ChatImage(ImagePayload.Mime, c.Jpeg)).ToList();
+            return (true, msg, images);
+        }
+        catch (Exception ex)
+        {
+            Log.Write("agent view_region failed: " + ex.Message);
+            return (false, ImageTools.Failed(ex.Message), empty);
+        }
+    }
+
+    private static ImageFacts ToFacts(FileFacts f, AgentImageSnapshot snap, bool attached) =>
+        new(f.Name, f.Format, f.FileBytes, f.StoredWidth, f.StoredHeight, f.Orientation,
+            attached, snap.Index, snap.Total, snap.CaptionTags);
 
     /// <summary>
     /// 生成中的实时块（思考链 + 已吐出的正文）。**结束时会把它整个删掉**，

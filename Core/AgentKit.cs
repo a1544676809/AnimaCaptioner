@@ -55,6 +55,98 @@ public static class AgentKit
     public const string WebSearchToolName = "web_search";
     public const string CurrentImageToolName = "current_image";
     public const string SelectImageToolName = "select_image";
+    public const string ImageInfoToolName = "image_info";
+    public const string ViewRegionToolName = "view_region";
+
+    /// <summary>
+    /// 问"这张图本身是什么"。**纯文本、没有 token 成本**，所以尽可以调。
+    ///
+    /// 它存在的理由只有一个：模型看不见原始分辨率。整图是缩到长边 1024 发过去的
+    /// （实测 4000×6500 → 630×1024，细节全糊），而它**无从判断**"这个细节看不清
+    /// 是因为我没放大、还是原图就这么多"。这句话告诉它，它才知道该不该调 view_region，
+    /// 也才不会一遍遍重复裁同一块。
+    /// </summary>
+    public static AgentTool ImageInfoTool => new(
+        ImageInfoToolName,
+        "Get the facts about the image the user is editing right now: file name, format, file " +
+        "size, the original pixel size (with the EXIF rotation applied) and how far the copy you " +
+        "were given was scaled down. Call this when you are unsure whether a small detail is " +
+        "worth zooming into. No arguments.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject(),
+        });
+
+    /// <summary>
+    /// 把图的一块放大给模型看。
+    ///
+    /// **坐标一律归一化（0–1）**：模型看不到原始分辨率，让它填像素等于让它猜；
+    /// 归一化之后它自己推得出 `x=0.4, w=0.2` 这种值。
+    ///
+    /// 结果不是文本而是**紧随其后的一条带图 user 消息**（工具结果只能是文本，
+    /// 见 <see cref="TagAgent"/> 里 view_region 那段）。工具结果本身只回一句确认。
+    /// 块数上限见 <see cref="ImageRegion.MaxTiles"/>，说明里写明了"块越多越贵"。
+    /// </summary>
+    public static AgentTool ViewRegionTool => new(
+        ViewRegionToolName,
+        "Zoom into the current image: the part you ask for comes back at much higher " +
+        "resolution, as a new user message right after this tool result. Use it BEFORE " +
+        "describing any fine detail (small text, patterns, fingers, eyes, jewellery, lace) " +
+        "instead of guessing or apologising that you cannot see it.\n" +
+        "mode=\"crop\": give x, y, w, h — all normalized to 0-1 of the displayed image. " +
+        "x,y is the top-left corner of the region, w,h are its WIDTH and HEIGHT (not the " +
+        "right/bottom edge).\n" +
+        "mode=\"tiles\": give cols, rows to split the whole image into a grid, in case you " +
+        "must examine all of it part by part.\n" +
+        "Every image you ask for costs tokens on its own, so ask for ONE crop when one crop " +
+        "is enough. With mode=\"tiles\", cols * rows must not exceed " + ImageRegion.MaxTiles +
+        ". Do not ask for the same region twice.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["mode"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JsonArray { "crop", "tiles" },
+                    ["description"] = "\"crop\" for one region (x, y, w, h) or \"tiles\" for a " +
+                                      "grid over the whole image (cols, rows).",
+                },
+                ["x"] = new JsonObject
+                {
+                    ["type"] = "number",
+                    ["description"] = "crop only: left edge, 0-1 (0 = left edge of the image).",
+                },
+                ["y"] = new JsonObject
+                {
+                    ["type"] = "number",
+                    ["description"] = "crop only: top edge, 0-1 (0 = top of the image).",
+                },
+                ["w"] = new JsonObject
+                {
+                    ["type"] = "number",
+                    ["description"] = "crop only: width of the region, 0-1.",
+                },
+                ["h"] = new JsonObject
+                {
+                    ["type"] = "number",
+                    ["description"] = "crop only: height of the region, 0-1.",
+                },
+                ["cols"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "tiles only: number of columns (>= 1).",
+                },
+                ["rows"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "tiles only: number of rows (>= 1).",
+                },
+            },
+            ["required"] = new JsonArray { "mode" },
+        });
 
     /// <summary>
     /// 问"我现在在编辑哪张图"。
@@ -189,16 +281,27 @@ public static class AgentKit
     /// <summary>
     /// 本次可用工具集。顺序固定，便于测试与日志比对。
     ///
-    /// <paramref name="withImages"/> 为假时（写标签模式，没有数据集）不下发那两个
-    /// 图片工具：让模型调一个必然失败的工具是白烧一轮预算。
+    /// <paramref name="withImages"/> 为假时（写标签模式，没有数据集）不下发那三个
+    /// 依赖数据集的图片工具：让模型调一个必然失败的工具是白烧一轮预算。
+    ///
+    /// <paramref name="canViewRegion"/> 是**能不能真的把图放大**，与有没有数据集是
+    /// 两件事：放大后的图是靠"往对话里插一条图文消息"送出去的，而这次没带图
+    /// （用户关掉了「带当前图片」）时那条路走不通。这时既不能下发 view_region
+    /// （它必然失败），也不该让它以为能看——那等于绕过用户明确关掉的那个开关。
     /// </summary>
-    public static List<AgentTool> Tools(bool webSearch, bool withImages = false)
+    public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
+                                        bool canViewRegion = false)
     {
         var tools = new List<AgentTool>();
-        if (withImages) tools.Add(CurrentImageTool);
+        if (withImages)
+        {
+            tools.Add(CurrentImageTool);
+            tools.Add(ImageInfoTool);
+        }
         tools.Add(SearchTool);
         if (webSearch) tools.Add(WebSearchTool);
         if (withImages) tools.Add(SelectImageTool);
+        if (canViewRegion) tools.Add(ViewRegionTool);
         tools.Add(ProposeTool);
         return tools;
     }
@@ -220,7 +323,7 @@ public static class AgentKit
     ///    "至少两句"吃过一次训练集污染（见 LlmClient.ProseSystemPrompt 的长注释），
     ///    所以这里同样把长度交给输入决定。
     /// </summary>
-    public static string SystemPrompt(bool hasImage, bool canWebSearch)
+    public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false)
     {
         var sb = new System.Text.StringBuilder();
         sb.Append(
@@ -290,6 +393,24 @@ public static class AgentKit
         if (!canWebSearch)
             sb.Append("- The web search tool is not available. Do not look for one.\n");
 
+        // 放大那条路。三条都必须写，缺一条都会出现"它明明能看却不敢用/乱用"：
+        //  1. 它**看不见**整图的细节（整图缩到了长边 1024），所以细处不许猜；
+        //  2. 放大后的图是**另一条 user 消息**送来的——不说清，它会当成"用户又说话了"，
+        //     甚至去回答那条消息；
+        //  3. 每张图都单独算 token，所以别一口气要一堆。
+        if (canViewRegion)
+            sb.Append(
+                "- Zooming: the copy of the image you were given is scaled down to 1024 px on " +
+                "its long edge, so fine detail in it is genuinely lost. Before you describe " +
+                "anything small (text, patterns, fingers, eyes, jewellery, fabric texture) call " +
+                ViewRegionToolName + " and look at that part enlarged — never guess a detail and " +
+                "never apologise for not being able to see it.\n" +
+                "- The enlarged piece arrives as an extra user message, right after the tool " +
+                "result. That is the app showing you what you asked for, NOT the user saying " +
+                "something new: do not answer it as a message, just look at it.\n" +
+                "- Every image you ask for costs tokens of its own. Prefer one crop over a grid, " +
+                "and never ask for the same region twice.\n");
+
         return sb.ToString();
     }
 
@@ -348,6 +469,98 @@ public static class AgentKit
         }
 
         return new AgentProposal(unique, known, unknown, prose, replace, note);
+    }
+
+    /// <summary>
+    /// `view_region` 的一次请求，已解析并校验过。<see cref="Problem"/> 为空 = 可以用。
+    ///
+    /// 特意做成"解析 + 校验"一个函数：模型的手抖（少给字段、给 0、给 4×4）与
+    /// 真正的裁剪是两件事，前者该在这里被拦下并回一句话，后者在 UI 侧碰像素。
+    /// </summary>
+    public sealed record RegionRequest(string Mode, double X, double Y, double W, double H,
+                                       int Cols, int Rows, string Problem)
+    {
+        public bool Ok => Problem.Length == 0;
+
+        /// <summary>这次会产出几张图——用于给上下文设上限，见 TagAgent.MaxRegionImages。</summary>
+        public int ImageCount => !Ok ? 0 : Mode == "tiles" ? Cols * Rows : 1;
+    }
+
+    /// <summary>
+    /// 解析 `view_region` 的参数。
+    ///
+    /// 容错两处，都是实测里小模型真会犯的：
+    /// 1. **不写 mode**：靠给了哪一组字段推断（有 cols/rows 就是 tiles，有 x/y/w/h 就是 crop）。
+    ///    直接报"缺少 mode"会让它白烧一轮。
+    /// 2. **w/h 给了负数或 0**：0 无法裁剪，如实要求重试；负数是"方向反了"的意思，
+    ///    由 <see cref="ImageRegion.Crop"/> 交换两端处理，这里放行。
+    /// </summary>
+    public static RegionRequest ParseRegion(string arguments)
+    {
+        var mode = "";
+        double x = 0, y = 0, w = 0, h = 0;
+        int cols = 0, rows = 0;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return Bad("The arguments were not a JSON object.");
+
+            var root = doc.RootElement;
+            mode = Str(root, "mode").Trim().ToLowerInvariant();
+            x = Num(root, "x");
+            y = Num(root, "y");
+            w = Num(root, "w");
+            h = Num(root, "h");
+            cols = (int)Num(root, "cols");
+            rows = (int)Num(root, "rows");
+        }
+        catch (JsonException)
+        {
+            return Bad("The arguments were not valid JSON.");
+        }
+
+        if (mode.Length == 0)
+            mode = cols > 0 || rows > 0 ? "tiles" : "crop";
+
+        if (mode == "crop")
+        {
+            if (w <= 0 || h <= 0)
+                return new RegionRequest(mode, x, y, w, h, cols, rows,
+                    $"x, y, w, h were x={x:0.###} y={y:0.###} w={w:0.###} h={h:0.###}, but w and h " +
+                    "must both be greater than 0 — they are the size of the region, 0-1.");
+            return new RegionRequest(mode, x, y, w, h, cols, rows, "");
+        }
+
+        if (mode == "tiles")
+        {
+            var problem = ImageRegion.TileProblem(cols, rows);
+            return new RegionRequest(mode, x, y, w, h, cols, rows, problem);
+        }
+
+        return Bad($"mode was \"{mode}\", but it must be \"crop\" or \"tiles\".");
+    }
+
+    /// <summary>这次调用会要几张图（供 TagAgent 判断预算）。参数读不懂时返回 0。</summary>
+    public static int PlannedRegionImages(string arguments) => ParseRegion(arguments).ImageCount;
+
+    private static RegionRequest Bad(string why) => new("", 0, 0, 0, 0, 0, 0, why);
+
+    private static string Str(JsonElement root, string key) =>
+        root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? "" : "";
+
+    /// <summary>取一个数字字段。数字、能解析成数字的字符串都收——小模型两种都写过。</summary>
+    private static double Num(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var v)) return 0;
+        if (v.ValueKind == JsonValueKind.Number) return v.GetDouble();
+        if (v.ValueKind == JsonValueKind.String &&
+            double.TryParse(v.GetString(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var d))
+            return d;
+        return 0;
     }
 
     private static void CollectTags(JsonElement el, List<string> sink)

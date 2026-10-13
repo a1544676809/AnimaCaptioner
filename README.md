@@ -116,6 +116,7 @@ docs/                   帮助文档（11 个模块，随程序分发）
 Assets/app.ico          应用图标（9 档尺寸 16–256px）
 vocab/seed.json         词库种子映射母本（273 条中文概念 → 标签），构建时复制到库旁边
 tools/icon/             图标的 SVG 源文件与生成脚本
+tools/imgprobe/         图像探针：裁剪走 WinRT，只能靠"落盘取像素"验证（见 docs/dev/region-tool-plan.md）
 ```
 
 ## 回归测试
@@ -131,20 +132,34 @@ dotnet build -c Release
 .\bin\Release\net10.0\corecheck.exe reasoning   # 思考内容不许进译文（给了数据集会多扫一遍真实 caption）
 .\bin\Release\net10.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
 .\bin\Release\net10.0\corecheck.exe history     # 撤销 / 重做：栈语义、按文档分桶、外部改动作废、LRU 淘汰（纯逻辑）
-.\bin\Release\net10.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
+.\bin\Release\net10.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 图像区域数学 / 工具循环（假 host，不联网）
 .\bin\Release\net10.0\corecheck.exe vocab       # 词库构建：从素材重建并与既有库逐表对拍（需 AC_VOCABSRC）
 ```
 
 有一条**要联网、要已配置接口**的诊断（不属于上面这组"clone 下来就能跑"的）：
 
 ```powershell
-.\bin\Release\net10.0\corecheck.exe llm   # 拉一次 /models 看服务端报的能力，并 A/B 验证"关闭思考"是否真生效
+.\bin\Release\net10.0\corecheck.exe llm      # 拉一次 /models 看服务端报的能力，并 A/B 验证"关闭思考"是否真生效
+.\bin\Release\net10.0\corecheck.exe region   # 图像工具：三种报文形状 + 真实助手指令循环里模型自己调 view_region
 ```
 
-它会用你 `settings.json` 里的地址与密钥打真实请求（因此单独列出来）。
-有用的场合：换了接口或模型之后，想确认服务端到底报了什么能力、以及
+它们会用你 `settings.json` 里的地址与密钥打真实请求（因此单独列出来）。
+`llm` 有用的场合：换了接口或模型之后，想确认服务端到底报了什么能力、以及
 `enable_thinking` 那个字段是不是又被静默忽略了。**档位设成「关闭思考」时它才有 A/B 可言**——
 其它档位本来就要思考，探针会说明并跳过。
+`region` 验的是"后插的图文 user 消息模型到底看不看得见"（图像区域工具的前提，
+见 [docs/dev/region-tool-plan.md](docs/dev/region-tool-plan.md)）；它用的探针图片要先
+`python tools/imgprobe/make_probe_images.py` 生成。**读字那一步依赖模型的视力，会偶发抖动**，
+所以它也只是探针，不在默认套件里。
+
+裁剪本身的正确性（EXIF 方向、归一化坐标、长宽比）走另一条路——`tools/imgprobe/`
+把裁剪结果落成 JPEG，再用 `check.py` 取像素核对：
+
+```powershell
+python tools/imgprobe/make_probe_images.py
+dotnet build -c Release tools/imgprobe/imgprobe.csproj
+python tools/imgprobe/check.py
+```
 
 `parity` 与 Python 参考实现做 117 项对拍，只需要随仓库分发的 `tests/golden.json`。
 （条数会随训练集内容变化——`golden.json` 是参考实现对**当前数据集**的输出快照，

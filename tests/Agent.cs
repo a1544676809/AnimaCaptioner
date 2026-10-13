@@ -556,6 +556,295 @@ public static class Agent
             Eq("不给回调时不走流式", h2.StreamRequested, 0);
         }
 
+        Console.WriteLine("\n=== 21. 区域数学：归一化坐标 → 像素矩形 ===");
+        {
+            // 坐标一律归一化：模型看不到原始分辨率，让它填像素等于让它猜。
+            Eq("整幅", ImageRegion.Crop(1000, 500, 0, 0, 1, 1), new PixelRect(0, 0, 1000, 500));
+            Eq("右半", ImageRegion.Crop(1000, 500, 0.5, 0, 0.5, 1), new PixelRect(500, 0, 500, 500));
+            Eq("右下四分之一", ImageRegion.Crop(1000, 500, 0.5, 0.5, 0.5, 0.5),
+               new PixelRect(500, 250, 500, 250));
+            Eq("超出边界夹回来（模型给 1.4 的意思是「到边上」）",
+               ImageRegion.Crop(1000, 500, 0.9, 0.9, 0.5, 0.5), new PixelRect(900, 450, 100, 50));
+            Eq("宽高给负数 = 方向反了（不是报错）",
+               ImageRegion.Crop(1000, 500, 0.6, 0.2, -0.2, 0.2), new PixelRect(400, 100, 200, 100));
+            Eq("退化成一个像素也不塌成 0 宽",
+               ImageRegion.Crop(1000, 500, 1, 1, 0, 0), new PixelRect(999, 499, 1, 1));
+            Eq("非法图尺寸", ImageRegion.Crop(0, 100, 0, 0, 1, 1), default(PixelRect));
+        }
+
+        Console.WriteLine("\n=== 22. tiles：均分、不重叠、块数封顶 ===");
+        {
+            Eq("3x3 允许", ImageRegion.TileProblem(3, 3), "");
+            Eq("1x9 允许（正好上限）", ImageRegion.TileProblem(1, 9), "");
+            True("4x4 被拒，并说明上限是 9",
+                 ImageRegion.TileProblem(4, 4).Contains("9") && ImageRegion.TileProblem(4, 4).Contains("16"));
+            True("0 行被拒", ImageRegion.TileProblem(3, 0).Length > 0);
+
+            var t9 = ImageRegion.Tiles(9, 9, 3, 3);
+            Eq("3x3 切出 9 块", t9.Count, 9);
+            True("每块都是 3x3", t9.All(r => r.Width == 3 && r.Height == 3));
+            Eq("第一块在左上", t9[0], new PixelRect(0, 0, 3, 3));
+            Eq("阅读顺序：第 3 块在第 1 行最右", t9[2], new PixelRect(6, 0, 3, 3));
+            Eq("第 4 块换到第 2 行最左", t9[3], new PixelRect(0, 3, 3, 3));
+
+            // 不能整除时**不许有缝、不许重叠**：缝会让模型看不到一条内容却以为看全了
+            var t6 = ImageRegion.Tiles(100, 50, 3, 2);
+            Eq("3x2 切出 6 块", t6.Count, 6);
+            Eq("第 1 块按向下取整", t6[0], new PixelRect(0, 0, 33, 25));
+            Eq("最后一块补足余数（33+33+34=100）", t6[2], new PixelRect(66, 0, 34, 25));
+            Eq("每行宽度之和正好等于图宽", t6.Take(3).Sum(r => r.Width), 100);
+            Eq("每列高度之和正好等于图高", t6.Where(r => r.X == 0).Sum(r => r.Height), 50);
+
+            Eq("1x1 就是整幅", ImageRegion.Tiles(640, 480, 1, 1).Single(),
+               new PixelRect(0, 0, 640, 480));
+            Eq("图比块数还小时把块数压到像素数（免得 0 宽的块）",
+               ImageRegion.Tiles(2, 2, 3, 3).Count, 4);
+        }
+
+        Console.WriteLine("\n=== 23. EXIF 反查：模型的坐标 → 解码器原始像素的坐标 ===");
+        {
+            // 原始 600x400，EXIF 6 → 转正后是 400x600 的竖图。
+            // 这一组数字错一个，模型要的那块就会跑到别处去，而它自己看不出来。
+            var r = new PixelRect(10, 20, 30, 40);
+            Eq("方向 1 原样", ImageRegion.ToRaw(r, 600, 400, 1), r);
+            Eq("方向 2 左右镜像", ImageRegion.ToRaw(r, 600, 400, 2), new PixelRect(560, 20, 30, 40));
+            Eq("方向 3 旋转 180", ImageRegion.ToRaw(r, 600, 400, 3), new PixelRect(560, 340, 30, 40));
+            Eq("方向 4 上下镜像", ImageRegion.ToRaw(r, 600, 400, 4), new PixelRect(10, 340, 30, 40));
+            Eq("方向 5 转置（宽高对调）", ImageRegion.ToRaw(r, 600, 400, 5), new PixelRect(20, 10, 40, 30));
+            Eq("方向 6 顺时针 90", ImageRegion.ToRaw(r, 600, 400, 6), new PixelRect(20, 360, 40, 30));
+            Eq("方向 7 副对角线", ImageRegion.ToRaw(r, 600, 400, 7), new PixelRect(540, 360, 40, 30));
+            Eq("方向 8 逆时针 90", ImageRegion.ToRaw(r, 600, 400, 8), new PixelRect(540, 10, 40, 30));
+
+            // 组合：模型要"转正后的右上角"，原始像素里就是左上角那一块
+            var tr = ImageRegion.Crop(400, 600, 0.5, 0, 0.5, 0.5);
+            Eq("转正后的右上角", tr, new PixelRect(200, 0, 200, 300));
+            Eq("反查到原始像素 = 左上角", ImageRegion.ToRaw(tr, 600, 400, 6),
+               new PixelRect(0, 0, 300, 200));
+        }
+
+        Console.WriteLine("\n=== 24. 像素方向变换：8 个方向逐像素核 ===");
+        {
+            // 3x2 的测试图：第 n 个像素的 B = n（其余字节固定），于是"某个像素搬对了没有"
+            // 可以直接比数字。宽高不相等才看得出 5-8 到底有没有转置。
+            const int W = 3, H = 2;
+            var src = ImagePixels.TestImage(W, H);
+
+            int N(byte[] buf, int w, int x, int y) => ImagePixels.Pixel(buf, w, x, y).B;
+
+            var (ob1, wb1, hb1) = ImagePixels.Orient(src, W, H, 1);
+            Eq("方向 1 尺寸不变", (wb1, hb1), (W, H));
+            Eq("方向 1 是原图", N(ob1, wb1, 2, 1), 1 * W + 2);
+
+            var (ob2, wb2, _) = ImagePixels.Orient(src, W, H, 2);
+            Eq("方向 2 左右镜像", N(ob2, wb2, 0, 0), 2);
+            Eq("方向 2 末列来自首列", N(ob2, wb2, 2, 1), 1 * W + 0);
+
+            var (ob3, wb3, _) = ImagePixels.Orient(src, W, H, 3);
+            Eq("方向 3 旋转 180：左上来自右下", N(ob3, wb3, 0, 0), 1 * W + 2);
+
+            var (ob4, wb4, _) = ImagePixels.Orient(src, W, H, 4);
+            Eq("方向 4 上下镜像：左上来自左下", N(ob4, wb4, 0, 0), 1 * W + 0);
+
+            var (ob5, wb5, hb5) = ImagePixels.Orient(src, W, H, 5);
+            Eq("方向 5 宽高对调", (wb5, hb5), (H, W));
+            Eq("方向 5 转置", N(ob5, wb5, 1, 2), 1 * W + 2);
+
+            var (ob6, wb6, hb6) = ImagePixels.Orient(src, W, H, 6);
+            Eq("方向 6 宽高对调", (wb6, hb6), (H, W));
+            Eq("方向 6 顺时针 90：显示左上来自原始左下", N(ob6, wb6, 0, 0), (H - 1) * W + 0);
+            Eq("方向 6 显示右上来自原始左上", N(ob6, wb6, 1, 0), 0 * W + 0);
+
+            var (ob7, wb7, _) = ImagePixels.Orient(src, W, H, 7);
+            Eq("方向 7 副对角线", N(ob7, wb7, 0, 0), (H - 1) * W + (W - 1));
+
+            var (ob8, wb8, _) = ImagePixels.Orient(src, W, H, 8);
+            Eq("方向 8 逆时针 90", N(ob8, wb8, 0, 0), 0 * W + (W - 1));
+
+            // 行距大于 宽x4（解码器真的会这样，尤其奇数宽度）：按 宽x4 去索引会逐行错位
+            const int stride = W * 4 + 12;
+            var padded = ImagePixels.TestImage(W, H, stride);
+            var (obp, wbp, hbp) = ImagePixels.Orient(padded, W, H, 6, stride);
+            Eq("带行距时尺寸照旧", (wbp, hbp), (H, W));
+            Eq("带行距时第 1 个像素仍来自原始左下", N(obp, wbp, 0, 0), (H - 1) * W);
+            Eq("带行距与不带行距结果逐字节相同",
+               Convert.ToHexString(obp), Convert.ToHexString(ob6));
+
+            // 缓冲不够时必须抛，不能返回一张方向不对的图
+            var threw = false;
+            try { ImagePixels.Orient(new byte[10], W, H, 6); }
+            catch (ArgumentException) { threw = true; }
+            True("像素缓冲不足时抛异常（而不是悄悄发错图）", threw);
+        }
+
+        Console.WriteLine("\n=== 25. 图像工具的声明、参数解析与预算 ===");
+        {
+            var withRegion = string.Join("|",
+                AgentKit.Tools(true, withImages: true, canViewRegion: true).Select(t => t.Name));
+            Eq("带图 + 可放大时的工具集", withRegion,
+               "current_image|image_info|search_tags|web_search|select_image|view_region|propose");
+
+            var noRegion = string.Join("|",
+                AgentKit.Tools(true, withImages: true).Select(t => t.Name));
+            True("没带图时不下发 view_region（放大靠插图，没图就没法放大）",
+                 !noRegion.Contains(AgentKit.ViewRegionToolName));
+            Eq("没带图时其余图片工具照旧", noRegion,
+               "current_image|image_info|search_tags|web_search|select_image|propose");
+
+            var noImages = string.Join("|", AgentKit.Tools(true).Select(t => t.Name));
+            True("没有数据集时 image_info / view_region 都不下发",
+                 !noImages.Contains(AgentKit.ImageInfoToolName) &&
+                 !noImages.Contains(AgentKit.ViewRegionToolName));
+
+            True("view_region 的参数是对象", AgentKit.ViewRegionTool.Parameters["type"]!.GetValue<string>() == "object");
+            True("mode 只有 crop / tiles 两个取值",
+                 AgentKit.ViewRegionTool.Parameters["properties"]!["mode"]!["enum"] is JsonArray e &&
+                 e.Count == 2);
+            True("说明里写明块数上限", AgentKit.ViewRegionTool.Description.Contains("9"));
+
+            var p = AgentKit.ParseRegion("""{"mode":"crop","x":0.4,"y":0.1,"w":0.2,"h":0.3}""");
+            True("crop 解析成功", p.Ok);
+            Eq("模式", p.Mode, "crop");
+            Eq("坐标", (p.X, p.Y, p.W, p.H), (0.4, 0.1, 0.2, 0.3));
+            Eq("crop 只要一张图", p.ImageCount, 1);
+
+            var t = AgentKit.ParseRegion("""{"mode":"tiles","cols":3,"rows":3}""");
+            True("tiles 解析成功", t.Ok);
+            Eq("tiles 要 9 张图", t.ImageCount, 9);
+
+            True("缺 mode 时按字段推断为 crop",
+                 AgentKit.ParseRegion("""{"x":0.1,"y":0.1,"w":0.1,"h":0.1}""").Mode == "crop");
+            True("缺 mode 时按字段推断为 tiles",
+                 AgentKit.ParseRegion("""{"cols":2,"rows":2}""").Mode == "tiles");
+            True("数字写成字符串也收（小模型真会这么写）",
+                 AgentKit.ParseRegion("""{"mode":"crop","x":"0.5","y":"0","w":"1","h":"1"}""").Ok);
+
+            True("w=0 被拒，并说清 w/h 是尺寸",
+                 AgentKit.ParseRegion("""{"mode":"crop","x":0,"y":0,"w":0,"h":0.5}""")
+                          .Problem.Contains("greater than 0"));
+            True("4x4 被拒（16 块会顶爆上下文）",
+                 AgentKit.ParseRegion("""{"mode":"tiles","cols":4,"rows":4}""")
+                          .Problem.Contains("9"));
+            True("坏 JSON 被拒", !AgentKit.ParseRegion("not json").Ok);
+            True("未知 mode 被拒",
+                 !AgentKit.ParseRegion("""{"mode":"zoomin"}""").Ok);
+            Eq("参数读不懂时预算估算为 0（不拦，让它去撞真正的报错）",
+               AgentKit.PlannedRegionImages("not json"), 0);
+            Eq("tiles 的预算估算", AgentKit.PlannedRegionImages("""{"mode":"tiles","cols":3,"rows":2}"""), 6);
+        }
+
+        Console.WriteLine("\n=== 26. TagAgent：放大后的图插成一条 user 消息 ===");
+        {
+            var h = new FakeHost();
+            h.Dataset.Add(new AgentImage("a", 0, true, 3, IsCurrent: true));
+            h.ViewImageCount = 2;
+            h.Turn(Tool("v1", AgentKit.ViewRegionToolName, """{"mode":"crop","x":0.1,"y":0.1,"w":0.2,"h":0.2}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+
+            var o = Run(h, "把左上角放大给我看", image);
+            True("成功", o.Ok);
+            Eq("参数原样交给了 host", string.Join("|", h.ViewRequests),
+               """{"mode":"crop","x":0.1,"y":0.1,"w":0.2,"h":0.2}""");
+            Eq("日志里记了放大", string.Join("|", o.Log.Where(l => l.Contains("放大"))), "放大 → 2 张图");
+
+            // 关键形状：工具结果之后**紧跟**一条带图的 user 消息
+            var second = h.SeenMessages[1];
+            Eq("第 2 次请求的消息条数（原问 + 工具调用 + 工具结果 + 图文消息）", second.Count, 4);
+            Eq("第 1 条是用户原问", second[0]["role"]!.GetValue<string>(), "user");
+            Eq("第 2 条是 assistant 的工具调用", second[1]["role"]!.GetValue<string>(), "assistant");
+            Eq("第 3 条是工具结果（必须紧跟要它的那条 assistant）",
+               second[2]["role"]!.GetValue<string>(), "tool");
+            Eq("第 4 条是带图的 user 消息", second[3]["role"]!.GetValue<string>(), "user");
+
+            var cropParts = second[3]["content"] as JsonArray;
+            Eq("parts 数 = 文本 + 2 张图", cropParts?.Count ?? -1, 3);
+            Eq("文本在前", cropParts![0]!["type"]!.GetValue<string>(), "text");
+            Eq("第 1 张图", cropParts[1]!["type"]!.GetValue<string>(), "image_url");
+            Eq("第 2 张图", cropParts[2]!["type"]!.GetValue<string>(), "image_url");
+            var note = cropParts[0]!["text"]!.GetValue<string>();
+            True("文案说清这是放大区域、不是用户新说的话",
+                 note.Contains("enlarged region") && note.Contains("Look at"));
+
+            // 没有带图时：工具不下发、host 也不会被调用
+            var h2 = new FakeHost();
+            h2.Dataset.Add(new AgentImage("a", 0, true, 3, IsCurrent: true));
+            h2.Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var noImgOutcome = Run(h2, "随便", image: null);
+            True("没带图时不下发 view_region",
+                 !h2.SeenTools[0].Contains(AgentKit.ViewRegionToolName));
+            True("没带图时它连 image_info 都还在（那个是纯文本、没有成本）",
+                 h2.SeenTools[0].Contains(AgentKit.ImageInfoToolName));
+            True("没带图那次也正常收尾", noImgOutcome.Ok);
+
+            // 裁剪失败：不能凭空插一条图文消息，失败原样回给模型
+            var h3 = new FakeHost();
+            h3.Dataset.Add(new AgentImage("a", 0, true, 3, IsCurrent: true));
+            h3.ViewSucceeds = false;
+            h3.Turn(Tool("v3", AgentKit.ViewRegionToolName, """{"mode":"crop","x":0,"y":0,"w":1,"h":1}"""))
+              .Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var failOutcome = Run(h3, "放大看看", image);
+            True("失败也照样问了 host", h3.ViewRequests.Count == 1);
+            True("日志如实记失败", failOutcome.Log.Any(l => l.Contains("放大失败")));
+            Eq("失败时消息数 = 3（没有那条图文消息）", h3.SeenMessages[1].Count, 3);
+            var failText = h3.SeenMessages[1][2]["content"]!.GetValue<string>();
+            True("失败原因回给了模型", failText.Contains("could not produce that crop"));
+
+            // 图片预算：3x3 用掉 9 张之后，再来一次 3x3 要被拦下（**不许白裁一遍**）
+            var h4 = new FakeHost();
+            h4.Dataset.Add(new AgentImage("a", 0, true, 3, IsCurrent: true));
+            h4.ViewImageCount = 9;
+            h4.Turn(Tool("v4", AgentKit.ViewRegionToolName, """{"mode":"tiles","cols":3,"rows":3}"""))
+              .Turn(Tool("v5", AgentKit.ViewRegionToolName, """{"mode":"tiles","cols":3,"rows":3}"""))
+              .Turn(Tool("p4", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var budgetOutcome = Run(h4, "整张图逐块看", image);
+            Eq("只真的裁了一次（第二次被预算拦下，没有白裁）", h4.ViewRequests.Count, 1);
+            True("被拦时如实说明用完了",
+                 h4.SeenMessages[2].Any(m => m["role"]?.GetValue<string>() == "tool" &&
+                     (m["content"]?.GetValue<string>() ?? "").Contains("maximum of 12")));
+            True("被拦之后仍然拿到了提案", budgetOutcome.Proposal is not null);
+        }
+
+        Console.WriteLine("\n=== 27. image_info：纯文本、原样回给模型 ===");
+        {
+            var h = new FakeHost();
+            h.Dataset.Add(new AgentImage("a", 0, true, 3, IsCurrent: true));
+            h.InfoText = "Current image: a (1 of 1).\nFile: image/jpeg, 900 B";
+            h.Turn(Tool("i1", AgentKit.ImageInfoToolName, "{}"))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "这张图多大", image);
+
+            True("日志里记了这次查询", o.Log.Any(l => l.Contains("查图像信息")));
+            var back = h.SeenMessages[1].First(m => m["role"]?.GetValue<string>() == "tool")["content"]!
+                .GetValue<string>();
+            Eq("事实原样回给了模型", back, h.InfoText);
+            True("工具调用记录里有它（界面要显示这一步）",
+                 o.ToolCalls is not null && o.ToolCalls.Any(c => c.Name == AgentKit.ImageInfoToolName));
+
+            // 文案本身（纯逻辑，可以逐句钉）
+            var facts = new ImageFacts("pic", "image/jpeg", 4_300_000, 4000, 6500, 1,
+                                       Attached: true, Index: 4, Total: 53, CaptionTags: 12);
+            var text = ImageTools.Info(facts);
+            True("说了文件名与位置", text.Contains("pic (4 of 53)"));
+            True("说了原始尺寸", text.Contains("4000x6500"));
+            True("说了被缩到多小（模型据此判断细节有没有丢）", text.Contains("630x1024"));
+            True("说了已有多少标签", text.Contains("12 tag"));
+            True("让它用 view_region 而不是猜", text.Contains("view_region"));
+
+            var noAttach = ImageTools.Info(facts with { Attached = false });
+            True("没带图时明确说看不见，且不许要裁剪",
+                 noAttach.Contains("NO copy") && noAttach.Contains("cannot see it"));
+
+            var upright = ImageTools.Info(facts with { StoredWidth = 800, StoredHeight = 600 });
+            True("原图就小于上限时如实说没有丢细节", upright.Contains("full resolution"));
+
+            // 倍率：整图 630x1024 里，一块 1/25 面积的区域约 126x205，放大到 1024 长边约 5 倍
+            var small = facts with { StoredWidth = 2500, StoredHeight = 2500 };
+            var f2 = ImageTools.DetailFactor(small, new PixelRect(0, 0, 500, 500), 1024, 1024);
+            True($"倍率算得出来（{f2:0.0}x）", f2 is > 4 and < 6);
+            True("倍率接近 1 时如实说「没变大」",
+                 ImageTools.DetailFactor(facts with { StoredWidth = 800, StoredHeight = 600 },
+                                         new PixelRect(0, 0, 400, 300), 400, 300) < 1.15);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -627,7 +916,35 @@ public static class Agent
         /// <summary>切图是否成功；测试里可以设成 false 验证失败路径。</summary>
         public bool SelectSucceeds { get; set; } = true;
 
+        /// <summary>`image_info` 回什么。默认给一句能认出来的话。</summary>
+        public string InfoText { get; set; } = "facts: 1000x2000 png";
+
+        /// <summary>记录 view_region 收到过的参数原文。</summary>
+        public List<string> ViewRequests { get; } = new();
+
+        /// <summary>view_region 回不回图；设成 false 验证"裁剪失败"那条路。</summary>
+        public bool ViewSucceeds { get; set; } = true;
+
+        /// <summary>view_region 每次回几张图（tiles 用得上）。</summary>
+        public int ViewImageCount { get; set; } = 1;
+
         public IReadOnlyList<AgentImage> Images => Dataset;
+
+        public Task<string> ImageInfo() => Task.FromResult(InfoText);
+
+        public Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>
+            ViewRegion(string arguments)
+        {
+            ViewRequests.Add(arguments);
+            if (!ViewSucceeds)
+                return Task.FromResult((false, "could not produce that crop",
+                                        (IReadOnlyList<LlmClient.ChatImage>)Array.Empty<LlmClient.ChatImage>()));
+
+            var images = new List<LlmClient.ChatImage>();
+            for (var i = 0; i < ViewImageCount; i++)
+                images.Add(new LlmClient.ChatImage("image/jpeg", new byte[] { 9, 9, 9, (byte)i }));
+            return Task.FromResult((true, "enlarged region attached", (IReadOnlyList<LlmClient.ChatImage>)images));
+        }
 
         public (bool Ok, string Message) SelectImage(string name)
         {

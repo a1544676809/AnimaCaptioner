@@ -58,6 +58,10 @@
     <Compile Include="..\Core\AgentChatStore.cs" />
     <Compile Include="..\Core\TagAgent.cs" />
     <Compile Include="..\Core\ImageSizing.cs" />
+    <Compile Include="..\Core\ByteSize.cs" />
+    <Compile Include="..\Core\ImageRegion.cs" />
+    <Compile Include="..\Core\ImagePixels.cs" />
+    <Compile Include="..\Core\ImageTools.cs" />
     <Compile Include="Sections.cs" />
     <Compile Include="RoundTrip.cs" />
     <Compile Include="Prose.cs" />
@@ -76,6 +80,7 @@
     <Compile Include="Vocab.cs" />
     <Compile Include="Headers.cs" />
     <Compile Include="LlmLive.cs" />
+    <Compile Include="RegionProbe.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
 </Project>
