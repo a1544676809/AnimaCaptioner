@@ -1234,18 +1234,32 @@ public sealed partial class MainWindow : Window
     /// GetText 读回来是 "\r"），而 caption 是单行格式——所以统一折成空格再
     /// 交给解析器，避免把行尾当成内容写进 .txt。
     /// </summary>
-    private string GetCaptionText()
+    private string GetCaptionText() => TryGetCaptionText(out var t) ? t : "";
+
+    /// <summary>
+    /// 读提示词框的正文。**读失败时返回 false**，调用方必须据此放弃。
+    ///
+    /// 早先这里读失败只记一条日志、然后返回空串，于是"读不出来"和"文档本来就是空的"
+    /// 完全无法区分。后果是实测过的数据丢失：一次跨线程读取抛
+    /// <c>COMException 0x8001010E</c>（见 OnUiThread 的注释），空串被当成内容，
+    /// 而 <c>SaveCurrent</c> 当时只在"原本没有 .txt"时挡了一道——已有 caption 的
+    /// 那条例外，于是把一个 **44 个标签的文件写成了 2 字节的空文件**。
+    /// 现在把失败如实交出去，由保存路径拒绝落盘。
+    /// </summary>
+    private bool TryGetCaptionText(out string text)
     {
         try
         {
-            CaptionBox.Document.GetText(Microsoft.UI.Text.TextGetOptions.None, out var text);
+            CaptionBox.Document.GetText(Microsoft.UI.Text.TextGetOptions.None, out var t);
             // 文档末尾总带一个段落标记，去掉；其余换行折成空格
-            return (text ?? "").Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            text = (t ?? "").Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            return true;
         }
         catch (Exception ex)
         {
             Log.Write("read caption box failed: " + ex.Message);
-            return "";
+            text = "";
+            return false;
         }
     }
 
@@ -2081,7 +2095,22 @@ public sealed partial class MainWindow : Window
         // 不能写进 _pendingTags，也不能在保存时被当成标签重排。
         // 走 ParseCaption 是为了和"所有从提示词框回读的路径"同一个口径
         // （标注模式下转义恒为关，所以这里与裸 Parse 等价，但规则只有一处）。
-        var parsed = ParseCaption(GetCaptionText());
+        //
+        // **读不出正文就绝不落盘。** 宁可这次不保存，也不能拿空内容覆盖已有 caption
+        // ——把"读不到"当成"内容为空"写下去，正是把一次读取失败变成数据丢失的那一步。
+        if (!TryGetCaptionText(out var captionText))
+        {
+            Log.Write($"save skipped: cannot read the caption box; refused to overwrite " +
+                      $"{Path.GetFileName(item.CaptionPath)}");
+            if (showDialog)
+                _ = Info("没有保存",
+                    "读不到提示词框里的内容，所以这次没有写文件——\n" +
+                    "以免用空内容覆盖掉这张图已有的标注。\n\n" +
+                    "请再试一次；若反复出现，把日志里的 read caption box failed 发出来。");
+            return false;
+        }
+
+        var parsed = ParseCaption(captionText);
         var tags = parsed.Tags;
         _proseTail = parsed.ProseTail;
         _pendingTags = new List<string>(tags);
@@ -4520,7 +4549,24 @@ private void EndEdit(bool commit, bool lostFocus = false)
             _agentChat.Add(AgentChatStore.Kind.User, text);
             _agentChat.Add(AgentChatStore.Kind.Assistant, outcome.Reply,
                            outcome.Reasoning, outcome.Log);
-            AgentAddReply(outcome);
+
+            // 「完全权限」：直接落进提示词，不等用户点。
+            //
+            // 刻意**不给那张可点的提案卡片**：卡片上的「应用」再点一次会把散文**追加**
+            // 第二遍（标签有去重、散文没有），而用户会以为那只是"再看看刚才写了什么"。
+            // 所以自动写入时改成一条说明，写清楚到底写了什么。
+            if (_cfg.AgentFullAccess && outcome.Proposal is { } autoProp && !autoProp.IsEmpty)
+            {
+                ApplyAgentProposal(autoProp, single: false);
+                AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.Log, proposal: null);
+                AgentAddNote("已按「完全权限」直接写入：" + DescribeProposal(autoProp) +
+                             "。Ctrl+Z 可整体撤销。");
+                Log.Write("agent full-access write: " + DescribeProposal(autoProp));
+            }
+            else
+            {
+                AgentAddReply(outcome);
+            }
 
             sw.Stop();
             SetAgentStatus($"{(image is not null ? "带图 · " : "")}{outcome.Rounds} 轮 · " +
@@ -4959,6 +5005,19 @@ private void EndEdit(bool commit, bool lostFocus = false)
             Background = (Brush)Application.Current.Resources["CardBackgroundFillColorSecondaryBrush"],
             Child = body,
         };
+    }
+
+    /// <summary>
+    /// 一句话说清这次自动写入到底写了什么（日志与界面提示共用）。
+    /// 只给摘要不给全文：散文可能很长，而界面那条说明已经指着文档了。
+    /// </summary>
+    private static string DescribeProposal(AgentProposal p)
+    {
+        var parts = new List<string>();
+        if (p.HasTags) parts.Add($"{p.AddTags.Count} 个标签（{string.Join("、", p.AddTags.Take(8))}" +
+                                 (p.AddTags.Count > 8 ? "…" : "") + "）");
+        if (p.HasProse) parts.Add($"一段散文（{p.Prose.Length} 字）");
+        return parts.Count > 0 ? string.Join(" + ", parts) : "无";
     }
 
     /// <summary>

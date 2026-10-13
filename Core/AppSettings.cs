@@ -59,6 +59,20 @@ public sealed class AppSettings
     /// <summary>素材目录（上游文件存放处）。默认取词库文件同级的 sources\。</summary>
     public string VocabSourceDir { get; set; } = "";
 
+    /// <summary>
+    /// 「完全权限」：助手提出的改动**直接写进提示词**，不再等用户点「应用」。
+    ///
+    /// **默认关闭，而且必须默认关闭。** 这个软件有一条承重原则：助手只出提案，
+    /// 落盘由人点一下（见 TagAgent 的类注释），于是"模型在没人看着的时候改了训练集"
+    /// 结构上不可能发生。打开它等于主动放弃这条保证，所以：
+    ///
+    /// 1. 名字就叫「完全权限」，说明文字写明它到底让渡了什么；
+    /// 2. 写入仍然**只算一个撤销点**（ApplyAgentProposal 里那一处 PushUndo），
+    ///    Ctrl+Z 一下能全退——这是打开之后唯一还兜着的东西；
+    /// 3. 每次自动写入都记一条日志，事后能查是哪一轮写的。
+    /// </summary>
+    public bool AgentFullAccess { get; set; }
+
     // ---- 模型站点 ----
     //
     // 地址 / 密钥 / 模型名 / 推理档位现在按**站点**成组保存（见 ModelProfile），

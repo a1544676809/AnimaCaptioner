@@ -437,6 +437,23 @@ public static class Agent
             True("失败原因回给了模型", failMsg.Contains("No image named"));
         }
 
+        Console.WriteLine("\n=== 18. 完全权限：默认必须是关的 ===");
+        {
+            // 它推翻的是"助手只出提案、落盘由人点一下"这条承重原则
+            // （见 TagAgent 类注释），所以默认值本身就是一条要守的约定：
+            // 一旦哪天有人把它写成 true，所有现有用户的保证都会被悄悄撤掉。
+            var fresh = new AppSettings();
+            Eq("默认关闭", fresh.AgentFullAccess, false);
+
+            var on = AppSettings.FromJson(new AppSettings { AgentFullAccess = true }.ToJson());
+            Eq("打开后能落盘再读回", on?.AgentFullAccess, true);
+
+            var off = AppSettings.FromJson(new AppSettings().ToJson());
+            Eq("默认值经序列化往返仍是关", off?.AgentFullAccess, false);
+
+            Console.WriteLine("     （开启后写入仍只算一个撤销点，见 ApplyAgentProposal 的 PushUndo）");
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }

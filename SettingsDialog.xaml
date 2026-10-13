@@ -256,6 +256,14 @@
                               ToolTipService.ToolTip="把右栏下半部分从「中文描述 → 英文自然语言」换成对话面板：能读当前图片、能查词库，并提出一组标签和一段散文——但要你点「应用」才写进提示词。关掉时仍是原来的确定性翻译器。" />
                     <CheckBox x:Name="AgentAttachImageBox" Content="标注模式下把当前图片发给模型"
                               ToolTipService.ToolTip="读图自动打标靠这一条。图片先缩到长边 1024 的 JPEG 再内联发送（约 150 KB）；原图不会上传到任何别的地方，但请确认接口地址是你信任的服务。接口或模型不支持图片输入时会如实报错，不会静默退回凭空描述。" />
+
+                    <!-- 完全权限。刻意排在最后、并单独给一段说明：它推翻的是
+                         "助手只出提案、落盘由人点一下"这条原则，不该被顺手勾上。 -->
+                    <CheckBox x:Name="AgentFullAccessBox" Content="完全权限：助手直接写入提示词，不等我确认"
+                              ToolTipService.ToolTip="打开后，助手提出的标签和散文会立刻写进当前提示词，不再显示「应用」按钮。写入仍然只算一个撤销点，Ctrl+Z 可以整体撤销。" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="⚠ 完全权限让渡的是「模型改了训练集而你没看见」这条保证：从打开那一刻起，助手想改就改，不问。它仍然只算一个撤销点（Ctrl+Z 能全退），每次写入也都会记进日志。建议只在你盯着屏幕、且信任当前模型与接口时打开。" />
                 </StackPanel>
 
                 <!-- ============ 联网搜索 ============ -->
