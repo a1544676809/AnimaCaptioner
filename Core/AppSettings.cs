@@ -45,6 +45,20 @@ public sealed class AppSettings
     /// <summary>人工整理的中文 → 标签映射（词库构建产物之一）。</summary>
     public string SeedPath { get; set; } = DefaultVocabPath("seed.json");
 
+    /// <summary>
+    /// 构建词库时抓取上游素材用的 HTTP 代理（留空 = 直连）。
+    ///
+    /// 必须有这一项：上游是 <c>raw.githubusercontent.com</c> 和 <c>danbooru.donmai.us</c>，
+    /// 这两个域名在国内网络下直连会超时（实测：无代理时全部失败，用 127.0.0.1:10808 全部 200）。
+    /// 程序里其余的网络调用都只打本地或自建服务，所以这是唯一需要它的地方。
+    /// 系统代理设置**不会**被自动采用——实测这台机器上 GetSystemWebProxy 返回直连，
+    /// 而直连就是不通，所以只能让用户显式填。
+    /// </summary>
+    public string VocabProxy { get; set; } = "";
+
+    /// <summary>素材目录（上游文件存放处）。默认取词库文件同级的 sources\。</summary>
+    public string VocabSourceDir { get; set; } = "";
+
     // ---- 模型站点 ----
     //
     // 地址 / 密钥 / 模型名 / 推理档位现在按**站点**成组保存（见 ModelProfile），
@@ -644,6 +658,13 @@ public sealed class AppSettings
         return new AppSettings();
     }
 
+    /// <summary>
+    /// 序列化成 JSON 文本。<see cref="FromJson"/> 的对称搭档——它存在的主要理由是
+    /// 让"某个设置项能不能落盘再读回"变成可断言的事（回归测试直接对转一圈），
+    /// 而不用去碰用户真实的 settings.json。<see cref="Save"/> 也走这一条。
+    /// </summary>
+    public string ToJson() => JsonSerializer.Serialize(this, JsonOpts);
+
     public void Save()
     {
         try
@@ -651,8 +672,7 @@ public sealed class AppSettings
             Directory.CreateDirectory(Dir);
             // 先写临时文件再替换：中途崩溃不会留下半截 JSON 把配置弄坏
             var tmp = FilePath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(this, JsonOpts),
-                              new System.Text.UTF8Encoding(false));
+            File.WriteAllText(tmp, ToJson(), new System.Text.UTF8Encoding(false));
             File.Move(tmp, FilePath, overwrite: true);
             Log.Write("settings saved to " + FilePath);
         }

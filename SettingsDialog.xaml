@@ -75,6 +75,12 @@
                         <TextBlock Text="数据路径" />
                     </StackPanel>
                 </ListViewItem>
+                <ListViewItem Tag="vocab" AutomationProperties.Name="词库构建">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE8F1;" FontSize="14" />
+                        <TextBlock Text="词库构建" />
+                    </StackPanel>
+                </ListViewItem>
                 <ListViewItem Tag="edit" AutomationProperties.Name="编辑">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                         <FontIcon Glyph="&#xE70F;" FontSize="14" />
@@ -326,6 +332,73 @@
 
                     <TextBlock x:Name="SettingsPathText" FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
+
+                <!-- ============ 词库构建 ============ -->
+                <!-- 单独一页，是因为这是唯一一个"要跑几十秒、还会联网下载几百 MB"的设置项。
+                     把它塞进「数据路径」会和几个纯文本框混在一起，看不出它是个动作。 -->
+                <StackPanel x:Name="PageVocab" Spacing="10">
+                    <TextBlock Text="词库构建" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="Anima 官方没有发布标签表，模型卡只规定规则（下划线换成空格、画师加 @、score_* 例外），不给名单。所以词库是从几个上游仓库合并构建出来的——本程序不随附成品词库，装完之后在这里建一次即可。" />
+
+                    <TextBlock Text="1. 素材来源" FontWeight="SemiBold" Margin="0,4,0,0" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="每个来源的许可不同，再分发构建产物前请逐个确认。点「下载素材」会按列表顺序抓取（需能访问 raw.githubusercontent.com；国内网络可能需要代理）。" />
+
+                    <!-- 素材清单由代码生成：文件名/来源/许可写在 Core/VocabSources.cs 一处，
+                         和构建器、README 共用，避免三处各说一套。 -->
+                    <Border CornerRadius="6" BorderThickness="1" Padding="2"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                        <StackPanel x:Name="VocabSourceList" Spacing="0" />
+                    </Border>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="VocabSourceDirBox" Header="素材目录（放上游文件的文件夹）"
+                                 TextChanged="VocabSourceDir_Changed" />
+                        <Button Grid.Column="1" Content="浏览…" Click="BrowseVocabSources_Click"
+                                VerticalAlignment="Bottom" />
+                        <Button Grid.Column="2" x:Name="DownloadVocabBtn" Content="下载素材"
+                                Click="DownloadVocab_Click" VerticalAlignment="Bottom" />
+                    </Grid>
+
+                    <TextBlock x:Name="VocabMissingText" FontSize="11" TextWrapping="Wrap" />
+
+                    <TextBox x:Name="VocabProxyBox"
+                             Header="下载代理（留空 = 直连；国内网络通常要填）"
+                             PlaceholderText="http://127.0.0.1:10808" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="上游在 raw.githubusercontent.com 与 danbooru.donmai.us，国内直连会超时。系统代理不会被自动采用（实测本机系统代理返回直连、而直连不通），所以要显式填。只影响「下载素材」，不影响其它功能。" />
+
+                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                    <TextBlock Text="2. 构建" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="构建会覆盖现有的词库文件，并在同目录写入 seed.json（人工整理的中文映射；已存在则不覆盖）。整个过程约两三分钟，期间界面可以继续用。" />
+
+                    <TextBox x:Name="VocabOutBox" Header="输出位置 (vocab.sqlite)" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ProgressBar x:Name="VocabProgress" Minimum="0" Maximum="100"
+                                     VerticalAlignment="Center" />
+                        <Button Grid.Column="1" x:Name="BuildVocabBtn" Content="开始构建"
+                                Click="BuildVocab_Click" />
+                    </Grid>
+
+                    <TextBlock x:Name="VocabStatusText" FontSize="11" TextWrapping="Wrap" />
                 </StackPanel>
 
                 <!-- ============ 编辑 ============ -->

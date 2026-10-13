@@ -30,6 +30,9 @@
     -->
     <Compile Include="..\Log.cs" />
     <Compile Include="..\Core\VocabDb.cs" />
+    <Compile Include="..\Core\VocabSources.cs" />
+    <Compile Include="..\Core\VocabBuilder.cs" />
+    <Compile Include="..\Core\VocabFetch.cs" />
     <Compile Include="..\Core\CaptionFile.cs" />
     <Compile Include="..\Core\AppSettings.cs" />
     <Compile Include="..\Core\ModelProfile.cs" />
@@ -67,6 +70,7 @@
     <Compile Include="Agent.cs" />
     <Compile Include="Reasoning.cs" />
     <Compile Include="RichApi.cs" />
+    <Compile Include="Vocab.cs" />
     <Compile Include="LlmLive.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>

@@ -93,6 +93,8 @@ AnimaCaptioner.slnx  解决方案：Visual Studio 直接打开它；根目录 do
 tests/            回归测试工程（直接编译 Core/ 真实源码，见下）
 Core/            纯逻辑层，不引用 WinUI，所以能被 net10 回归程序直接编译
   VocabDb.cs       词库引擎（animatag.py 的 C# 移植）
+  VocabBuilder.cs  词库构建：五源合并 + Anima 索引，纯 .NET（原先的 Python 脚本已并入）
+  VocabSources.cs  上游素材清单（文件名 / 下载地址 / 许可），构建器·设置页·README 共用
   TagSections.cs   大类定义、归类规则、稳定排序
   PromptText.cs    提示词解析、着色区间、token 预算
   TagEscape.cs     生图用的括号转义（只做 ( ) ，判据是词库认不认得）
@@ -109,6 +111,7 @@ MarkdownRenderer.cs      Markdig → WinUI 元素
 docs/                   帮助文档（11 个模块，随程序分发）
   dev/                  开发文档：架构取舍、文档格式、本训练集审计（不随程序分发）
 Assets/app.ico          应用图标（9 档尺寸 16–256px）
+vocab/seed.json         词库种子映射母本（273 条中文概念 → 标签），构建时复制到库旁边
 tools/icon/             图标的 SVG 源文件与生成脚本
 ```
 
@@ -126,6 +129,7 @@ dotnet build -c Release
 .\bin\Release\net10.0\corecheck.exe prompts     # 提示词库：历史/预设/淘汰/去重/标题派生（纯临时文件）
 .\bin\Release\net10.0\corecheck.exe history     # 撤销 / 重做：栈语义、按文档分桶、外部改动作废、LRU 淘汰（纯逻辑）
 .\bin\Release\net10.0\corecheck.exe agent       # AI 助手：发图尺寸 / 提案解析 / 工具循环（假 host，不联网）
+.\bin\Release\net10.0\corecheck.exe vocab       # 词库构建：从素材重建并与既有库逐表对拍（需 AC_VOCABSRC）
 ```
 
 有一条**要联网、要已配置接口**的诊断（不属于上面这组"clone 下来就能跑"的）：
@@ -152,6 +156,7 @@ dotnet build -c Release
 $env:AC_DATASET = 'D:\train\my-lora'          # 训练集目录
 $env:AC_VOCABDB = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\vocab.sqlite"
 $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
+$env:AC_VOCABSRC = 'D:\vocab-sources'         # 词库素材目录（只有 vocab 那一项用）
 
 .\bin\Release\net10.0\corecheck.exe sections    # 归类 / 排序 / 颜色 / 结构编辑
 .\bin\Release\net10.0\corecheck.exe prose       # 标签 vs 散文、保存不丢散文、token 预算
@@ -165,6 +170,9 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 缺输入时会以退出码 2 明确报错，不会假装通过。
 
+`vocab` 另需 `AC_VOCABSRC` 指向素材目录（上游文件不放仓库里）；给了 `AC_VOCABDB`
+就与那份库对拍，没给则只验证"能从素材建出一份完整的库"。
+
 `sections` 和 `roundtrip` 会拿真实训练集做恒等变换——一旦归类规则改错，会直接指出
 哪个标签会被挪到哪去，比肉眼看几千个标签可靠。
 
@@ -177,9 +185,10 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 | 内容 | 位置 | 许可 |
 |---|---|---|
 | **软件本体**（C# 源码、XAML、构建配置） | `*.cs` `*.xaml` `*.csproj` `app.manifest` `Assets/` | **GNU GPL v3.0**（见 [LICENSE](LICENSE)） |
+| **词库种子映射**（273 条「中文概念 → 标签」） | `vocab/seed.json` | **GNU GPL v3.0**（与软件本体一致） |
 | **自带文档**（帮助窗口读的 Markdown） | `docs/*.md`（顶层） | **CC BY-NC-SA 4.0** |
 | **开发文档**（不随程序分发） | `docs/dev/`、`NOTES.md` | **GNU GPL v3.0**（与软件本体一致） |
-| **标签数据** | 不在本仓库 | 遵循各自上游协议 |
+| **成品词库**（`vocab.sqlite`，由上表上游来源构建） | 不在本仓库 | 遵循各自上游协议 |
 
 ### 1. 软件本体：GPL-3.0
 
@@ -199,19 +208,69 @@ $env:AC_SEED    = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\seed.json"
 
 ### 3. 标签数据：不随本仓库分发
 
-仓库里没有任何词库文件（无 `.sqlite` / `.csv` / 标签表）。程序在运行期从本机路径读取，
-默认值见 [`Core/AppSettings.cs`](Core/AppSettings.cs)。
+仓库里没有任何成品词库文件（无 `.sqlite` 导出）。程序在运行期从本机路径读取，
+默认值见 [`Core/AppSettings.cs`](Core/AppSettings.cs)。**构建词库不需要外部脚本**——
+程序自带构建器，设置里单开了一页「词库构建」（见下）。
 
-词库由多个上游来源合并而成，各自协议不同，下游再分发时请逐个确认：
+#### 词库从哪来
 
-| 上游来源 | 内容 | 许可 |
-|---|---|---|
-| [ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table](https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table) | Danbooru 全量标签中英对照 | MIT |
-| [Qiongyi44/ComfyUI-Bilingual-Prompt-Inspector](https://github.com/Qiongyi44/ComfyUI-Bilingual-Prompt-Inspector) | 社区整理的 Anima 词库包 | MIT |
-| [ShiroEirin/comfyui-good-anima](https://github.com/ShiroEirin/comfyui-good-anima) | 画师下架清单 `banned_tags.csv` | **GPL-3.0** |
-| Danbooru 本身 | 标签改名表、废弃标签表（抓取自公开 API） | 归 Danbooru 所有 |
+Anima 官方**没有发布标签表**：模型卡只规定规则（下划线换成空格、画师加 `@`、
+`score_*` 是唯一保留下划线的例外），不给名单。所以词库是从下面这些来源合并出来的，
+各自协议不同，下游再分发构建产物时请逐个确认：
 
-⚠️ 画师下架清单来自 GPL-3.0 仓库，下游再分发词库时需注意其 copyleft 条款。
+| 上游来源 | 提供什么 | 条数 | 许可 |
+|---|---|---|---|
+| [ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table](https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table) | Danbooru 全量标签中英对照（`tag.sqlite`，逐日更新） | 331,376 | MIT |
+| [ShiroEirin/comfyui-good-anima](https://github.com/ShiroEirin/comfyui-good-anima) → `anima-1.0.csv` | **Anima 自己的标签索引**——Anima 不用 Danbooru 的标签集，判"这个词算不算合法标签"以此为准 | 108,257 | **GPL-3.0** |
+| [ShiroEirin/comfyui-good-anima](https://github.com/ShiroEirin/comfyui-good-anima) → `banned_tags.csv` | 画师下架清单（只标记，不删除） | 548 | **GPL-3.0** |
+| [Qiongyi44/ComfyUI-Bilingual-Prompt-Inspector](https://github.com/Qiongyi44/ComfyUI-Bilingual-Prompt-Inspector) | 社区精选包（`anima`/`base`/`characters`/`clothing`/`poses`/`camera`），带中文分类 | 951 | MIT |
+| Danbooru 公开 API | `tag_aliases.json` 改名表（旧写法 → 现用标签） | 采用 33,145 | 事实数据 |
+| Danbooru 公开 API | `tags.json` 废弃标签表 | 4,055 | 事实数据 |
+
+⚠️ **Anima 索引与画师下架清单都来自 GPL-3.0 仓库**（同一个仓库的两个文件）。
+本软件本体也是 GPL-3.0，所以兼容；但 Anima 索引是词库里最有价值的那部分，
+若**单独**再分发构建出来的 `vocab.sqlite`，请注意它同样落在 copyleft 之下。
+
+#### 怎么构建
+
+构建逻辑在 [`Core/VocabBuilder.cs`](Core/VocabBuilder.cs)（纯 .NET，不依赖 Python），
+素材清单在 [`Core/VocabSources.cs`](Core/VocabSources.cs)（文件名、下载地址、许可写在一处，
+构建器、设置页、本文档共用同一份，不会各说一套）。两种用法：
+
+**一、在程序里构建（推荐）。** 设置 → 「词库构建」：页面会列出全部素材及许可、
+标明哪些还没下到，点「下载素材」自动抓取，再点「开始构建」。构建约 2–3 分钟，
+先写临时文件、成功了才替换，中途失败或取消都不会动到原有词库。建完会顺手把
+「数据路径」里的词库/种子指向新文件——**点「保存」才生效**（和其它设置项一样，
+取消就是取消），保存后主窗口会立刻重载词库。
+
+> 素材从 `raw.githubusercontent.com` 与 `danbooru.donmai.us` 抓取，国内网络**必须**
+> 在页面上填一个代理（如 `http://127.0.0.1:10808`）。实测直连时 11 个文件全部失败，
+> 填上代理后 11/11 成功，所以这一项不是可选项。
+
+**二、命令行 / 回归测试。** 从素材目录重建并与既有库**逐表逐列对拍**：
+
+```powershell
+$env:AC_VOCABSRC = 'D:\vocab-sources'                          # 放上游文件的目录
+$env:AC_VOCABDB  = "$env:LOCALAPPDATA\AnimaCaptioner\vocab\vocab.sqlite"   # 基准库（可选）
+
+.\bin\Release\net10.0\corecheck.exe vocab        # 重建 + 对拍
+```
+
+对拍是这一项真正的价值所在：它比 `best` 的**每一行每一列**（含 `in_anima` /
+`anima_aliases`）、`alias`、`anima_index` 三张表，再用应用自己的加载器比对
+解析/搜索/归类的结果。构建器漏掉任何语义（大小写、去重顺序、标记规则）都会以
+具体行数差异暴露，而不是等到用户搜索时才发现少了一批标签。
+
+#### 一个容易错的语义
+
+`in_anima` 用 `best.tag = anima_index.name` 做**大小写敏感**的精确匹配。字符名如
+`Aether (Genshin Impact)` 在 `best` 里是大写、在 Anima 索引里是小写；改用忽略大小写
+去配会多标 28 条、少 15 条别名——数字看着"差不多"，所以这种错误很难被察觉。
+构建器与对拍测试都把这一点钉住了。
+
+种子映射 [`vocab/seed.json`](vocab/seed.json)（273 条「中文概念 → 标签」，补全量表里
+没有精确中文键的常用说法）随程序分发：它是构建时的母本，会被复制到库旁边。
+它不构成"随附词库"——没有它词库照样加载，只是少这 273 条中文映射。
 
 ### 4. 第三方依赖
 

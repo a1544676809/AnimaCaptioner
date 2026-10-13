@@ -69,6 +69,11 @@
 
   <ItemGroup>
     <Content Include="Assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 种子映射母本：人工整理的「中文概念 → 标签」补充表（273 条），补全量表里
+         没有精确中文键的那些常用说法。构建词库时由 VocabBuilder 复制到库旁边，
+         所以随程序分发——否则用户建完库还差这一个文件，词库能用但中文会漏一批。
+         注意：这只是母本，不构成"随附词库"——没有它词库照样加载，只是少这 273 条映射。 -->
+    <Content Include="vocab\seed.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- 帮助文档随程序分发：运行时直接读 <exe>\docs 里的 .md，
          所以改文档点「重新载入」即可生效，不必重新编译或重启程序。
          （注意：重新构建会用仓库版本覆盖它——这是刻意的，仓库才是文档的源头。）

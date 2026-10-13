@@ -117,6 +117,15 @@ internal static class Harness
                 if (!Need(seed, "AC_SEED", "seed.json")) return 2;
                 return CoreCheck.Search.Run(dataset!, vocabDb!, seed!);
 
+            case "vocab":
+                // 构建器回归。前半段（素材清单 / 分页合并 / 归一化 / 设置落盘）是纯逻辑，
+                // **不需要外部数据**，所以不在这里拦——否则这些断言在没有素材的机器上
+                // 永远跑不到。后半段要重建词库，缺素材时由 Vocab.Run 自己说明并返回 2。
+                // 参数：素材目录 [基准库]。
+                return CoreCheck.Vocab.Run(
+                    Arg(1) ?? Env("AC_VOCABSRC") ?? "",
+                    Arg(2) ?? Env("AC_VOCABDB") ?? "");
+
             case "parity":
                 // golden.json 随仓库分发，所以这一项 clone 下来即可运行
                 var golden = Arg(1) ?? Path.Combine(repo, "tests", "golden.json");
@@ -149,10 +158,11 @@ internal static class Harness
                       escape     - <词库> [seed]   标签转义（与 ComfyUI 解析器对拍）
                       roundtrip  <训练集>          逐字节往返
                       richapi    [WinUI.dll]      反射查 API 是否存在（不给路径时自动查找）
+                      vocab      <素材目录> [基准库]  词库构建：重建并与既有库对拍
                       llm                         真实网络：/models 能力 + 关思考 A/B
 
                     数据集与词库在仓库外，也可改用环境变量：
-                      AC_DATASET / AC_VOCABDB / AC_SEED / AC_WINUI
+                      AC_DATASET / AC_VOCABDB / AC_SEED / AC_WINUI / AC_VOCABSRC
                     """);
                 return 2;
         }

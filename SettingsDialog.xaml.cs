@@ -100,6 +100,7 @@ public sealed partial class SettingsDialog : ContentDialog
         DatasetBox.Text = cfg.DatasetDir;
         VocabBox.Text = cfg.VocabDbPath;
         SeedBox.Text = cfg.SeedPath;
+        VocabProxyBox.Text = cfg.VocabProxy;
 
         UndoStepsBox.Value = cfg.UndoMaxSteps;
 
@@ -116,9 +117,20 @@ public sealed partial class SettingsDialog : ContentDialog
 
         SettingsPathText.Text = "配置文件：" + AppSettings.FilePath;
 
+        // 词库构建页：输入框沿用当前配置，素材目录默认取词库同级的 sources\。
+        VocabOutBox.Text = cfg.VocabDbPath;
+        VocabSourceDirBox.Text = cfg.VocabSourceDir is { Length: > 0 } savedSrc
+            ? savedSrc
+            : DefaultVocabSourceDir(cfg.VocabDbPath);
+        BuildVocabSourceRows();
+        UpdateVocabMissingText();
+
         // 先把类别和页面挂上，再建配色行——否则第一页露出来时竞态探针找不到页面。
         MapPages();
-        SelectPage("model");
+        // AC_SETTINGS_PAGE 用来直接落到某一页，供自动化验证（菜单在自动化下不好点）。
+        // 取不到就回第一页；SelectPage 自己也兜底。
+        SelectPage(Environment.GetEnvironmentVariable("AC_SETTINGS_PAGE") is { Length: > 0 } pg
+            ? pg : "model");
 
         BuildColorRows();
     }
@@ -471,6 +483,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _pages["agent"] = PageAgent;
         _pages["search"] = PageSearch;
         _pages["paths"] = PagePaths;
+        _pages["vocab"] = PageVocab;
         _pages["edit"] = PageEdit;
         _pages["colors"] = PageColors;
 
@@ -717,6 +730,16 @@ public sealed partial class SettingsDialog : ContentDialog
             {
                 named.Add(("ColorGrid", ColorGrid));
                 named.Add(("ResetColorsBtn", ResetColorsBtn));
+            }
+            // 词库构建页最长（素材清单 11 行 + 两个输入框 + 进度 + 日志），是这一页
+            // 最可能把「开始构建」顶出视野的地方，所以把操作控件也量一遍。
+            if (_currentPage == "vocab")
+            {
+                named.Add(("VocabSourceList", VocabSourceList));
+                named.Add(("VocabSourceDirBox", VocabSourceDirBox));
+                named.Add(("VocabOutBox", VocabOutBox));
+                named.Add(("BuildVocabBtn", BuildVocabBtn));
+                named.Add(("VocabStatusText", VocabStatusText));
             }
 
             foreach (var (label, el) in named)
@@ -971,6 +994,11 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.VocabDbPath = VocabBox.Text.Trim();
         cfg.SeedPath = SeedBox.Text.Trim();
 
+        // 词库构建页那几项一并存：素材目录和代理下次打开要还在，否则用户
+        // 每次都得重填这两项才能继续构建（素材目录还是构建的前提）。
+        cfg.VocabSourceDir = VocabSourceDirBox.Text.Trim();
+        cfg.VocabProxy = VocabProxyBox.Text.Trim();
+
         // 步数越界由 PromptHistory.MaxSteps 收敛，这里只管把 NaN 兜住
         cfg.UndoMaxSteps = (int)(double.IsNaN(UndoStepsBox.Value)
             ? PromptHistory.DefaultMaxSteps : UndoStepsBox.Value);
@@ -1194,6 +1222,10 @@ public sealed partial class SettingsDialog : ContentDialog
 
     private static Microsoft.UI.Xaml.Media.Brush GoodBrush =>
         new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.MediumSeaGreen);
+
+    /// <summary>进行中/中性提示。不用绿或橙——那两种在这个对话框里已经表示"成功/失败"。</summary>
+    private static Microsoft.UI.Xaml.Media.Brush InfoBrush =>
+        (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
 
     private async void FetchModels_Click(object sender, RoutedEventArgs e)
     {
@@ -1420,5 +1452,378 @@ public sealed partial class SettingsDialog : ContentDialog
         WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
         var folder = await picker.PickSingleFolderAsync();
         return folder?.Path;
+    }
+
+    // ================= 词库构建页 =================
+    //
+    // 这一页是整个设置里唯一会联网下载几百 MB、并且跑几分钟的地方，所以：
+    // 素材清单必须显示出来（用户得知道要下什么、许可是什么），进度必须有反馈
+    // （否则看着像卡死），而且真正的构建放在后台线程——它要几百秒，占着 UI 线程
+    // 会让整个窗口失去响应，用户会以为程序挂了。
+
+    /// <summary>停在内存里的取消源；构建期间点「取消」用它。</summary>
+    private CancellationTokenSource? _vocabCts;
+
+    /// <summary>
+    /// 素材目录的默认值：词库文件旁边的 <c>sources</c>。
+    /// 刻意不放在程序目录——那里是 <c>bin\</c>，重新构建就被清掉，
+    /// 而这几百 MB 的素材用户不会想再下一遍。
+    ///
+    /// 若 <c>sources</c> 不存在但旁边有 <c>raw</c>，就用 <c>raw</c>：早期那套 Python
+    /// 脚本（build_vocab.py）把上游文件放在 <c>raw\</c> 里，已经按那个布局下载过的人
+    /// 不该被要求再挪一次或重下一遍。
+    /// </summary>
+    private static string DefaultVocabSourceDir(string vocabDbPath)
+    {
+        var dir = Path.GetDirectoryName(vocabDbPath);
+        if (string.IsNullOrEmpty(dir)) dir = AppSettings.Dir;
+        var preferred = Path.Combine(dir, "sources");
+        if (Directory.Exists(preferred)) return preferred;
+        var legacy = Path.Combine(dir, "raw");
+        return Directory.Exists(legacy) ? legacy : preferred;
+    }
+
+    /// <summary>生成素材清单行：文件名 + 用途 + 来源 + 许可 + 是否已在本地。</summary>
+    private void BuildVocabSourceRows()
+    {
+        VocabSourceList.Children.Clear();
+        var dir = VocabSourceDirBox.Text.Trim();
+
+        var all = VocabSources.All
+            .Concat(VocabSources.PackSourceFiles())
+            .ToList();
+
+        foreach (var f in all)
+        {
+            var present = dir.Length > 0 && File.Exists(Path.Combine(dir, f.FileName));
+
+            var row = new Grid { ColumnSpacing = 8, Padding = new Thickness(6, 4, 6, 4) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            // 有无标记。没下到的用醒目色，用户一眼看出还缺什么。
+            var mark = new TextBlock
+            {
+                Text = present ? "\uE73E" : "\uE711",
+                FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe MDL2 Assets"),
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = present ? GoodBrush : BadBrush
+            };
+            Grid.SetColumn(mark, 0);
+            row.Children.Add(mark);
+
+            var name = new TextBlock
+            {
+                Text = f.FileName,
+                FontSize = 12,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            Grid.SetColumn(name, 1);
+            row.Children.Add(name);
+
+            var what = new TextBlock
+            {
+                Text = f.What,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"]
+            };
+            Grid.SetColumn(what, 2);
+            row.Children.Add(what);
+
+            var lic = new TextBlock
+            {
+                Text = f.License,
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"]
+            };
+            Grid.SetColumn(lic, 3);
+            row.Children.Add(lic);
+
+            ToolTipService.SetToolTip(row, $"{f.Upstream}\n{f.Url}");
+            VocabSourceList.Children.Add(row);
+        }
+
+        // GPL 那条单独提示：它是唯一带 copyleft 的来源，容易被忽略。
+        var note = new TextBlock
+        {
+            Text = "⚠ " + VocabSources.CopyleftNote,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(6, 6, 6, 2),
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorTertiaryBrush"]
+        };
+        VocabSourceList.Children.Add(note);
+    }
+
+    /// <summary>把"还缺哪些必需素材"显示在按钮下方。缺了就禁用构建按钮。</summary>
+    private void UpdateVocabMissingText()
+    {
+        var dir = VocabSourceDirBox.Text.Trim();
+        if (dir.Length == 0)
+        {
+            VocabMissingText.Text = "";
+            BuildVocabBtn.IsEnabled = false;
+            return;
+        }
+
+        var missing = VocabBuilder.MissingRequired(dir);
+        var optional = VocabSources.OptionalFiles()
+            .Where(f => !File.Exists(Path.Combine(dir, f)))
+            .ToList();
+
+        if (missing.Count == 0)
+        {
+            VocabMissingText.Text = optional.Count == 0
+                ? "✓ 素材齐全，可以构建。"
+                : $"✓ 必需素材齐全，可以构建（可选缺失：{string.Join("、", optional)}）";
+            VocabMissingText.Foreground = GoodBrush;
+        }
+        else
+        {
+            VocabMissingText.Text = "✗ 还缺必需素材：" + string.Join("、", missing) +
+                                    "。点「下载素材」，或手工下载后放进素材目录。";
+            VocabMissingText.Foreground = BadBrush;
+        }
+        BuildVocabBtn.IsEnabled = missing.Count == 0;
+    }
+
+    private async void BrowseVocabSources_Click(object sender, RoutedEventArgs e)
+    {
+        var path = await PickFolder();
+        if (path is not null)
+        {
+            VocabSourceDirBox.Text = path;
+            BuildVocabSourceRows();
+            UpdateVocabMissingText();
+        }
+    }
+
+    private void VocabSourceDir_Changed(object sender, TextChangedEventArgs e)
+    {
+        BuildVocabSourceRows();
+        UpdateVocabMissingText();
+    }
+
+    /// <summary>
+    /// 下载全部素材。
+    ///
+    /// 刻意用 HttpClient 直接下到目标路径，而不是让用户自己去浏览器里点：
+    /// 这里有 12 个文件、总共约 200 MB，手工下极易漏掉某个（漏了必需文件构建会直接失败）。
+    /// 已存在且大小非零的文件跳过，所以中断之后重跑是安全的、也是补下。
+    /// </summary>
+    private async void DownloadVocab_Click(object sender, RoutedEventArgs e)
+    {
+        var dir = VocabSourceDirBox.Text.Trim();
+        if (dir.Length == 0)
+        {
+            VocabStatusText.Text = "先指定素材目录。";
+            VocabStatusText.Foreground = BadBrush;
+            return;
+        }
+
+        try { Directory.CreateDirectory(dir); }
+        catch (Exception ex)
+        {
+            VocabStatusText.Text = "无法创建素材目录：" + ex.Message;
+            VocabStatusText.Foreground = BadBrush;
+            return;
+        }
+
+        DownloadVocabBtn.IsEnabled = false;
+        VocabProgress.Value = 0;
+        var all = VocabSources.All.Concat(VocabSources.PackSourceFiles()).ToList();
+        var done = 0;
+        var failed = new List<string>();
+
+        // 代理。留空就是直连——但上游在国内直连是不通的，所以下面失败时会明确提这一点，
+        // 而不是笼统报"下载失败"让人以为是自己的网络坏了。
+        var proxy = VocabProxyBox.Text.Trim();
+        HttpClient http;
+        try
+        {
+            http = VocabFetch.CreateClient(proxy);
+        }
+        catch (ArgumentException ex)
+        {
+            VocabStatusText.Text = ex.Message + "（形如 http://127.0.0.1:10808）";
+            VocabStatusText.Foreground = BadBrush;
+            DownloadVocabBtn.IsEnabled = true;
+            return;
+        }
+
+        using (http)
+
+        foreach (var f in all)
+        {
+            var dest = Path.Combine(dir, f.FileName);
+            if (File.Exists(dest) && new FileInfo(dest).Length > 0)
+            {
+                done++;
+                VocabProgress.Value = done * 100.0 / all.Count;
+                continue;
+            }
+
+            VocabStatusText.Text = $"正在下载 {f.FileName}…（{done + 1}/{all.Count}）";
+            VocabStatusText.Foreground = InfoBrush;
+            try
+            {
+                // 先下到 .part 再改名：下到一半断了不会留下一个"看起来已存在"的假文件，
+                // 否则下次重跑会跳过它、构建时才发现是坏的。
+                var part = dest + ".part";
+                await VocabFetch.DownloadSourceAsync(http, f, part);
+
+                File.Move(part, dest, overwrite: true);
+                done++;
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{f.FileName}（{ex.Message}）");
+                Log.Write($"vocab download failed: {f.FileName} {ex.Message}");
+            }
+            VocabProgress.Value = done * 100.0 / all.Count;
+            BuildVocabSourceRows();
+        }
+
+        DownloadVocabBtn.IsEnabled = true;
+        BuildVocabSourceRows();
+        UpdateVocabMissingText();
+
+        if (failed.Count == 0)
+        {
+            VocabStatusText.Text = $"✓ 素材已就绪（{done}/{all.Count}）。";
+            VocabStatusText.Foreground = GoodBrush;
+        }
+        else
+        {
+            // 多半是网络/代理问题，所以明确说出来而不是笼统报"失败"。
+            VocabStatusText.Text =
+                $"部分素材下载失败（{failed.Count} 个）：{string.Join("；", failed)}。\n" +
+                (proxy.Length == 0
+                    ? "上游在国内网络下直连会超时——在「下载代理」里填一个可用代理（如 http://127.0.0.1:10808）再试。"
+                    : "已用代理 " + proxy + "，但仍失败：确认代理在运行、且允许访问 github/danbooru。") +
+                "也可以手工下载后放进素材目录。";
+            VocabStatusText.Foreground = BadBrush;
+        }
+        Log.Write($"vocab download: {done}/{all.Count} ok, {failed.Count} failed");
+    }
+
+    /// <summary>
+    /// 构建词库。
+    ///
+    /// 全程在后台线程上跑（<see cref="Task.Run(Func{Task})"/> 而不是直接 await）：
+    /// 构建实测约 2–3 分钟，其中"生成去重表"一步是几十秒的纯 CPU 工作，
+    /// 放在 UI 线程上会让窗口整个失去响应——那不是"慢"，用户会当成崩溃。
+    /// </summary>
+    private async void BuildVocab_Click(object sender, RoutedEventArgs e)
+    {
+        var srcDir = VocabSourceDirBox.Text.Trim();
+        var outDb = VocabOutBox.Text.Trim();
+        if (srcDir.Length == 0 || outDb.Length == 0)
+        {
+            VocabStatusText.Text = "素材目录和输出位置都要填。";
+            VocabStatusText.Foreground = BadBrush;
+            return;
+        }
+
+        var missing = VocabBuilder.MissingRequired(srcDir);
+        if (missing.Count > 0)
+        {
+            VocabStatusText.Text = "还缺必需素材：" + string.Join("、", missing);
+            VocabStatusText.Foreground = BadBrush;
+            return;
+        }
+
+        if (File.Exists(outDb))
+        {
+            var confirm = new ContentDialog
+            {
+                Title = "覆盖现有词库？",
+                Content = "已存在：\n" + outDb + "\n\n构建会替换它（先写临时文件，成功了才替换；" +
+                          "失败或取消都不会动到原文件）。",
+                PrimaryButtonText = "覆盖",
+                CloseButtonText = "取消",
+                XamlRoot = XamlRoot
+            };
+            if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+        }
+
+        // 种子母本随程序分发（vocab\seed.json）。构建时复制到库旁边，
+        // 这样"建完就能用"，不必再让用户去别处找这个文件。
+        var seedMaster = Path.Combine(AppContext.BaseDirectory, "vocab", "seed.json");
+
+        _vocabCts = new CancellationTokenSource();
+        var ct = _vocabCts.Token;
+        BuildVocabBtn.IsEnabled = false;
+        DownloadVocabBtn.IsEnabled = false;
+        VocabProgress.IsIndeterminate = false;
+        VocabProgress.Value = 0;
+        VocabStatusText.Foreground = InfoBrush;
+
+        // 进度：构建器的 log 回调在后台线程上，改控件必须回 UI 线程。
+        var lines = new List<string>();
+        void Report(string m)
+        {
+            Log.Write("vocab build: " + m);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                lines.Add(m);
+                // 只留最近几行：整页塞满会把按钮顶出视野（这个对话框最老的毛病）。
+                if (lines.Count > 6) lines.RemoveAt(0);
+                VocabStatusText.Text = string.Join("\n", lines);
+            });
+        }
+
+        try
+        {
+            var result = await Task.Run(() => VocabBuilder.Build(
+                srcDir, outDb, seedMaster, exportCsvDir: null, Report, ct), ct);
+
+            VocabProgress.Value = 100;
+            VocabStatusText.Text =
+                $"✓ 构建完成：{result.DistinctTags:N0} 条标签，中文覆盖 {result.ChinesePercent:F1}%，" +
+                $"Anima 索引 {result.AnimaIndex:N0} 条，" +
+                $"退役名 {result.AliasCount:N0} 条，用时 {result.Elapsed.TotalSeconds:F1} 秒。\n" +
+                $"输出：{result.DbPath}（{result.DbBytes / 1024.0 / 1024.0:F1} MB）\n" +
+                "已把「数据路径」指向它；点下面的「保存」后生效（取消则不改动配置）。";
+            VocabStatusText.Foreground = GoodBrush;
+
+            // 只改界面上的值，**不直接写 _cfg**。这个对话框的约定是"取消是真的取消"
+            // （见构造函数里对站点表副本的说明）：直接改 _cfg 的话，用户建完库又点取消，
+            // 配置已经在内存里被改掉了——而屏幕上什么都没保存过。
+            // 保存走 ApplyTo（它读的正是这两个框），随后 ShowSettingsAsync 会重载词库，
+            // 所以"建好了却在读旧库"的困惑仍然不会出现。
+            VocabBox.Text = outDb;
+            var seedBeside = Path.Combine(Path.GetDirectoryName(outDb)!, "seed.json");
+            if (File.Exists(seedBeside)) SeedBox.Text = seedBeside;
+
+            foreach (var w in result.Warnings)
+                Log.Write("vocab build warning: " + w);
+        }
+        catch (OperationCanceledException)
+        {
+            VocabStatusText.Text = "已取消。原有词库未被改动。";
+            VocabStatusText.Foreground = InfoBrush;
+        }
+        catch (Exception ex)
+        {
+            VocabStatusText.Text = "构建失败：" + ex.Message + "\n（原有词库未被改动）";
+            VocabStatusText.Foreground = BadBrush;
+            Log.Write("vocab build failed: " + ex);
+        }
+        finally
+        {
+            _vocabCts?.Dispose();
+            _vocabCts = null;
+            BuildVocabBtn.IsEnabled = true;
+            DownloadVocabBtn.IsEnabled = true;
+            UpdateVocabMissingText();
+        }
     }
 }
