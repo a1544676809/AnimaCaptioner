@@ -100,7 +100,7 @@ public sealed class TagAgent
     /// propose**（见下面 digest 那段），所以就算真用光了也不会白跑——这比单纯
     /// 加轮数更管用，加轮数只是降低触发概率。
     /// </summary>
-    private const int MaxRounds = 8;
+    private const int DefaultMaxRounds = 32;
 
     /// <summary>
     /// 这一路的预算。带工具时思考链是开着的（见 LlmClient.ChatWithToolsAsync 的注释：
@@ -116,7 +116,8 @@ public sealed class TagAgent
     public async Task<Outcome> RunAsync(IHost host, IReadOnlyList<AgentTurn> history,
                                         LlmClient.ChatImage? image, CancellationToken ct = default,
                                         Action<string, string>? onProgress = null,
-                                        Action<string, string, string?>? onToolCall = null)
+                                        Action<string, string, string?>? onToolCall = null,
+                                        int maxRounds = DefaultMaxRounds)
     {
         var found = new List<TagSearch.Hit>();
         var log = new List<string>();
@@ -180,7 +181,7 @@ public sealed class TagAgent
             catch (Exception ex) { Log.Write("tool call start failed: " + ex.Message); }
         }
 
-        while (rounds < MaxRounds)
+        while (rounds < Math.Max(1, maxRounds))
         {
             rounds++;
 

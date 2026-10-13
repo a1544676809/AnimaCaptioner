@@ -73,6 +73,15 @@ public sealed class AppSettings
     /// </summary>
     public bool AgentFullAccess { get; set; }
 
+    /// <summary>
+    /// 助手工具循环的轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
+    ///
+    /// 默认 32，比原先写死的 4 大得多——实测 4 轮一问"查 A 和 B 两个标签"就用光，
+    /// 用光之后只能走收尾那条路。每次请求十几秒，所以这是个该由用户权衡的量：
+    /// 给得大，复杂问题查得透，代价是可能的等待更久。设置页里可改。
+    /// </summary>
+    public int AgentMaxRounds { get; set; } = 32;
+
     // ---- 模型站点 ----
     //
     // 地址 / 密钥 / 模型名 / 推理档位现在按**站点**成组保存（见 ModelProfile），

@@ -257,6 +257,14 @@
                     <CheckBox x:Name="AgentAttachImageBox" Content="标注模式下把当前图片发给模型"
                               ToolTipService.ToolTip="读图自动打标靠这一条。图片先缩到长边 1024 的 JPEG 再内联发送（约 150 KB）；原图不会上传到任何别的地方，但请确认接口地址是你信任的服务。接口或模型不支持图片输入时会如实报错，不会静默退回凭空描述。" />
 
+                    <NumberBox x:Name="AgentRoundsBox" Header="工具调用轮数上限（每轮一次请求）"
+                               Minimum="1" Maximum="200" SmallChange="4"
+                               SpinButtonPlacementMode="Compact" Width="240"
+                               HorizontalAlignment="Left" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="一轮 = 一次请求，一轮里模型可以同时发多个工具调用。给得大，复杂问题能查得透；每次请求十几秒，用光了就是可能的等待更久。默认 32。" />
+
                     <!-- 完全权限。刻意排在最后、并单独给一段说明：它推翻的是
                          "助手只出提案、落盘由人点一下"这条原则，不该被顺手勾上。 -->
                     <CheckBox x:Name="AgentFullAccessBox" Content="完全权限：助手直接写入提示词，不等我确认"

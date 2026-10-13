@@ -92,6 +92,7 @@ public sealed partial class SettingsDialog : ContentDialog
         AgentEnabledBox.IsChecked = cfg.AgentEnabled;
         AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
         AgentFullAccessBox.IsChecked = cfg.AgentFullAccess;
+        AgentRoundsBox.Value = cfg.AgentMaxRounds;
         SyncAgentBoxes();
         MaxTokensBox.Value = cfg.MaxTokens;
         TempBox.Value = cfg.Temperature;
@@ -1034,6 +1035,7 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.AgentEnabled = AgentEnabledBox.IsChecked == true;
         cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.AgentFullAccess = AgentFullAccessBox.IsChecked == true;
+        cfg.AgentMaxRounds = (int)(double.IsNaN(AgentRoundsBox.Value) ? 32 : AgentRoundsBox.Value);
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
         cfg.Temperature = double.IsNaN(TempBox.Value) ? 0.3 : TempBox.Value;
         cfg.TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value);

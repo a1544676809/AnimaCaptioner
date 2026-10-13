@@ -204,7 +204,7 @@ public static class Agent
             host6.Turn(Tool("c" + i, AgentKit.SearchToolName, """{"query":"loop"}"""));
         host6.Turn(new LlmClient.ToolTurn(true, "词库里只有 loop 相关的几种写法。", "", new(), "", ""));
         var image = new LlmClient.ChatImage("image/jpeg", new byte[] { 1, 2, 3, 4 });
-        var o6 = Run(host6, "一直查下去", image);
+        var o6 = Run(host6, "一直查下去", image, maxRounds: 8);
         Eq("8 次带工具的请求 + 1 次收尾", host6.SeenTools.Count, 9);
         Eq("收尾那次只给 propose（不能再搜，但仍能提案）",
            string.Join("|", host6.SeenTools[^1]), "propose");
@@ -454,6 +454,11 @@ public static class Agent
             var off = AppSettings.FromJson(new AppSettings().ToJson());
             Eq("默认值经序列化往返仍是关", off?.AgentFullAccess, false);
 
+            // 轮数也是用户可配的（默认 32）
+            Eq("轮数默认 32", fresh.AgentMaxRounds, 32);
+            var r = AppSettings.FromJson(new AppSettings { AgentMaxRounds = 7 }.ToJson());
+            Eq("轮数能落盘再读回", r?.AgentMaxRounds, 7);
+
             Console.WriteLine("     （开启后写入仍只算一个撤销点，见 ApplyAgentProposal 的 PushUndo）");
         }
 
@@ -570,10 +575,15 @@ public static class Agent
     }
 
     /// <summary>同步包一层，免得每一节都写 async/await 样板。</summary>
+    /// <param name="maxRounds">0 = 用产品默认值（32）。要考"轮数用尽"那条路时显式给个小值。</param>
     private static TagAgent.Outcome Run(FakeHost host, string text,
-                                        LlmClient.ChatImage? image = null) =>
-        new TagAgent().RunAsync(host, new[] { new AgentTurn(true, text) }, image)
-                      .GetAwaiter().GetResult();
+                                        LlmClient.ChatImage? image = null, int maxRounds = 0) =>
+        maxRounds > 0
+            ? new TagAgent().RunAsync(host, new[] { new AgentTurn(true, text) }, image,
+                                      CancellationToken.None, null, null, maxRounds)
+                            .GetAwaiter().GetResult()
+            : new TagAgent().RunAsync(host, new[] { new AgentTurn(true, text) }, image)
+                            .GetAwaiter().GetResult();
 
     /// <summary>
     /// 带进度回调地跑一轮——用来验证 TagAgent 会把流式回调透传到 host。

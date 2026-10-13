@@ -4564,7 +4564,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,
                                                 onProgress: AgentLiveProgress,
-                                                onToolCall: AgentToolCallProgress);
+                                                onToolCall: AgentToolCallProgress,
+                                                maxRounds: _cfg.AgentMaxRounds);
 
             if (!outcome.Ok)
             {
