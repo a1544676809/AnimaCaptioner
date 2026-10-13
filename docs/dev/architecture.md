@@ -409,6 +409,44 @@ DeepSeek 报的是（`tests/Models.cs` 里存着逐字节的原样响应）：
 `tool_calls`，搜索工具等于失效（见 `ChatWithToolsAsync` 的注释）。两件事的正确取值
 相反，所以按调用需要决定，不跟着档位走。
 
+## 自定义请求头为什么自己解析、且必须把被拒的行显示出来
+
+有些网关不认自己的头就不服务。实测过的例子是 OpenCode 的 Go 档
+（`https://opencode.ai/zen/go/v1`）：
+
+| 请求 | 结果 |
+|---|---|
+| 只带 `Authorization: Bearer <key>` | 400 `MissingSessionID` |
+| 只带 `x-api-key: <key>` | 401 `Go requires a credential`（**这个头被完全忽略**） |
+| 带 `Authorization` + 任意非空 `x-opencode-session` | 认证真的生效了（bogus key 会得到 `Invalid credential`） |
+| 免费档（`big-pickle` 等） | 403 `FreeTierError`：「只能从 OpenCode 内部使用」——**加任何头都没用** |
+
+最后一条值得记下来：**不是所有"平台要求"都能靠请求头解决**。免费档是按客户端来源
+判定的，本程序永远进不去；能用的只有付费档。所以这个功能不该被宣传成
+"能连任何平台"。
+
+实现上，**不能直接 `TryAddWithoutValidation` 了事**。实测有两个静默失败（都不抛异常）：
+
+1. **非法头名返回 `false`**：`X-Bad Name`（含空格）、空名、带冒号的名字会被丢掉，
+   请求照发、服务端回 401，界面上一句提示都没有——用户只知道"我填了却没用"。
+2. **实体头加到 `Headers` 上被忽略**：`req.Headers.TryAddWithoutValidation("Content-Type", …)`
+   之后，请求**仍然**带着原来的 `application/json; charset=utf-8` 出去。
+   只有 `req.Content.Headers` 才改得动。
+
+所以 `CustomHeaders.Parse` 自己校验、把拒绝原因原样返回，设置页把那些行显示成红色；
+`CustomHeaders.Apply` 按 `IsContentHeader` 分流到 `Content.Headers` 或 `Headers`。
+另外**明确拒绝手填 `Authorization`**：它和「API Key」框会合并成一个逗号连接的值
+（实测 `Bearer first, Bearer second`），服务端只会当成坏密钥。
+
+回归测试（`tests/Headers.cs`）不只是测解析函数——它起一个本地假服务端、走真实的
+`LlmClient.ChatAsync`，断言**服务端实际收到什么**。这是唯一能抓住上面两个静默失败的办法。
+
+> 写那个假服务端时踩了三个坑，都是测试自身的错、却表现得像产品 bug，值得记下来：
+> ① 不把请求体读完会毁掉 keep-alive 连接复用，后续请求错配甚至超时；
+> ② `HttpListener` 把实体头单独放进 `Request.ContentType`，不在 `Headers` 里；
+> ③ `ChatAsync` 首次会先发一次 `GET /models` 探能力，按"聊天次数"开服务端会让
+> 所有断言整体错位一格。断言改用**按路径筛选**之后才稳定。
+
 ## 分栏比例为什么按模式各存一套
 
 两个模式的分栏语义不同（图片 / 标签 / 提示词 vs 提示词库 / 标签 / 提示词），

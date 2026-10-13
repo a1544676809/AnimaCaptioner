@@ -44,6 +44,22 @@ public sealed class ModelProfile
     /// </summary>
     public string ReasoningEffort { get; set; } = "none";
 
+    /// <summary>
+    /// 额外的请求头，每行 <c>名字: 值</c>。
+    ///
+    /// 有些网关只认自己的头才肯服务。实测过的例子：OpenCode 的 Go 档
+    /// （<c>zen/go/v1</c>）在没有 <c>x-opencode-session</c> 时直接回
+    /// 「MissingSessionID」，而且它**不认** <c>x-api-key</c>——密钥仍必须走
+    /// <c>Authorization: Bearer</c>，那个 session 头只是额外的路由标识。
+    /// 这种平台只填地址和密钥是连不上的，所以给每个站点留一组自定义头。
+    ///
+    /// **明文存**（用户明确要求）。与 <see cref="ApiKey"/> 不同，这里不走 DPAPI：
+    /// 它多数是路由标识而非凭证（如那个 session id），加密会让用户无法直接检查、
+    /// 也无法从别处复制过来。**不要把密钥填在这里**——上面那个框才是存密钥的地方，
+    /// 而且 <see cref="CustomHeaders.Parse"/> 会明确拒绝手填 <c>Authorization</c>。
+    /// </summary>
+    public string CustomHeaders { get; set; } = "";
+
     /// <summary>新的随机标识。12 位十六进制足够区分（同时存在的站点只有个位数）。</summary>
     public static string NewId() => Guid.NewGuid().ToString("N")[..12];
 
@@ -142,5 +158,6 @@ public sealed class ModelProfile
         Model = Model,
         ApiKeyProtected = ApiKeyProtected,
         ReasoningEffort = ReasoningEffort,
+        CustomHeaders = CustomHeaders,
     };
 }

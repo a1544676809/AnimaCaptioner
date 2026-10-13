@@ -236,6 +236,7 @@ public sealed partial class SettingsDialog : ContentDialog
         p.BaseUrl = BaseUrlBox.Text.Trim();
         p.Model = ModelBox.Text.Trim();
         p.ReasoningEffort = SelectedEffort;
+        p.CustomHeaders = CustomHeadersBox.Text;
         // 密钥只在**用户真的改过**时才写回：PasswordBox 拿到的是明文，
         // 而空框既可能是"没有密钥"也可能是"我们没把已有的填进去"。
         // 这里靠 _keyTouched 区分，避免把已有密钥无声抹掉。
@@ -268,6 +269,7 @@ public sealed partial class SettingsDialog : ContentDialog
             BaseUrlBox.Text = p.BaseUrl;
             SyncModelText(p.Model);
             SelectEffort(p.ReasoningEffort);
+            CustomHeadersBox.Text = p.CustomHeaders;
             // 密钥**不回填**：PasswordBox 显示明文会让人担心"我的密钥就这么露着"，
             // 而且用户多半只是来改地址的。已在配置里的密钥照常生效（不回写就不动它），
             // 这一点的说明由 SyncKeyHint 写出来。
@@ -286,6 +288,7 @@ public sealed partial class SettingsDialog : ContentDialog
         SyncKeyHint();
         UpdateModelHint(p.Model);
         UpdateEffortHint();
+        UpdateCustomHeadersHint();
         TestResultText.Text = "";
     }
 
@@ -294,6 +297,49 @@ public sealed partial class SettingsDialog : ContentDialog
     /// 用户看到的永远是空框，不说的话会以为密钥丢了、重新粘一遍（无害），
     /// 或者以为它没存上（去别处找问题）。
     /// </summary>
+    /// <summary>
+    /// 额外请求头下面那行说明。
+    ///
+    /// 这里**必须把被拒的行报出来**，不能静默丢弃：实测
+    /// <c>TryAddWithoutValidation</c> 遇到非法头名会返回 false 而不抛异常，
+    /// 头就这么消失了、请求照发、服务端回 401——用户看到的是"我明明填了却没用"，
+    /// 没有任何线索。所以校验放在 <see cref="CustomHeaders.Parse"/> 里，由这里显示。
+    /// </summary>
+    private void UpdateCustomHeadersHint()
+    {
+        var text = CustomHeadersBox.Text ?? "";
+        var r = CustomHeaders.Parse(text);
+
+        if (r.HasRejected)
+        {
+            CustomHeadersHintText.Text = "✗ 这些行没生效：" + string.Join("；", r.Rejected);
+            CustomHeadersHintText.Foreground = BadBrush;
+            return;
+        }
+
+        if (r.Entries.Count == 0)
+        {
+            CustomHeadersHintText.Text =
+                "留空即可。格式每行一个，如 x-opencode-session: ses_xxxx（冒号或等号都认）。" +
+                "Authorization 由上面的 API Key 负责，别填在这里。";
+            CustomHeadersHintText.Foreground = HintBrush;
+            return;
+        }
+
+        CustomHeadersHintText.Text =
+            $"✓ 将发送 {r.Entries.Count} 个头：" +
+            string.Join("、", r.Entries.Select(e => e.Name));
+        CustomHeadersHintText.Foreground = GoodBrush;
+    }
+
+    private void CustomHeadersBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        // 只在用户编辑、且不在装载期间才回收——否则换站点时会把上一站点的头
+        // 写进刚选中的那个（和密钥框同一个陷阱）。
+        if (_editorLoaded) CaptureEditor();
+        UpdateCustomHeadersHint();
+    }
+
     private void SyncKeyHint()
     {
         if (KeyHintText is null) return;

@@ -182,6 +182,15 @@
                                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                    Text="留空表示不发送 Authorization 头（本地 llama-server 不需要）。密钥用 Windows DPAPI 加密后存放，仅限本机本账户可解密。" />
 
+                        <!-- 额外请求头。多数平台不需要，但有的网关不认自己的头就不服务
+                             （实测 OpenCode 的 Go 档要求 x-opencode-session）。 -->
+                        <TextBox x:Name="CustomHeadersBox" Header="额外请求头（每行一个，可留空）"
+                                 AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"
+                                 PlaceholderText="x-opencode-session: ses_xxxx"
+                                 TextChanged="CustomHeadersBox_TextChanged" />
+                        <TextBlock x:Name="CustomHeadersHintText" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+
                         <!-- 推理档位跟着站点走：本地 llama-server 只认「关闭思考」那一档，
                              云端认 8 档强度，两者要的取值正好相反。 -->
                         <ComboBox x:Name="ReasoningBox" Header="推理档位（reasoning_effort）"

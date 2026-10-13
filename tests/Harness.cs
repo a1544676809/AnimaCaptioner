@@ -126,6 +126,11 @@ internal static class Harness
                     Arg(1) ?? Env("AC_VOCABSRC") ?? "",
                     Arg(2) ?? Env("AC_VOCABDB") ?? "");
 
+            case "headers":
+                // 自定义请求头：解析/校验 + 真实发一次请求看服务端收到什么。
+                // 起本地假服务端，不联网，clone 下来就能跑。
+                return CoreCheck.Headers.Run();
+
             case "parity":
                 // golden.json 随仓库分发，所以这一项 clone 下来即可运行
                 var golden = Arg(1) ?? Path.Combine(repo, "tests", "golden.json");
@@ -159,6 +164,7 @@ internal static class Harness
                       roundtrip  <训练集>          逐字节往返
                       richapi    [WinUI.dll]      反射查 API 是否存在（不给路径时自动查找）
                       vocab      <素材目录> [基准库]  词库构建：重建并与既有库对拍
+                      headers                     自定义请求头：解析校验 + 真实发一次看服务端收到什么
                       llm                         真实网络：/models 能力 + 关思考 A/B
 
                     数据集与词库在仓库外，也可改用环境变量：

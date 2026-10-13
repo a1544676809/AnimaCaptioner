@@ -253,8 +253,7 @@ public sealed class LlmClient : IDisposable
             {
                 Content = new StringContent(body.ToJsonString(), new UTF8Encoding(false), "application/json")
             };
-            if (!string.IsNullOrWhiteSpace(cfg.ApiKey))
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey.Trim());
+            ApplyHeaders(req, cfg);
 
             SetTimeout(cfg.TimeoutSeconds);
 
@@ -284,6 +283,34 @@ public sealed class LlmClient : IDisposable
             Log.Write("llm request failed: " + ex);
             return new ChatResult(false, "", "", "", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 给请求装上认证与站点自定义头。三处调用点（chat / 工具轮 / models）共用它，
+    /// 免得各自记得"还要加自定义头"——漏一处就是那个功能在某条路径上静默失效，
+    /// 而症状只是"某个平台报 401"，很难追到是漏加头。
+    ///
+    /// 顺序有讲究：先设 <c>Authorization</c>，再应用自定义头。
+    /// <see cref="CustomHeaders.Parse"/> 已经拒绝了手填 Authorization，
+    /// 所以这里不存在互相覆盖的问题；万一将来放开，也应当是用户显式填的赢。
+    /// </summary>
+    private static void ApplyHeaders(HttpRequestMessage req, AppSettings cfg)
+    {
+        if (!string.IsNullOrWhiteSpace(cfg.ApiKey))
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey.Trim());
+
+        var custom = CustomHeaders.Parse(cfg.ActiveProfile?.CustomHeaders);
+        if (custom.Entries.Count > 0) CustomHeaders.Apply(req, custom);
+    }
+
+    /// <summary>
+    /// 校验活动站点的自定义头，把不能用的行报给界面。
+    /// 返回空串 = 没问题。界面上那条提示行用它，避免用户填错却毫无反馈。
+    /// </summary>
+    public static string DescribeCustomHeaderProblems(AppSettings cfg)
+    {
+        var r = CustomHeaders.Parse(cfg.ActiveProfile?.CustomHeaders);
+        return r.HasRejected ? string.Join("；", r.Rejected) : "";
     }
 
     private static ChatResult ParseResponse(string raw)
@@ -507,8 +534,7 @@ public sealed class LlmClient : IDisposable
             {
                 Content = new StringContent(body.ToJsonString(), new UTF8Encoding(false), "application/json")
             };
-            if (!string.IsNullOrWhiteSpace(cfg.ApiKey))
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey.Trim());
+            ApplyHeaders(req, cfg);
 
             SetTimeout(cfg.TimeoutSeconds);
 
@@ -754,8 +780,7 @@ public sealed class LlmClient : IDisposable
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            if (!string.IsNullOrWhiteSpace(cfg.ApiKey))
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cfg.ApiKey.Trim());
+            ApplyHeaders(req, cfg);
             SetTimeout(timeout);
 
             using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);

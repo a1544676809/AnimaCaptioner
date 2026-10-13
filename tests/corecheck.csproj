@@ -36,6 +36,7 @@
     <Compile Include="..\Core\CaptionFile.cs" />
     <Compile Include="..\Core\AppSettings.cs" />
     <Compile Include="..\Core\ModelProfile.cs" />
+    <Compile Include="..\Core\CustomHeaders.cs" />
     <Compile Include="..\Core\LlmClient.cs" />
     <Compile Include="..\Core\DpapiSecret.cs" />
     <Compile Include="..\Core\Parity.cs" />
@@ -71,6 +72,7 @@
     <Compile Include="Reasoning.cs" />
     <Compile Include="RichApi.cs" />
     <Compile Include="Vocab.cs" />
+    <Compile Include="Headers.cs" />
     <Compile Include="LlmLive.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
