@@ -309,6 +309,9 @@ public sealed partial class MainWindow : Window
         // 因为分栏比例要按模式取不同的一组值。
         _lib = PromptLibraryStore.Load();
 
+        // 助手对话也一样独立存放，**启动就恢复**（用户要求：只有点「清空对话」才清）。
+        _agentChat = AgentChatStore.Load();
+
         // 分栏比例要等配置读出来才能设。放在 XAML 里只能写死，
         // 而它本来就是用户拖出来的、需要跨次启动记住的东西。
         ApplyColumnRatios();
@@ -539,6 +542,10 @@ public sealed partial class MainWindow : Window
 
         // 右栏下半部分：翻译器 / AI 助手，二选一（设置里决定）
         ApplyAgentChrome(draft);
+
+        // 落盘的对话在这里恢复一次。**放在 ApplyAgentChrome 之后**：面板要先
+        // 定下来是显示助手还是翻译器，否则往一个还折叠着的容器里画东西。
+        RenderRestoredConversation();
     }
 
     /// <summary>
@@ -4105,10 +4112,16 @@ private void EndEdit(bool commit, bool lostFocus = false)
     private readonly TagAgent _agent = new();
 
     /// <summary>
-    /// 对话历史。**只活在这一次运行里**，而且换文档就清空——历史里带着
-    /// 上一张图的描述，跨文档继续问会让模型把 A 图的画面说到 B 图上。
+    /// 助手对话。**落盘持久化，换文档/换页都不清**——只有「清空对话」按钮会清。
+    ///
+    /// 早先这里是内存里的 <c>List&lt;AgentTurn&gt;</c>，并在换文档时整段丢掉，
+    /// 理由是"历史带着上一份文档的画面，跨文档继续问会把 A 图说成 B 图"。
+    /// 那个顾虑是真的，但代价太大：切一下图、甚至只是打开设置页回来，
+    /// 刚看到一半的回答和思考过程就没了。现在改成**换图时插一条边界说明**
+    /// （见 <see cref="NoteDocumentSwitch"/>）——连续性保住了，模型也仍然
+    /// 知道画面换了。
     /// </summary>
-    private readonly List<AgentTurn> _agentHistory = new();
+    private AgentChatStore _agentChat = new();
 
     /// <summary>正在等模型。期间禁掉发送，避免连点发出一串请求。</summary>
     private bool _agentBusy;
@@ -4399,8 +4412,26 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
     private void AgentClear_Click(object sender, RoutedEventArgs e)
     {
-        ResetAgentConversation();
+        // 这是**唯一**会清空对话的地方：换文档、换页、重启都不清（用户要求）。
+        _agentChat.Clear();
+        AgentFeed.Children.Clear();
+        AgentStatusText.Text = "";
         Log.Write("agent: conversation cleared");
+    }
+
+    /// <summary>
+    /// 换文档时**不再往对话里插任何东西**。
+    ///
+    /// 曾经插过一条"已切换到另一张图：xxx"的边界说明，用来防止模型把 A 图说成 B 图。
+    /// 实际用起来是多余的：说明会落盘、连翻几张就攒成一串，而用户自己知道在看哪张图。
+    /// 模型要的那点上下文改由 **`current_image` 工具**按需给它（见 AgentKit），
+    /// 既没有噪音，也不会过时——插在历史里的说明过两轮就不再是"当前"了。
+    /// </summary>
+    private void NoteDocumentSwitch()
+    {
+        // 保留这个空方法而不是删掉调用点：AttachHistory 里那一行的位置有讲究
+        // （换文档时必须走一趟），留着它比将来重新推一遍便宜。
+        // 真正要做的事已经没有了——见上面的说明。
     }
 
     private void AgentInput_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -4462,24 +4493,33 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 }
             }
 
-            _agentHistory.Add(asked);
+            // 送进模型的是**持久化对话的正文**（思考与工具记录不在其中，它们
+            // 只给用户看；换图说明会被折成 user 消息）。
+            var history = _agentChat.ToModelHistory();
+            history.Add(asked);
 
             // 每轮现建 host：词库可能在这中间才加载完，而 host 是抓着 _vocab 的。
-            var host = new AgentHost(_cfg, _llm, _search, _vocab);
-            var outcome = await _agent.RunAsync(host, _agentHistory.ToList(), image);
+            // 图片那两项也现取（委托读的是当下的 _items/_index），否则模型看到的
+            // 永远是发第一句时的那张图。
+            var host = new AgentHost(_cfg, _llm, _search, _vocab,
+                                     images: AgentImageList,
+                                     selectImage: AgentSelectImage);
+            var outcome = await _agent.RunAsync(host, history, image);
 
             if (!outcome.Ok)
             {
                 // 失败的一轮不进历史：留着会让下一轮带着一段没有答案的上下文，
-                // 模型会以为它已经回过话了。
-                _agentHistory.Remove(asked);
+                // 模型会以为它已经回过话了。改为留一条说明，让用户知道这次没成。
+                _agentChat.Add(AgentChatStore.Kind.Note, "调用失败：" + outcome.Error);
                 AgentAddNote("调用失败：" + outcome.Error);
                 SetAgentStatus("失败：" + outcome.Error);
                 Log.Write("agent failed: " + outcome.Error);
                 return;
             }
 
-            _agentHistory.Add(new AgentTurn(false, outcome.Reply));
+            _agentChat.Add(AgentChatStore.Kind.User, text);
+            _agentChat.Add(AgentChatStore.Kind.Assistant, outcome.Reply,
+                           outcome.Reasoning, outcome.Log);
             AgentAddReply(outcome);
 
             sw.Stop();
@@ -4491,7 +4531,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
         }
         catch (Exception ex)
         {
-            _agentHistory.Remove(asked);
+            // 异常这一轮同样不留"没有答案的问句"——留一条说明即可。
+            _agentChat.Add(AgentChatStore.Kind.Note, "出错了：" + ex.Message);
             AgentAddNote("出错了：" + ex.Message);
             SetAgentStatus("出错了：" + ex.Message);
             Log.Write("agent exception: " + ex);
@@ -4502,6 +4543,107 @@ private void EndEdit(bool commit, bool lostFocus = false)
             AgentRing.IsActive = false;
             AgentSendBtn.IsEnabled = true;
         }
+    }
+
+    /// <summary>
+    /// 把"要碰界面"的一段工作挪到 UI 线程上做，并等它出结果。
+    ///
+    /// **必须这么做。** agent 循环里有 <c>ConfigureAwait(false)</c>，所以工具调用
+    /// 回到这里时**很可能已经不在 UI 线程上**；那时直接动控件（切图要改列表选中项、
+    /// 还要保存当前文档）会抛 <c>COMException 0x8001010E</c>（RPC_E_WRONG_THREAD）。
+    /// 实测就是这么炸的：日志里"找到了目标图"紧接着一个 COMException，
+    /// 而单元测试抓不到它——假 host 根本不碰界面。
+    ///
+    /// 已在本线程时直接做（否则会自己等自己，死锁）。
+    /// </summary>
+    private T OnUiThread<T>(Func<T> work, T fallback)
+    {
+        if (DispatcherQueue.HasThreadAccess) return work();
+
+        var result = fallback;
+        using var done = new ManualResetEventSlim(false);
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                try { result = work(); }
+                catch (Exception ex) { Log.Write("agent ui work failed: " + ex.Message); }
+                finally { done.Set(); }
+            }))
+            return fallback;
+
+        // 等一等是有意的：模型需要"切成功了没有"这个结果才能继续。
+        // 超时兜底，免得界面卡住时把整个 agent 循环挂死。
+        return done.Wait(TimeSpan.FromSeconds(15)) ? result : fallback;
+    }
+
+    /// <summary>
+    /// 给 agent 看的图片清单。写标签模式返回空——那里没有数据集，
+    /// 两个图片工具随之不下发（让模型调必然失败的工具是白烧一轮预算）。
+    /// </summary>
+    private IReadOnlyList<AgentImage> AgentImageList() =>
+        OnUiThread(BuildImageList, (IReadOnlyList<AgentImage>)Array.Empty<AgentImage>());
+
+    private IReadOnlyList<AgentImage> BuildImageList()
+    {
+        if (_mode != PromptMode.Label || _items.Count == 0) return Array.Empty<AgentImage>();
+
+        var list = new List<AgentImage>(_items.Count);
+        for (var i = 0; i < _items.Count; i++)
+        {
+            var it = _items[i];
+            list.Add(new AgentImage(it.Name, i, it.HasCaption, it.Tags.Count, i == _index));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 模型要求切图。**这是 agent 循环里唯一的写操作。**
+    ///
+    /// 副作用要如实说：走的是和用户自己点图片列表完全相同的那条路，
+    /// 因此会先静默保存当前 caption（编辑器换文档时一贯如此，避免切图丢改动）。
+    /// 工具说明里已经写明"只在用户要求时用"，这里再记一条日志——
+    /// 模型自己翻图是那种"事后看训练集才发现"的行为，留痕很重要。
+    ///
+    /// 整段必须在 UI 线程上跑（见 <see cref="OnUiThread"/>）。
+    /// </summary>
+    private (bool Ok, string Message) AgentSelectImage(string name) =>
+        OnUiThread(() => AgentSelectImageCore(name),
+                   (false, "Switching images is not available right now."));
+
+    private (bool Ok, string Message) AgentSelectImageCore(string name)
+    {
+        if (_mode != PromptMode.Label || _items.Count == 0)
+            return (false, "Switching images is not available: the editor has no dataset open.");
+
+        var want = (name ?? "").Trim();
+        if (want.Length == 0)
+            return (false, "No file name was given.");
+
+        // 允许带或不带扩展名：模型从 current_image 抄名字时经常把 .png 一起抄进来，
+        // 而列表里存的是不带扩展名的显示名。
+        var stem = Path.GetFileNameWithoutExtension(want);
+        var hit = -1;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (string.Equals(_items[i].Name, stem, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_items[i].Name, want, StringComparison.OrdinalIgnoreCase))
+            {
+                hit = i;
+                break;
+            }
+        }
+
+        if (hit < 0)
+        {
+            var names = string.Join(", ", _items.Take(20).Select(x => x.Name));
+            return (false, $"No image named \"{want}\". Available: {names}");
+        }
+
+        if (hit == _index) return (true, $"Already on \"{_items[hit].Name}\".");
+
+        Log.Write($"agent: select_image -> {_items[hit].Name} (was {_items[_index].Name})");
+        SaveCurrent(showDialog: false);   // 与用户手动翻图一致：先保存当前那张
+        Select(hit);
+        return (true, $"Switched to \"{_items[hit].Name}\" (saved the previous image first).");
     }
 
     private void SetAgentStatus(string text) => AgentStatusText.Text = text;
@@ -4519,6 +4661,49 @@ private void EndEdit(bool commit, bool lostFocus = false)
         AgentScrollToEnd();
     }
 
+    /// <summary>
+    /// 把强调色按比例往背景方向调淡，用来做"自己的消息"那种浅色底。
+    ///
+    /// 不直接用 <c>AccentFillColorSecondaryBrush</c>：那个是**给按钮**设计的实色，
+    /// 铺在一大块消息气泡上太重（实测深蓝底把黑字压得很难看，长回复尤其闷）。
+    /// 这里按主题方向混合——亮色主题往白里调，暗色主题往黑里调——所以两种主题下
+    /// 都是"淡淡的同色"，而不是只在一种主题里好看。
+    /// </summary>
+    private static SolidColorBrush AccentTint(double amount)
+    {
+        var accent = ThemeColor("SystemAccentColor",
+                                Windows.UI.Color.FromArgb(255, 0, 120, 212));
+        var light = IsLightTheme();
+        // amount = 保留多少强调色（0 = 几乎全背景色，1 = 原色）
+        var target = light ? 255.0 : 0.0;
+        byte Mix(byte c) => (byte)Math.Clamp(
+            Math.Round(target + (c - target) * amount), 0, 255);
+
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(
+            255, Mix(accent.R), Mix(accent.G), Mix(accent.B)));
+    }
+
+    /// <summary>当前是不是亮色主题。气泡底色要跟着主题往相反方向调。</summary>
+    private static bool IsLightTheme()
+    {
+        try
+        {
+            if (App.MainWindow?.Content is FrameworkElement fe &&
+                fe.ActualTheme != ElementTheme.Default)
+                return fe.ActualTheme == ElementTheme.Light;
+        }
+        catch { /* 窗口还没起来时按系统设置 */ }
+
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            if (k?.GetValue("AppsUseLightTheme") is int v) return v != 0;
+        }
+        catch { }
+        return true;
+    }
+
     private void AgentAddUserBubble(string text)
     {
         var body = new TextBlock
@@ -4533,29 +4718,134 @@ private void EndEdit(bool commit, bool lostFocus = false)
             MaxWidth = 460,
             Padding = new Thickness(10, 6, 10, 6),
             CornerRadius = new CornerRadius(8),
-            Background = (Brush)Application.Current.Resources["AccentFillColorSecondaryBrush"],
+            // 0.18 保留一点强调色（看得出这是"我发的"），其余混进背景色。
+            // 之前用的 AccentFillColorSecondaryBrush 是给按钮的实色，大面积铺开太重。
+            Background = AccentTint(0.18),
             Child = body,
         });
         AgentScrollToEnd();
     }
 
     /// <summary>
+    /// 「过程」折叠块：思考内容 + 工具调用记录。**默认折叠**、灰色小字。
+    ///
+    /// 三条都是刻意的：
+    ///
+    /// 1. **默认折叠**。思考链通常比答案长得多（工具循环每一轮都先想一遍，实测
+    ///    四轮能到上万字），全铺开会把真正的回复顶出视野；但排障时又想看它到底
+    ///    查了什么、为什么给出这个提案，所以留一个能展开的入口。
+    /// 2. **灰色**。它和回复不是一回事：回复是结论，这里是过程。用同样颜色会让人
+    ///    以为"模型就是这么说的"，而其中可能有它自我纠正掉的中间结论。
+    /// 3. **只在 AI 助手面板里出现**。它不参与任何判定，也永远不会写进提示词或
+    ///    翻译结果（<see cref="TagAgent.Outcome.Reasoning"/> 的注释写着同一条）。
+    ///
+    /// 没有可显示的内容时返回 null，调用方据此决定要不要加这个块。
+    /// </summary>
+    private FrameworkElement? BuildAgentProcess(string reasoning, IReadOnlyList<string> log)
+    {
+        var reason = (reasoning ?? "").Trim();
+        var steps = log;
+        if (reason.Length == 0 && steps.Count == 0) return null;
+
+        var gray = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+        var body = new StackPanel { Spacing = 8 };
+
+        if (steps.Count > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"工具调用（{steps.Count}）",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = gray,
+            });
+            var list = new StackPanel { Spacing = 2 };
+            foreach (var s in steps)
+                list.Children.Add(new TextBlock
+                {
+                    Text = "· " + s,
+                    FontSize = 11,
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true,
+                    Foreground = gray,
+                });
+            body.Children.Add(list);
+        }
+
+        if (reason.Length > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = "思考过程",
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = gray,
+                Margin = new Thickness(0, steps.Count > 0 ? 4 : 0, 0, 0),
+            });
+            body.Children.Add(new TextBlock
+            {
+                // 上限只是防一手：正常一轮远到不了，真到了也必须说清是截断的，
+                // 否则用户会以为模型就想了一半。
+                Text = reason.Length > ProcessCap
+                    ? reason[..ProcessCap] + $"\n\n（过长，已截断；完整 {reason.Length:N0} 字，见日志）"
+                    : reason,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+                Foreground = gray,
+            });
+        }
+
+        var header = steps.Count > 0 ? $"过程 · {steps.Count} 步" : "过程";
+        return new Expander
+        {
+            Header = new TextBlock { Text = header, FontSize = 11, Foreground = gray },
+            IsExpanded = false,          // 默认折叠
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Content = body,
+        };
+    }
+
+    /// <summary>思考内容显示上限（字符）。超过就截断并说明，避免展开时卡住界面。</summary>
+    private const int ProcessCap = 20000;
+
+    /// <summary>
     /// 模型这一轮的回复。有提案时**回复是配角**——真正要看的是下面那张提案卡片，
     /// 所以这里只放一句话，把版面让给卡片。
     /// </summary>
-    private void AgentAddReply(TagAgent.Outcome outcome)
+    private void AgentAddReply(TagAgent.Outcome outcome) =>
+        AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.Log, outcome.Proposal);
+
+    /// <summary>
+    /// 渲染一条助手回复。**实时那一轮和启动时恢复旧对话走的是同一条路**，
+    /// 否则恢复出来的样子会和刚说完时不一致（那种不一致只有重启才看得到，
+    /// 最容易长期漏掉）。
+    ///
+    /// <paramref name="proposal"/> 只在实时那一轮给：**提案卡片不恢复**——
+    /// 它是可点的动作，重启后再点一次「应用」会把标签再加一遍，而用户以为
+    /// 那只是"看看历史"。
+    /// </summary>
+    private void AgentAddAssistant(string reply, string reasoning,
+                                   IReadOnlyList<string> log, AgentProposal? proposal)
     {
         var stack = new StackPanel { Spacing = 6 };
-        var reply = outcome.Reply.Trim();
-        if (reply.Length > 0)
+
+        // 过程放最上面且收起：读的顺序是"它怎么想的 → 它说了什么 → 要不要采纳"，
+        // 而收起的默认状态保证第一眼看到的仍然是回复本身。
+        if (BuildAgentProcess(reasoning, log) is { } process)
+            stack.Children.Add(process);
+
+        var text = (reply ?? "").Trim();
+        if (text.Length > 0)
             stack.Children.Add(new TextBlock
             {
-                Text = reply,
+                Text = text,
                 TextWrapping = TextWrapping.Wrap,
                 IsTextSelectionEnabled = true,
             });
 
-        if (outcome.Proposal is { } p && !p.IsEmpty)
+        if (proposal is { } p && !p.IsEmpty)
             stack.Children.Add(BuildProposalCard(p));
 
         AgentFeed.Children.Add(stack);
@@ -5038,28 +5328,52 @@ private void EndEdit(bool commit, bool lostFocus = false)
         _history = _histories.Attach(_doc?.Identity, _pendingTags, _proseTail);
         UpdateUndoMenuState();
 
-        // 换文档就重开一段对话。历史里带着上一份文档的画面，跨文档继续问会让
-        // 模型把 A 图的描述说到 B 图上——撤销历史能按身份分桶，对话不能：
-        // 它没有"离开时的内容"可以对账，只能整段丢掉。
-        ResetAgentConversation();
-    }
-
-    /// <summary>清空助手对话（换文档、点「清空对话」）。</summary>
-    private void ResetAgentConversation()
-    {
-        _agentHistory.Clear();
-
-        // 构造期这些控件还没生成（AttachHistory 可能早于 InitializeComponent 的某些路径）
-        if (AgentFeed is null) return;
-
-        AgentFeed.Children.Clear();
-        AgentStatusText.Text = "";
+        // **这里不再清空对话**（用户要求：只有点「清空对话」才清）。
+        // 换图改成插一条边界说明——既保住"接着问"的能力，又让模型知道画面换了，
+        // 而那正是当年"换文档就整段丢掉"想解决的问题。
+        NoteDocumentSwitch();
 
         // **两个方向都要走这里**：设置里把助手关掉时也要把翻译器放回来。
         // 早先这里写成"只在开着时刷新面板"，结果关掉之后面板会一直留在屏幕上
         // ——设置保存后恰好也走 LoadFolder → AttachHistory 这条路，所以它是唯
         // 一个能让改动立刻生效的地方。
         ApplyAgentChrome(_mode == PromptMode.Draft);
+    }
+
+    /// <summary>
+    /// 把落盘的对话重新画进面板。启动时调一次。
+    ///
+    /// 走的是和实时那一轮**同一个** <see cref="AgentAddAssistant"/>，所以恢复出来
+    /// 的样子和刚说完时一致。**提案卡片不在其中**：它是可点的动作，重启后再点一次
+    /// 「应用」会把标签再加一遍，而用户以为那只是"看看历史"。
+    /// </summary>
+    private void RenderRestoredConversation()
+    {
+        AgentFeed.Children.Clear();
+        if (_agentChat.IsEmpty) return;
+
+        foreach (var e in _agentChat.Snapshot())
+        {
+            switch (e.KindOf())
+            {
+                case AgentChatStore.Kind.User:
+                    AgentAddUserBubble(e.Text);
+                    break;
+                case AgentChatStore.Kind.Assistant:
+                    AgentAddAssistant(e.Text, e.Reasoning, e.Log, proposal: null);
+                    break;
+                default:
+                    AgentAddNote(e.Text);
+                    break;
+            }
+        }
+
+        if (_agentChat.Trimmed)
+            AgentAddNote("（更早的对话已超出保留上限，被移出）");
+
+        // 恢复完之后不再需要记"当前是哪张图"——模型要的话自己调 current_image。
+        AgentScrollToEnd();
+        Log.Write($"agent: restored {_agentChat.Count} entries");
     }
 
     /// <summary>

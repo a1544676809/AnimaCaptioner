@@ -215,7 +215,67 @@ public static class Headers
             Check("没有问题时返回空串", LlmClient.DescribeCustomHeaderProblems(cfg).Length == 0);
         }
 
-        Console.WriteLine("=== 3. 站点深拷贝带上自定义头（设置页在副本上编辑）===");
+        Console.WriteLine("=== 3. 「测试连接 / 获取列表」也要带头（设置页用临时 AppSettings 探）===");
+        {
+            // 这是一条**已经发生过的 bug** 的回归：设置页那个 probe 是新建的
+            // AppSettings，只搬了地址和密钥，头没搬——于是"测试连接"在**没带专属头**
+            // 的状态下打过去，对需要头的网关回 400/401。用户看到的是"按钮说连不上"，
+            // 而保存之后又能用，最容易让人以为地址或密钥填错了。
+            var listener = new HttpListener();
+            var port = 18521;
+            for (; port < 18531; port++)
+            {
+                try
+                {
+                    listener.Prefixes.Clear();
+                    listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+                    listener.Start();
+                    break;
+                }
+                catch { if (port == 18530) { Check("起本地假服务端", false); return fail; } }
+            }
+
+            var got = new List<string>();
+            var server = Task.Run(async () =>
+            {
+                var ctx = await listener.GetContextAsync();
+                using (var r = new StreamReader(ctx.Request.InputStream)) await r.ReadToEndAsync();
+                var sb = new StringBuilder();
+                sb.Append(ctx.Request.HttpMethod).Append(' ')
+                  .Append(ctx.Request.Url?.AbsolutePath).Append('\n');
+                foreach (var k in ctx.Request.Headers.AllKeys)
+                    sb.Append(k).Append(": ").Append(ctx.Request.Headers[k]).Append('\n');
+                got.Add(sb.ToString());
+                var body = Encoding.UTF8.GetBytes("{\"object\":\"list\",\"data\":[{\"id\":\"m1\"}]}");
+                ctx.Response.ContentType = "application/json";
+                ctx.Response.OutputStream.Write(body);
+                ctx.Response.Close();
+            });
+
+            // 照抄设置页 FetchModelsAsync 里构造 probe 的写法（含那次修复）。
+            var probe = new AppSettings
+            {
+                ApiBaseUrl = $"http://127.0.0.1:{port}/v1",
+                TimeoutSeconds = 20,
+            };
+            probe.ApiKey = "sk-from-editor";
+            probe.ActiveProfile!.CustomHeaders = "x-opencode-session: ses_from_editor";
+
+            var llm2 = new LlmClient();
+            var (ok, models, err) = await llm2.ListModelsAsync(probe);
+            Check("ListModelsAsync 成功（假服务端给了 1 个模型）", ok && models.Count == 1, err);
+
+            try { await server; } catch { }
+            listener.Stop();
+
+            var text = got.Count > 0 ? got[0] : "";
+            Check("走的是 GET /v1/models", text.Contains("GET /v1/models"), text.Split('\n')[0]);
+            Check("自定义头跟着 probe 一起发出去（这条就是那个 bug 的回归）",
+                text.Contains("ses_from_editor"));
+            Check("Authorization 也在", text.Contains("sk-from-editor"));
+        }
+
+        Console.WriteLine("=== 4. 站点深拷贝带上自定义头（设置页在副本上编辑）===");
         {
             var p = new ModelProfile { BaseUrl = "http://x/v1", Model = "m" };
             p.CustomHeaders = "x-a: 1";

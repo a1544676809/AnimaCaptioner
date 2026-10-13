@@ -6,6 +6,18 @@ namespace AnimaCaptioner.Core;
 /// <summary>下发给服务端的一次工具声明。</summary>
 public sealed record AgentTool(string Name, string Description, JsonObject Parameters);
 
+/// <summary>
+/// agent 视角下的一张图。刻意只带它做判断需要的字段——把整个数据集对象交出去
+/// 既浪费上下文，也会让模型开始"引用"它不该碰的内部状态。
+/// </summary>
+/// <param name="Name">文件名（显示名，不带扩展名）。也是切图的键。</param>
+/// <param name="Index">在列表里的位置（从 0 起）。</param>
+/// <param name="Labeled">是否已经有 caption。</param>
+/// <param name="TagCount">已有标签数。</param>
+/// <param name="IsCurrent">是不是当前正在编辑的那张。</param>
+public sealed record AgentImage(string Name, int Index, bool Labeled, int TagCount,
+                                bool IsCurrent = false);
+
 /// <summary>对话历史里的一轮。带图的那一轮由调用方用 <see cref="LlmClient.UserMessage"/> 组装。</summary>
 public sealed record AgentTurn(bool FromUser, string Text);
 
@@ -41,6 +53,54 @@ public static class AgentKit
     public const string SearchToolName = "search_tags";
     public const string ProposeToolName = "propose";
     public const string WebSearchToolName = "web_search";
+    public const string CurrentImageToolName = "current_image";
+    public const string SelectImageToolName = "select_image";
+
+    /// <summary>
+    /// 问"我现在在编辑哪张图"。
+    ///
+    /// **做成工具而不是塞进系统提示**：塞进去的话它每一轮都得重新发一遍，
+    /// 而且换图之后就过时了——历史里的"当前图"两轮前就不再是当前图，
+    /// 模型却会拿它当事实。按需查永远是最新的。
+    /// </summary>
+    public static AgentTool CurrentImageTool => new(
+        CurrentImageToolName,
+        "Find out which image of the dataset the user is editing right now, and how far " +
+        "along it is (already captioned or not, how many tags). Call this first whenever " +
+        "you are about to say something about 'this image' — do not assume it is the same " +
+        "picture as in earlier turns.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject(),
+        });
+
+    /// <summary>
+    /// 切到另一张图。
+    ///
+    /// **它会落盘一次**：编辑器换文档时一律先静默保存当前 caption（用户手动翻图也是这样，
+    /// 见 MainWindow 里换图那几处的 <c>SaveCurrent(showDialog: false)</c>）。
+    /// 所以工具说明里明确写了"只在用户要求时用"，避免模型拿它当"随便看看"。
+    /// </summary>
+    public static AgentTool SelectImageTool => new(
+        SelectImageToolName,
+        "Switch the editor to another image of the dataset. Give the file name as shown by " +
+        "current_image (with or without the extension). Use this ONLY when the user asks to " +
+        "move to another image — for example 'go to the next one' or 'open xxx'. Switching " +
+        "saves the current image's caption to disk first, so do not call it just to look around.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["name"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "File name of the target image, as listed by current_image.",
+                }
+            },
+            ["required"] = new JsonArray { "name" },
+        });
 
     /// <summary>查词库。与 <see cref="TagSearchAgent"/> 共用同一段说明，避免两处说法不一致。</summary>
     public static AgentTool SearchTool => new(
@@ -126,11 +186,19 @@ public static class AgentKit
             ["required"] = new JsonArray(),
         });
 
-    /// <summary>本次可用工具集。顺序固定，便于测试与日志比对。</summary>
-    public static List<AgentTool> Tools(bool webSearch)
+    /// <summary>
+    /// 本次可用工具集。顺序固定，便于测试与日志比对。
+    ///
+    /// <paramref name="withImages"/> 为假时（写标签模式，没有数据集）不下发那两个
+    /// 图片工具：让模型调一个必然失败的工具是白烧一轮预算。
+    /// </summary>
+    public static List<AgentTool> Tools(bool webSearch, bool withImages = false)
     {
-        var tools = new List<AgentTool> { SearchTool };
+        var tools = new List<AgentTool>();
+        if (withImages) tools.Add(CurrentImageTool);
+        tools.Add(SearchTool);
         if (webSearch) tools.Add(WebSearchTool);
+        if (withImages) tools.Add(SelectImageTool);
         tools.Add(ProposeTool);
         return tools;
     }

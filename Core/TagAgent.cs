@@ -45,14 +45,34 @@ public sealed class TagAgent
 
         /// <summary>联网搜索。未启用时返回一句说明即可，不抛异常。</summary>
         Task<string> SearchWebAsync(string query, CancellationToken ct);
+
+        /// <summary>
+        /// 数据集里的图片（按列表顺序）。**写标签模式返回空**——那里没有图片，
+        /// 相应的两个工具也就不会下发。
+        /// </summary>
+        IReadOnlyList<AgentImage> Images { get; }
+
+        /// <summary>
+        /// 切到指定名字的图片。返回是否成功，以及一句给模型看的结果说明。
+        ///
+        /// **这是本循环里唯一的写操作**（其余一切只产出提案）。它的副作用是
+        /// 编辑器会先静默保存当前 caption——那本来就是换图的固有行为，
+        /// 用户手动翻图也一样。所以工具说明里要求模型只在用户明确要求时调用。
+        /// </summary>
+        (bool Ok, string Message) SelectImage(string name);
     }
 
     /// <summary>
     /// <paramref name="Proposal"/> 为 null 表示这一轮只是回答（用户在问问题，不是要改）。
+    ///
+    /// <paramref name="Reasoning"/> 是这一轮**所有请求**的思考内容拼接（工具循环会发
+    /// 好几次请求，每次都可能有思考）。它只拿来给用户看，**绝不参与任何判定**——
+    /// 判定一律看 <paramref name="Reply"/>／<paramref name="Proposal"/>。
+    /// 翻译那条路已经明确不许把思考当译文（见 TagTranslator），这里是同一个道理。
     /// </summary>
     public sealed record Outcome(bool Ok, string Reply, AgentProposal? Proposal,
                                  List<TagSearch.Hit> Found, List<string> Log,
-                                 int Rounds, string Error);
+                                 int Rounds, string Error, string Reasoning = "");
 
     /// <summary>
     /// 工具循环轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用，
@@ -79,8 +99,9 @@ public sealed class TagAgent
         var log = new List<string>();
 
         var hasImage = image is not null && history.Any(t => t.FromUser);
+        var dataset = host.Images;
         var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch);
-        var tools = AgentKit.Tools(host.CanWebSearch);
+        var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -96,13 +117,24 @@ public sealed class TagAgent
             return new Outcome(false, "", null, found, log, 0, "没有可发送的内容");
 
         var rounds = 0;
+        // 工具循环会发好几次请求，每次的思考内容都攒起来给用户看。
+        // 只用于显示，不参与任何判定。
+        var thinking = new StringBuilder();
+        void Collect(string r)
+        {
+            if (string.IsNullOrWhiteSpace(r)) return;
+            if (thinking.Length > 0) thinking.Append("\n\n────────\n\n");
+            thinking.Append(r.Trim());
+        }
+
         while (rounds < MaxRounds)
         {
             rounds++;
 
             var turn = await host.TurnAsync(system, tools, messages, Budget, ct).ConfigureAwait(false);
+            Collect(turn.Reasoning);
             if (!turn.Ok)
-                return new Outcome(false, "", null, found, log, rounds, turn.Error);
+                return new Outcome(false, "", null, found, log, rounds, turn.Error, thinking.ToString());
 
             // 每轮记一行：这条路径一次要发好几次请求，出问题时（模型不调工具、
             // 预算被思考吃光、图片没被接受）只有这行能看出是哪一轮。
@@ -114,9 +146,10 @@ public sealed class TagAgent
             {
                 var answer = (turn.Content ?? "").Trim();
                 return answer.Length > 0
-                    ? new Outcome(true, answer, null, TagSearch.RankForUser(found), log, rounds, "")
+                    ? new Outcome(true, answer, null, TagSearch.RankForUser(found), log, rounds, "",
+                                  thinking.ToString())
                     : new Outcome(false, "", null, found, log, rounds,
-                                   "模型既没有回答问题，也没有提出改动");
+                                   "模型既没有回答问题，也没有提出改动", thinking.ToString());
             }
 
             // tool_call_id 必须原样回灌，否则小模型对不上号会反复调同一个工具
@@ -140,7 +173,32 @@ public sealed class TagAgent
 
                     // 提案到手就停：后面即使还有搜到一半的概念也不必再花请求。
                     return new Outcome(true, reply, proposal, TagSearch.RankForUser(found),
-                                       log, rounds, "");
+                                       log, rounds, "", thinking.ToString());
+                }
+
+                if (string.Equals(call.Name, AgentKit.CurrentImageToolName, StringComparison.Ordinal))
+                {
+                    var text = DescribeCurrentImage(host);
+                    log.Add("查当前图片");
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.SelectImageToolName, StringComparison.Ordinal))
+                {
+                    var want = ArgString(call.Arguments, "name");
+                    if (want.Length == 0)
+                    {
+                        messages.Add(LlmClient.ToolMessage(call.Id,
+                            "The name was empty. Call select_image again with a file name from current_image."));
+                        log.Add("切图（空名字）→ 已要求重试");
+                        continue;
+                    }
+
+                    var (ok, msg) = host.SelectImage(want);
+                    log.Add(ok ? $"切到「{want}」" : $"切图失败（{want}）");
+                    messages.Add(LlmClient.ToolMessage(call.Id, msg));
+                    continue;
                 }
 
                 if (string.Equals(call.Name, AgentKit.SearchToolName, StringComparison.Ordinal))
@@ -198,14 +256,64 @@ public sealed class TagAgent
         messages.Add(new JsonObject { ["role"] = "user", ["content"] = digest.ToString() });
         var final = await host.TurnAsync(system, Array.Empty<AgentTool>(), messages, Budget, ct)
                               .ConfigureAwait(false);
+        Collect(final.Reasoning);
         if (!final.Ok)
-            return new Outcome(false, "", null, found, log, rounds, final.Error);
+            return new Outcome(false, "", null, found, log, rounds, final.Error, thinking.ToString());
 
         var text2 = (final.Content ?? "").Trim();
         return text2.Length > 0
-            ? new Outcome(true, text2, null, TagSearch.RankForUser(found), log, rounds, "")
+            ? new Outcome(true, text2, null, TagSearch.RankForUser(found), log, rounds, "",
+                          thinking.ToString())
             : new Outcome(false, "", null, found, log, rounds,
-                           "工具循环超出轮数上限，且模型没有给出最终回答");
+                           "工具循环超出轮数上限，且模型没有给出最终回答", thinking.ToString());
+    }
+
+    /// <summary>
+    /// 「当前是哪张图」的工具结果。**每次都重新算**，所以永远是最新的——
+    /// 这也是它必须做成工具、而不是写进系统提示的原因。
+    /// </summary>
+    private static string DescribeCurrentImage(IHost host)
+    {
+        var imgs = host.Images;
+        var cur = imgs.FirstOrDefault(i => i.IsCurrent);
+        if (cur is null)
+            return "No image is currently selected (the editor is in prompt-writing mode, " +
+                   "which has no dataset).";
+
+        var sb = new StringBuilder();
+        sb.Append("Current image: ").Append(cur.Name)
+          .Append(" (").Append(cur.Index + 1).Append(" of ").Append(imgs.Count).Append("). ");
+        sb.Append(cur.Labeled
+            ? $"It already has a caption with {cur.TagCount} tag(s)."
+            : "It has no caption yet.");
+
+        // 顺带把邻居列出来，模型才可能"切到下一张"——否则它连名字都不知道。
+        sb.Append("\nDataset:");
+        foreach (var i in imgs)
+            sb.Append("\n- ").Append(i.Name)
+              .Append(i.IsCurrent ? " (current)" : "")
+              .Append(i.Labeled ? $" [{i.TagCount} tags]" : " [uncaptioned]");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 从工具参数里取一个字符串字段。取不到返回空串——**不能退回用户的整句话**：
+    /// 那是 <see cref="DescribeQuery"/> 里已经记过的教训（把一整句中文当查询发出去，
+    /// 一次都命中不了）。
+    /// </summary>
+    private static string ArgString(string arguments, string key)
+    {
+        if (string.IsNullOrWhiteSpace(arguments)) return "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(arguments);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty(key, out var v) &&
+                   v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? (v.GetString() ?? "").Trim()
+                : "";
+        }
+        catch { return ""; }
     }
 
     /// <summary>

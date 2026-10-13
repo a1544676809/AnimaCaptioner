@@ -18,13 +18,30 @@ internal sealed class AgentHost : TagAgent.IHost
     private readonly SearchClient _search;
     private readonly VocabDb? _vocab;
 
-    public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab)
+    /// <summary>
+    /// 图片相关的三件事由窗口注入，而不是让 AgentHost 抓着 MainWindow：
+    /// 它是"agent 与外界"的边界，边界上只该有**形状**（列表、当前项、切图），
+    /// 不该有窗体的内部状态。接上这三个具体实现的是 MainWindow。
+    /// </summary>
+    private readonly Func<IReadOnlyList<AgentImage>> _images;
+    private readonly Func<string, (bool Ok, string Message)> _selectImage;
+
+    public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
+                     Func<IReadOnlyList<AgentImage>>? images = null,
+                     Func<string, (bool Ok, string Message)>? selectImage = null)
     {
         _cfg = cfg;
         _llm = llm;
         _search = search;
         _vocab = vocab;
+        _images = images ?? (() => Array.Empty<AgentImage>());
+        _selectImage = selectImage ?? (_ => (false, "Switching images is not available here."));
     }
+
+    /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
+    public IReadOnlyList<AgentImage> Images => _images();
+
+    public (bool Ok, string Message) SelectImage(string name) => _selectImage(name);
 
     /// <summary>没配搜索后端时不下发这个工具：让模型调一个必然失败的工具是白烧一轮预算。</summary>
     public bool CanWebSearch => _cfg.SearchEnabled;

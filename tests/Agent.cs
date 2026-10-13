@@ -238,6 +238,205 @@ public static class Agent
         Eq("错误原样带出", o8.Error, "HTTP 400 Bad Request");
         Eq("没有提案", o8.Proposal is null, true);
 
+        Console.WriteLine("\n=== 14. 思考过程：攒起来给界面看，但绝不参与判定 ===");
+        var host9 = new FakeHost();
+        host9.Known = IsKnown;
+        host9.Results["white dress"] = new()
+        {
+            new TagSearch.Hit("white dress", "白色连衣裙", "general", 12000, true, false, "general"),
+        };
+        // 两轮各带一段思考，验证是**拼接**而不是只留最后一段。
+        host9.Turn(new LlmClient.ToolTurn(true, "我先查一下词库。", "第一轮思考：先查白裙子。",
+            new List<LlmClient.ToolCall> { new("c1", AgentKit.SearchToolName, """{"query":"white dress"}""") },
+            "", ""))
+             .Turn(new LlmClient.ToolTurn(true, "补好了。", "第二轮思考：查到了，可以提案。",
+            new List<LlmClient.ToolCall>
+            {
+                new("c2", AgentKit.ProposeToolName, """{"add_tags":["1girl","white dress"]}"""),
+            }, "", ""));
+        var o9 = Run(host9, "照这张图补标签");
+
+        True("两轮思考都带出来了",
+             o9.Reasoning.Contains("第一轮思考") && o9.Reasoning.Contains("第二轮思考"));
+        True("两段之间有分隔", o9.Reasoning.Contains("────────"));
+        True("工具调用也记下来了（界面要用它显示步骤）",
+             o9.Log.Any(l => l.Contains("white dress")));
+        Eq("回复里**没有**思考内容（结论与过程分离）", o9.Reply, "补好了。");
+        True("思考不会混进提案内容",
+             o9.Proposal is not null &&
+             !string.Join("|", o9.Proposal.AddTags).Contains("思考"));
+
+        // 假 host 的历史里也不该出现思考：把它当 assistant 消息回灌会白白多付 token，
+        // 而且会让模型把"自己想过但没说的话"当成说过的话。
+        True("思考没被塞回对话历史（不占下一轮的 token）",
+             host9.SeenMessages.All(ms => ms.All(m =>
+                 (m["content"]?.ToString() ?? "").IndexOf("第一轮思考", StringComparison.Ordinal) < 0)));
+
+        Console.WriteLine("\n=== 15. 没有思考时不硬造 ===");
+        var host10 = new FakeHost();
+        host10.Turn(new LlmClient.ToolTurn(true, "就是 solo。", "", new(), "", ""));
+        var o10 = Run(host10, "solo 是什么");
+        Eq("思考内容为空串（界面据此不加那个折叠块）", o10.Reasoning, "");
+
+        Console.WriteLine("\n=== 16. 对话持久化：换页不清、只有「清空」才清 ===");
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "ac-agent-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "agent.json");
+            try
+            {
+                var s = AgentChatStore.Load(path);
+                Eq("空文件起步是空的", s.Count, 0);
+
+                s.Add(AgentChatStore.Kind.User, "这张图缺什么");
+                s.Add(AgentChatStore.Kind.Assistant, "缺一个背景描述。",
+                      reasoning: "先看画面再查词库。", log: new[] { "查「background」→ 3 条" });
+                Eq("存了两条", s.Count, 2);
+
+                // 重新载入：模拟重启
+                var back = AgentChatStore.Load(path);
+                Eq("重启后条数还在（这就是「不清空」）", back.Count, 2);
+                Eq("用户那条正文对", back.Snapshot()[0].Text, "这张图缺什么");
+                Eq("助手那条正文对", back.Snapshot()[1].Text, "缺一个背景描述。");
+                Eq("思考内容也存下来了",
+                   back.Snapshot()[1].Reasoning, "先看画面再查词库。");
+                Eq("工具调用记录也存下来了",
+                   string.Join("|", back.Snapshot()[1].Log), "查「background」→ 3 条");
+                Eq("种类区分正确（user）", back.Snapshot()[0].KindOf(), AgentChatStore.Kind.User);
+                Eq("种类区分正确（assistant）", back.Snapshot()[1].KindOf(), AgentChatStore.Kind.Assistant);
+
+                // 送模型的必须**只有正文**：思考和工具记录是给用户看的，
+                // 混进去既多花 token，又可能让模型把"想过但没说的话"当成说过了。
+                var hist = back.ToModelHistory();
+                Eq("送模型的历史条数", hist.Count, 2);
+                True("用户那条是 FromUser", hist[0].FromUser);
+                True("助手那条不是 FromUser", !hist[1].FromUser);
+                True("送模型的内容里没有思考",
+                     hist.All(h => !h.Text.Contains("先看画面再查词库")));
+                True("送模型的内容里没有工具记录",
+                     hist.All(h => !h.Text.Contains("查「background」")));
+
+                // 换图说明：折成 user 消息，并与**紧跟其后**的 user 合并。
+                // 注意总数是 3 而不是 2：说明前面是 assistant，所以它自己起一条
+                // user 消息，随后的问题并进那一条（合并的是相邻 user，不是跨越 assistant）。
+                back.Add(AgentChatStore.Kind.Note, "已切换到另一张图：B.png。");
+                back.Add(AgentChatStore.Kind.User, "那这张呢");
+                var h2 = back.ToModelHistory();
+                Eq("总条数 = 3（user / assistant / user）", h2.Count, 3);
+                Eq("第 1 条是 user", h2[0].FromUser, true);
+                Eq("第 2 条是 assistant", h2[1].FromUser, false);
+                Eq("第 3 条是 user", h2[2].FromUser, true);
+                True("说明与紧跟其后的问题合并成了一条",
+                     h2[2].Text.Contains("B.png") && h2[2].Text.Contains("那这张呢"));
+                True("没有出现两条相邻的 user（有些服务端对角色的交替比对得严）",
+                     !h2.Where((t, i) => i > 0 && t.FromUser && h2[i - 1].FromUser).Any());
+
+                // 清空是唯一的清空路径
+                back.Clear();
+                Eq("Clear 之后条数为 0", back.Count, 0);
+                Eq("Clear 也落了盘（重启不会又冒出来）", AgentChatStore.Load(path).Count, 0);
+
+                // 空正文不入库（失败路径上会出现空回复）
+                var s2 = AgentChatStore.Load(path);
+                s2.Add(AgentChatStore.Kind.Assistant, "   ");
+                Eq("空正文被丢掉", s2.Count, 0);
+
+                // 坏文件不该让程序起不来
+                File.WriteAllText(path, "{ this is not json");
+                var s3 = AgentChatStore.Load(path);
+                Eq("坏文件被容忍（重建为空）", s3.Count, 0);
+                s3.Add(AgentChatStore.Kind.User, "重建后还能用");
+                Eq("重建后能继续写", AgentChatStore.Load(path).Count, 1);
+
+                // 上限：防止送模型的上下文无限增长
+                var s4 = AgentChatStore.Load(path);
+                for (var i = 0; i < AgentChatStore.MaxTurns + 20; i++)
+                    s4.Add(AgentChatStore.Kind.User, "第 " + i + " 句");
+                True($"条数被压到上限内（{s4.Count} ≤ {AgentChatStore.MaxTurns}）",
+                     s4.Count <= AgentChatStore.MaxTurns);
+                True("Trimmed 标记为真（界面据此提示更早的被移出）", s4.Trimmed);
+                Eq("留下的是最新的那批", s4.Snapshot()[^1].Text,
+                   "第 " + (AgentChatStore.MaxTurns + 19) + " 句");
+            }
+            finally
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        Console.WriteLine("\n=== 17. 图片工具：current_image / select_image ===");
+        {
+            // 有数据集时两个工具都要下发
+            var h = new FakeHost();
+            h.Dataset.AddRange(new[]
+            {
+                new AgentImage("a", 0, true, 12),
+                new AgentImage("b", 1, false, 0, IsCurrent: true),
+                new AgentImage("c", 2, true, 5),
+            });
+            h.Turn(Tool("i1", AgentKit.CurrentImageToolName, "{}"))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "现在这张是什么");
+            True("有数据集时下发了 current_image 与 select_image",
+                 h.SeenTools[0].Contains(AgentKit.CurrentImageToolName) &&
+                 h.SeenTools[0].Contains(AgentKit.SelectImageToolName));
+
+            var toolMsg = h.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("工具结果说清了当前是哪张图", toolMsg.Contains("b (2 of 3)"));
+            True("工具结果说了还没标", toolMsg.Contains("no caption yet"));
+            True("工具结果列出了邻居（模型才可能切过去）",
+                 toolMsg.Contains("- a") && toolMsg.Contains("- c"));
+            True("标出了哪个是当前项", toolMsg.Contains("(current)"));
+
+            // 没有数据集时不该下发那两个工具：让模型调必然失败的工具是白烧预算
+            var h2 = new FakeHost();
+            h2.Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "随便");
+            True("没有数据集时不下发图片工具",
+                 !h2.SeenTools[0].Contains(AgentKit.CurrentImageToolName) &&
+                 !h2.SeenTools[0].Contains(AgentKit.SelectImageToolName));
+
+            // 切图：真的调到了 host，并且进了日志
+            var h3 = new FakeHost();
+            h3.Dataset.AddRange(new[]
+            {
+                new AgentImage("a", 0, true, 1),
+                new AgentImage("b", 1, false, 0, IsCurrent: true),
+                new AgentImage("c", 2, true, 5),
+            });
+            h3.Turn(Tool("s1", AgentKit.SelectImageToolName, """{"name":"c"}"""))
+              .Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var imgO3 = Run(h3, "切到 c");
+            Eq("切图请求传给了 host", string.Join("|", h3.SelectRequests), "c");
+            True("日志里有切图记录", imgO3.Log.Any(l => l.Contains("切到「c」")));
+            True("切完之后 current_image 能反映新位置",
+                 h3.Dataset.First(x => x.IsCurrent).Name == "c");
+
+            // 空名字：要说清并要求重试，而不是拿用户的整句话去猜
+            var h4 = new FakeHost();
+            h4.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h4.Turn(Tool("s2", AgentKit.SelectImageToolName, """{"name":"   "}"""))
+              .Turn(Tool("p4", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var imgO4 = Run(h4, "换一张");
+            Eq("空名字没有真的去切", h4.SelectRequests.Count, 0);
+            True("日志说明了是空名字并要求重试",
+                 imgO4.Log.Any(l => l.Contains("空名字")));
+
+            // 名字不存在：把失败原样回给模型，它会改
+            var h5 = new FakeHost();
+            h5.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h5.SelectSucceeds = false;
+            h5.Turn(Tool("s3", AgentKit.SelectImageToolName, """{"name":"nope"}"""))
+              .Turn(Tool("p5", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var imgO5 = Run(h5, "切到 nope");
+            Eq("失败也照样问了 host", string.Join("|", h5.SelectRequests), "nope");
+            True("失败被记进日志", imgO5.Log.Any(l => l.Contains("切图失败")));
+            var failMsg = h5.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("失败原因回给了模型", failMsg.Contains("No image named"));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -267,6 +466,27 @@ public static class Agent
         public Func<string, bool> Known { get; set; } = _ => true;
 
         public bool CanWebSearch { get; set; } = true;
+
+        /// <summary>假数据集。空数组 = 没有数据集 → 两个图片工具不下发。</summary>
+        public List<AgentImage> Dataset { get; } = new();
+
+        /// <summary>模型请求过的切图目标，按顺序记下来。</summary>
+        public List<string> SelectRequests { get; } = new();
+
+        /// <summary>切图是否成功；测试里可以设成 false 验证失败路径。</summary>
+        public bool SelectSucceeds { get; set; } = true;
+
+        public IReadOnlyList<AgentImage> Images => Dataset;
+
+        public (bool Ok, string Message) SelectImage(string name)
+        {
+            SelectRequests.Add(name);
+            if (!SelectSucceeds) return (false, $"No image named \"{name}\".");
+            // 切换当前项，并让下一次 current_image 能看到变化
+            for (var i = 0; i < Dataset.Count; i++)
+                Dataset[i] = Dataset[i] with { IsCurrent = Dataset[i].Name == name };
+            return (true, $"Switched to \"{name}\".");
+        }
 
         public FakeHost Turn(LlmClient.ToolTurn turn)
         {

@@ -1304,6 +1304,11 @@ public sealed partial class SettingsDialog : ContentDialog
             TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value),
         };
         probe.ApiKey = _keyTouched ? ApiKeyBox.Password : ActiveDraft.ApiKey;
+        // 自定义头**必须一起带上**：它来自编辑器而不是那个临时实例，忘了搬的话
+        // 「测试连接」会在没带头的状态下打过去。对需要专属头的网关（如 OpenCode 的
+        // Go 档缺 x-opencode-session）结果是 400/401，看着像"地址或密钥填错了"，
+        // 而保存之后又能用——这种"按钮说不行、实际可以"的错最难查。
+        probe.ActiveProfile!.CustomHeaders = CustomHeadersBox.Text;
 
         FetchModelsBtn.IsEnabled = false;
         TestBtn.IsEnabled = false;
