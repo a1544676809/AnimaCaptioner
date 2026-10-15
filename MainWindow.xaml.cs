@@ -2223,7 +2223,88 @@ public sealed partial class MainWindow : Window
     /// 3. **一张失败不中断**：记下来接着跑，最后统一报告。中途停下会留下
     ///    "跑到一半"的状态，而用户看到的只是一个红叉。
     /// </summary>
-    private async Task RunBatchLabelAsync(IReadOnlyList<BatchCandidate> picked, BatchOptions options)
+    /// <summary>
+    /// 「逐张检查全部图片…」用的那句指令。
+    ///
+    /// 为什么要有**这个菜单入口**：实测把同一句话交给模型，它六轮都在对当前这张图
+    /// 裁切、查词库，然后 propose——**一次都没调批量工具**（日志里没有 label_images）。
+    /// 与 `save_caption` 那次同一个教训：**别把"必须发生的事"押在模型记不记得选某个
+    /// 工具上**。对话那条路留着（它有时会用），但用户需要一个一定管用的入口。
+    /// </summary>
+    private const string ReviewInstruction =
+        "逐张检查这张图现有的标注：对照画面核对每一条标签是否真实存在、有没有写错的、" +
+        "有没有漏掉的、有没有该删的。该补的补、该改的改、该删的删；" +
+        "没有对应标签的细节留在英文描述里，描述本身要改得与画面一致。" +
+        "最后按规则提出改动（该删的放进 remove_tags）。";
+
+    /// <summary>
+    /// 逐张检查整个数据集并修正。走的是与批量打标**同一条循环**，只是每张的指令
+    /// 换成"检查并修正"而不是"从头写标注"。
+    /// </summary>
+    private async void BatchReview_Click(object sender, RoutedEventArgs e)
+    {
+        if (_mode != PromptMode.Label) { await Info("只在标注模式下可用", "逐张检查要有一个图片数据集。"); return; }
+        if (_batchRunning) { await Info("正在跑", "上一批还没结束。"); return; }
+        if (_items.Count == 0) { await Info("没有图片", "先打开一个训练集目录。"); return; }
+
+        if (_llm.Caps(_cfg)?.SupportsImage == false)
+        {
+            await Info("这个模型不吃图", $"「{_cfg.Model}」在服务端声明为纯文本输入，" +
+                "而「检查标注是否与画面对得上」必须看图——不看图它只能编。");
+            return;
+        }
+
+        var limitBox = new NumberBox
+        {
+            Header = "最多检查几张（0 = 全部）",
+            Minimum = 0,
+            Maximum = 100000,
+            Value = 0,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Width = 240,
+        };
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Text = "对**每一张已有标注的图**各跑一轮完整助手：看图、核对现有标签、提出修正。",
+        });
+        panel.Children.Add(limitBox);
+        panel.Children.Add(new TextBlock
+        {
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            Text = "⚠ 它会**改写**这些图已有的 .txt（这正是「修正」的意思）。每张十几秒，" +
+                   "17 张大约 3–5 分钟；过程中可以点「停止」，已经写完的保留。\n" +
+                   "建议先用小数量（比如 3）试一批，看它改得对不对，再放开全部。",
+        });
+
+        var dlg = new ContentDialog
+        {
+            Title = "逐张检查全部图片",
+            Content = panel,
+            PrimaryButtonText = "开始",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var limit = double.IsNaN(limitBox.Value) ? 0 : (int)limitBox.Value;
+        // **全部图片**（含已标注的）——"检查现有标注"当然要包括它们
+        var options = new BatchOptions(OnlyUnlabeled: false, SkipEmptyCaptions: false,
+                                       Limit: Math.Max(0, limit));
+        var all = BuildBatchCandidates();
+        var picked = BatchPlan.Choose(all, options);
+        if (picked.Count == 0) { await Info("没有可检查的图片", BatchPlan.Describe(picked, all.Count)); return; }
+
+        await RunBatchLabelAsync(picked, options, ReviewInstruction);
+    }
+
+    private async Task RunBatchLabelAsync(IReadOnlyList<BatchCandidate> picked, BatchOptions options,
+                                          string? instruction = null)
     {
         _batchRunning = true;
         var stop = new CancellationTokenSource();
@@ -2253,7 +2334,8 @@ public sealed partial class MainWindow : Window
         {
             // 与 `label_images` 工具**同一个核心循环**，只是进度贴到对话框上。
             report = await RunBatchCoreAsync(picked, stop.Token,
-                t => { try { progress.Text = t; } catch { } });
+                t => { try { progress.Text = t; } catch { } },
+                instruction: instruction);
         }
         finally
         {
@@ -2514,7 +2596,8 @@ public sealed partial class MainWindow : Window
         CancellationToken stop,
         Action<string>? progress = null,
         Action<string, string>? onProgress = null,
-        Action<string, string, string?>? onToolCall = null)
+        Action<string, string, string?>? onToolCall = null,
+        string? instruction = null)
     {
         var report = new BatchReport();
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -2527,7 +2610,7 @@ public sealed partial class MainWindow : Window
             progress?.Invoke($"第 {n + 1} / {picked.Count} 张：{c.Name}\n\n" +
                              $"已完成：{report.Summary()}\n已用 {sw.Elapsed.TotalSeconds:F0} 秒");
 
-            var status = await LabelOneAsync(c.Index, stop, onProgress, onToolCall);
+            var status = await LabelOneAsync(c.Index, stop, onProgress, onToolCall, instruction);
             report.Add(c.Name, status.Status, status.Note);
         }
 
@@ -2606,7 +2689,9 @@ public sealed partial class MainWindow : Window
                      }, true),
                 // 内层每一轮的流式思考与工具调用，实时贴进同一个过程区
                 onProgress: AgentLiveProgress,
-                onToolCall: AgentToolCallProgress);
+                onToolCall: AgentToolCallProgress,
+                // 模型自带的指令（"逐张检查"就靠它）；空 = 走默认的"写标注"
+                instruction: req.Instruction);
         }
         finally
         {
@@ -2667,7 +2752,8 @@ public sealed partial class MainWindow : Window
     private async Task<(BatchStatus Status, string Note)> LabelOneAsync(
         int index, CancellationToken ct,
         Action<string, string>? onProgress = null,
-        Action<string, string, string?>? onToolCall = null)
+        Action<string, string, string?>? onToolCall = null,
+        string? instruction = null)
     {
         try
         {
@@ -2690,9 +2776,13 @@ public sealed partial class MainWindow : Window
             if (image is null) return (BatchStatus.Failed, "图片读不出来");
 
             // 与手动路径同一条：不带历史，只这一句。
-            const string ask =
-                "请为这张图写标注：按你的规则先查词库，然后提出该加的标签和一段英文散文。" +
-                "只要画面里真实存在的内容，不要编。";
+            // **模型可以自带一句指令**（`label_images` 的 instruction）：给了就用它，
+            // 于是"逐张检查现有标注、该补的补该删的删"也能走这条批量路——否则一次
+            // 对话只能改一张（propose 一调循环就结束），17 张就得发 17 次。
+            var ask = string.IsNullOrWhiteSpace(instruction)
+                ? "请为这张图写标注：按你的规则先查词库，然后提出该加的标签和一段英文散文。" +
+                  "只要画面里真实存在的内容，不要编。"
+                : instruction;
 
             // **内层这一轮刻意不传批量的那两个委托**（canBatchLabel / labelImages）：
             // 于是它的 CanBatchLabel 恒为 false，模型看不到也调不动 label_images。
@@ -5533,18 +5623,22 @@ private void EndEdit(bool commit, bool lostFocus = false)
     ///
     /// 整段必须在 UI 线程上跑（见 <see cref="OnUiThread"/>）。
     /// </summary>
-    private (bool Ok, string Message) AgentSelectImage(string name) =>
+    /// <summary>
+    /// 切图。**返回新那张图的字节**——不返回的话模型切了也看不见（图片只挂在最后
+    /// 一条用户消息上），于是它干脆不切。这是"让它逐张检查、它只检查当前这张"的根因。
+    /// </summary>
+    private (bool Ok, string Message, LlmClient.ChatImage? Image) AgentSelectImage(string name) =>
         OnUiThread(() => AgentSelectImageCore(name),
-                   (false, "Switching images is not available right now."));
+                   (false, "Switching images is not available right now.", null));
 
-    private (bool Ok, string Message) AgentSelectImageCore(string name)
+    private (bool Ok, string Message, LlmClient.ChatImage? Image) AgentSelectImageCore(string name)
     {
         if (_mode != PromptMode.Label || _items.Count == 0)
-            return (false, "Switching images is not available: the editor has no dataset open.");
+            return (false, "Switching images is not available: the editor has no dataset open.", null);
 
         var want = (name ?? "").Trim();
         if (want.Length == 0)
-            return (false, "No file name was given.");
+            return (false, "No file name was given.", null);
 
         // 允许带或不带扩展名：模型从 current_image 抄名字时经常把 .png 一起抄进来，
         // 而列表里存的是不带扩展名的显示名。
@@ -5563,15 +5657,42 @@ private void EndEdit(bool commit, bool lostFocus = false)
         if (hit < 0)
         {
             var names = string.Join(", ", _items.Take(20).Select(x => x.Name));
-            return (false, $"No image named \"{want}\". Available: {names}");
+            return (false, $"No image named \"{want}\". Available: {names}", null);
         }
 
-        if (hit == _index) return (true, $"Already on \"{_items[hit].Name}\".");
+        if (hit == _index) return (true, $"Already on \"{_items[hit].Name}\".", null);
 
         Log.Write($"agent: select_image -> {_items[hit].Name} (was {_items[_index].Name})");
         SaveCurrent(showDialog: false);   // 与用户手动翻图一致：先保存当前那张
         Select(hit);
-        return (true, $"Switched to \"{_items[hit].Name}\" (saved the previous image first).");
+
+        // 新那张的字节要在**切完之后**读（读的就是新的 CurrentImagePath）。
+        // 读不出来不算失败：切图本身成功了，只是这一轮看不到图——如实说清。
+        var bytes = TryEncodeCurrentForAgent();
+        var msg = $"Switched to \"{_items[hit].Name}\" (saved the previous image first).";
+        if (bytes is null)
+            msg += " Its bytes could not be read, so you cannot see it this round.";
+        return (true, msg, bytes);
+    }
+
+    /// <summary>
+    /// 把当前图编码成给模型看的那一份（与"带当前图片"同一个尺寸与格式）。
+    /// 失败返回 null、不抛——读图失败不该让一次成功的切图变成错误。
+    /// </summary>
+    private LlmClient.ChatImage? TryEncodeCurrentForAgent()
+    {
+        try
+        {
+            var path = CurrentImagePath();
+            if (path is null) return null;
+            var payload = ImagePayload.LoadAsync(path).GetAwaiter().GetResult();
+            return payload is null ? null : new LlmClient.ChatImage(ImagePayload.Mime, payload.Jpeg);
+        }
+        catch (Exception ex)
+        {
+            Log.Write("select_image: could not read the new image: " + ex.Message);
+            return null;
+        }
     }
 
     /// <summary>

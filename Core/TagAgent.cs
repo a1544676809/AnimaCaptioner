@@ -152,8 +152,14 @@ public sealed class TagAgent
         /// **这是本循环里唯一的写操作**（其余一切只产出提案）。它的副作用是
         /// 编辑器会先静默保存当前 caption——那本来就是换图的固有行为，
         /// 用户手动翻图也一样。所以工具说明里要求模型只在用户明确要求时调用。
+        ///
+        /// 返回的第三项（新那张图的字节）**是必需的，不是顺手给的**：图片只挂在
+        /// 最后一条用户消息上，所以切图之后模型看到的还是旧那张——**切了也看不见**。
+        /// 实测里模型因此干脆不切（切了没意义），用户看到的就是"让它逐张检查，
+        /// 它只检查了当前这一张"。所以切成功的图要当成一张新图塞回对话
+        /// （与 view_region 同一条路）。
         /// </summary>
-        (bool Ok, string Message) SelectImage(string name);
+        (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name);
 
         /// <summary>
         /// 当前这张图的**文件事实**（尺寸、EXIF 方向、格式、大小、被缩到多小），
@@ -411,8 +417,17 @@ public sealed class TagAgent
                         continue;
                     }
 
-                    var (ok, msg) = host.SelectImage(want);
+                    var (ok, msg, switched) = host.SelectImage(want);
                     log.Add(ok ? $"切到「{want}」" : $"切图失败（{want}）");
+
+                    // **把新图塞回对话**，否则模型切了也看不见（见 SelectImage 的注释）。
+                    if (ok && switched is not null)
+                    {
+                        pendingImages.Add(switched);
+                        msg += " The image you switched to is attached below — look at it " +
+                               "before you judge or describe anything.";
+                    }
+
                     Report(new ToolCallLog(call.Name, call.Arguments, msg));
                     messages.Add(LlmClient.ToolMessage(call.Id, msg));
                     continue;
@@ -672,9 +687,11 @@ public sealed class TagAgent
             if (pendingImages.Count > 0)
             {
                 var note = pendingImages.Count == 1
-                    ? "The enlarged region you asked for is attached below. Look at it."
-                    : $"The {pendingImages.Count} enlarged regions you asked for are attached " +
-                      "below, in the order you asked for them. Look at them.";
+                    ? "The image you asked for is attached below (an enlarged region, or the " +
+                      "image you just switched to). Look at it."
+                    : $"The {pendingImages.Count} images you asked for are attached below " +
+                      "(enlarged regions and/or the image you switched to), in the order you " +
+                      "asked for them. Look at them.";
                 messages.Add(LlmClient.UserMessage(note, pendingImages));
                 Log.Write($"agent: region images attached this round = {pendingImages.Count} " +
                           $"(budget left {imageBudget})");

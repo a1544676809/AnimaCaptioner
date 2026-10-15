@@ -475,12 +475,24 @@ public static class AgentKit
                     ["type"] = "integer",
                     ["description"] = "Maximum number of images to process (0 or omitted = all).",
                 },
+                ["instruction"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "What to do with EACH image. Omit it to write a fresh " +
+                                      "caption. Pass one to review/repair existing captions " +
+                                      "instead — e.g. \"Check the existing caption against this " +
+                                      "image: fix wrong tags, add what is missing, remove what " +
+                                      "is not there. Keep the description accurate.\" " +
+                                      "Combine with scope=\"all\" to walk the whole dataset. " +
+                                      "This is how to satisfy \"逐张检查一遍，该补的补、该删的删\".",
+                },
             },
             ["required"] = new JsonArray(),
         });
 
     /// <summary>`label_images` 解析出来的范围。<see cref="Problem"/> 为空 = 可以用。</summary>
-    public sealed record LabelRequest(string Scope, int Limit, string Problem)
+    public sealed record LabelRequest(string Scope, int Limit, string Problem,
+                                      string Instruction = "")
     {
         public bool Ok => Problem.Length == 0;
 
@@ -497,6 +509,7 @@ public static class AgentKit
     {
         var scope = "";
         var limit = 0;
+        var instruction = "";
 
         try
         {
@@ -507,6 +520,7 @@ public static class AgentKit
             var root = doc.RootElement;
             scope = Str(root, "scope").Trim().ToLowerInvariant();
             limit = (int)Num(root, "limit");
+            instruction = Str(root, "instruction").Trim();
         }
         catch (JsonException)
         {
@@ -517,7 +531,7 @@ public static class AgentKit
         if (scope is not ("unlabeled" or "all"))
             scope = "unlabeled";   // 认不出就选保守那一侧，不猜成覆盖
 
-        return new LabelRequest(scope, Math.Max(0, limit), "");
+        return new LabelRequest(scope, Math.Max(0, limit), "", instruction);
     }
 
     /// <summary>
@@ -1011,7 +1025,15 @@ public static class AgentKit
                 "not what \"补上这几个标签\" means. Its scope defaults to \"unlabeled\" (only " +
                 "images with no caption yet); use \"all\" ONLY when the user explicitly asks to " +
                 "redo every image.\n" +
-                "  Both can take a while for a large dataset; say so before you start.\n");
+                "  Both can take a while for a large dataset; say so before you start.\n" +
+                "  **If the user asks you to go through the dataset image by image** " +
+                "(\"逐张检查一遍\", \"check every image\", \"该补的补该删的删\"), call " +
+                LabelImagesToolName + " ONCE with scope=\"all\" and an `instruction` saying what " +
+                "to do with each image — do NOT try to walk the images yourself with " +
+                SelectImageToolName + ": one turn can only change one image (the proposal ends " +
+                "your turn), so a 17-image pass would need 17 separate messages. The bulk call " +
+                "runs one full conversation per image, each with that image attached, and writes " +
+                "the result.\n");
 
         return sb.ToString();
     }

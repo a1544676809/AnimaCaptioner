@@ -24,7 +24,7 @@ internal sealed class AgentHost : TagAgent.IHost
     /// 不该有窗体的内部状态。接上这三个具体实现的是 MainWindow。
     /// </summary>
     private readonly Func<IReadOnlyList<AgentImage>> _images;
-    private readonly Func<string, (bool Ok, string Message)> _selectImage;
+    private readonly Func<string, (bool Ok, string Message, LlmClient.ChatImage? Image)> _selectImage;
     private readonly Func<Task<string>> _imageInfo;
     private readonly Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>> _viewRegion;
 
@@ -41,7 +41,7 @@ internal sealed class AgentHost : TagAgent.IHost
 
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
-                     Func<string, (bool Ok, string Message)>? selectImage = null,
+                     Func<string, (bool Ok, string Message, LlmClient.ChatImage? Image)>? selectImage = null,
                      Func<Task<string>>? imageInfo = null,
                      Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null,
                      Func<bool>? canBatchLabel = null,
@@ -57,7 +57,7 @@ internal sealed class AgentHost : TagAgent.IHost
         _search = search;
         _vocab = vocab;
         _images = images ?? (() => Array.Empty<AgentImage>());
-        _selectImage = selectImage ?? (_ => (false, "Switching images is not available here."));
+        _selectImage = selectImage ?? (_ => (false, "Switching images is not available here.", null));
         _canBatchLabel = canBatchLabel;
         _labelImages = labelImages;
         _batchProgress = batchProgress;
@@ -137,7 +137,7 @@ internal sealed class AgentHost : TagAgent.IHost
     /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
     public IReadOnlyList<AgentImage> Images => _images();
 
-    public (bool Ok, string Message) SelectImage(string name) => _selectImage(name);
+    public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name) => _selectImage(name);
 
     public Task<string> ImageInfo() => _imageInfo();
 

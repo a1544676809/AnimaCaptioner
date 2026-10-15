@@ -761,8 +761,12 @@ public static class Agent
             Eq("第 1 张图", cropParts[1]!["type"]!.GetValue<string>(), "image_url");
             Eq("第 2 张图", cropParts[2]!["type"]!.GetValue<string>(), "image_url");
             var note = cropParts[0]!["text"]!.GetValue<string>();
-            True("文案说清这是放大区域、不是用户新说的话",
-                 note.Contains("enlarged region") && note.Contains("Look at"));
+            // 文案要让人明白"这是你要的图，不是用户新说的话"——否则模型会去**回答**
+            // 这条消息，而不是看它。切图也走同一条（文案里那句"or the image you just
+            // switched to"），所以判据不能写死"enlarged region"。
+            True("文案说清这是你要的图、不是用户新说的话",
+                 note.Contains("Look at") &&
+                 (note.Contains("enlarged region") || note.Contains("switched to")));
 
             // 没有带图时：工具不下发、host 也不会被调用
             var h2 = new FakeHost();
@@ -1583,6 +1587,78 @@ public static class Agent
             Eq("没给标签时不执行", h3.AddTagsCalls, 0);
         }
 
+        Console.WriteLine("\n=== 37. 逐张检查：切图要能看见 + 批量带指令 ===");
+        {
+            // 用户报的："我发现我让它逐张检查时，它不会切换到其他图。"
+            // 日志里那一轮：current_image / list_tags / view_region×3 / search_tags×8 /
+            // propose——全在当前这张，一次 select_image 都没有。两个根因，各钉一条。
+
+            // ---- 根因 1：切图必须把新那张的图**带回对话**，否则模型切了也看不见 ----
+            var h = new FakeHost();
+            h.Dataset.AddRange(new[]
+            {
+                new AgentImage("a", 0, true, 1),
+                new AgentImage("b", 1, true, 3, IsCurrent: true),
+            });
+            h.Turn(Tool("s1", AgentKit.SelectImageToolName, """{"name":"a"}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h, "切到 a 看看");
+
+            // 切图之后应当多出一条带图的 user 消息（与 view_region 同一条路）
+            var withImg = h.SeenMessages.SelectMany(r => r)
+                .Count(m => m["role"]?.GetValue<string>() == "user" &&
+                            m["content"] is System.Text.Json.Nodes.JsonArray);
+            True("切图后新那张图被附进对话（否则切了也看不见）", withImg >= 1);
+
+            var attachNote = h.SeenMessages.SelectMany(r => r)
+                .Where(m => m["role"]?.GetValue<string>() == "user" &&
+                            m["content"] is System.Text.Json.Nodes.JsonArray)
+                .Select(m => ((System.Text.Json.Nodes.JsonArray)m["content"]!)[0]!["text"]!
+                             .GetValue<string>())
+                .LastOrDefault() ?? "";
+            True("文案说明这是「你要的图」、并要它看",
+                 attachNote.Contains("Look at") && attachNote.Contains("switched to"));
+
+            // 切图失败时不该塞一张空图进去
+            var h2 = new FakeHost { SelectSucceeds = false };
+            h2.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h2.Turn(Tool("s2", AgentKit.SelectImageToolName, """{"name":"nope"}"""))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "切到 nope");
+            True("切图失败时不附任何图",
+                 !h2.SeenMessages.SelectMany(r => r)
+                     .Any(m => m["role"]?.GetValue<string>() == "user" &&
+                               m["content"] is System.Text.Json.Nodes.JsonArray));
+
+            // 已经是当前这张：不附（没有新图可看）
+            var h3 = new FakeHost();
+            h3.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h3.Turn(Tool("s3", AgentKit.SelectImageToolName, """{"name":"a"}"""))
+              .Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h3, "切到 a");
+            True("本来就在这张时不重复附一张",
+                 !h3.SeenMessages.SelectMany(r => r)
+                     .Any(m => m["role"]?.GetValue<string>() == "user" &&
+                               m["content"] is System.Text.Json.Nodes.JsonArray));
+
+            // ---- 根因 2：propose 会结束这一轮，所以"逐张检查 17 张"必须靠批量带指令 ----
+            var r1 = AgentKit.ParseLabelRequest(
+                """{"scope":"all","instruction":"逐张检查现有标注：该补的补、该删的删。"}""");
+            True("instruction 解析得到", r1.Ok && r1.Instruction.Contains("逐张检查"));
+            True("scope=all 时 RedoAll 为真（检查全部图就得是 all）", r1.RedoAll);
+            Eq("不给 instruction 时是空串（走默认的写标注）",
+               AgentKit.ParseLabelRequest("""{"scope":"unlabeled"}""").Instruction, "");
+
+            True("工具描述里写了 instruction 怎么用、以及它才是逐张检查的正路",
+                 AgentKit.LabelImagesTool.Parameters["properties"]!["instruction"]!["description"]!
+                     .GetValue<string>().Contains("逐张检查"));
+            var prompt = AgentKit.SystemPrompt(true, false, canBatchLabel: true);
+            True("系统提示明确说「别自己用 select_image 走一遍」",
+                 prompt.Contains("do NOT try to walk the images yourself"));
+            True("并说清原因：一轮只能改一张",
+                 prompt.Contains("one turn can only change one image"));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1778,15 +1854,28 @@ public static class Agent
             return Task.FromResult((true, "enlarged region attached", (IReadOnlyList<LlmClient.ChatImage>)images));
         }
 
-        public (bool Ok, string Message) SelectImage(string name)
+        public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name)
         {
             SelectRequests.Add(name);
-            if (!SelectSucceeds) return (false, $"No image named \"{name}\".");
+            if (!SelectSucceeds) return (false, $"No image named \"{name}\".", null);
+
+            // 本来就在这张：与真实现一致——不返回图（没有新图可看）
+            var already = Dataset.Any(x => x.IsCurrent && x.Name == name);
+            if (already) return (true, $"Already on \"{name}\".", null);
+
             // 切换当前项，并让下一次 current_image 能看到变化
             for (var i = 0; i < Dataset.Count; i++)
                 Dataset[i] = Dataset[i] with { IsCurrent = Dataset[i].Name == name };
-            return (true, $"Switched to \"{name}\".");
+            // 真实现会把新那张的字节带回来（否则模型切了也看不见）。这里给一小段假的，
+            // 让"切图会附带一张图"这件事在回归里可见。
+            var img = SelectReturnsImage
+                ? new LlmClient.ChatImage("image/jpeg", new byte[] { 1, 2, 3 })
+                : null;
+            return (true, $"Switched to \"{name}\".", img);
         }
+
+        /// <summary>切图是否带回新那张的字节（默认带，与真实现一致）。</summary>
+        public bool SelectReturnsImage { get; set; } = true;
 
         public FakeHost Turn(LlmClient.ToolTurn turn)
         {

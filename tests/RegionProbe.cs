@@ -259,9 +259,9 @@ public static class RegionProbe
 
         public Task<string> SearchWebAsync(string query, CancellationToken ct) =>
             Task.FromResult("web search is off in this probe");
-
-        public (bool Ok, string Message) SelectImage(string name) =>
-            (false, "image switching is off in this probe");
+        /// <summary>切图：探针里返回"成功但没有图"。</summary>
+        public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name) =>
+            (true, $"Switched to \"{name}\".", null);
 
         public Task<string> ImageInfo() => Task.FromResult(
             "Current image: probe (1 of 1). File: image/jpeg, 12 KB, stored 1200x800 " +
