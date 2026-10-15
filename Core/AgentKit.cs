@@ -106,6 +106,7 @@ public static class AgentKit
     public const string ListTagsToolName = "list_tags";
     public const string SetTagSectionToolName = "set_tag_section";
     public const string SortTagsToolName = "sort_tags";
+    public const string AddTagsToImagesToolName = "add_tags_to_images";
 
     /// <summary>九个大类的 `key(中文标题)` 清单，塞进工具描述里让模型知道有哪些可选值。</summary>
     public static string SectionCatalog() =>
@@ -160,6 +161,10 @@ public static class AgentKit
             "按官方大类顺序重排标签（段内顺序不动，散文尾巴不碰）。", "需要开启「完全权限」"),
         new(LabelImagesToolName, "批量打标（label_images）",
             "一次给整个数据集打标，无人值守跑完。", "需要打开一个数据集（标注模式）"),
+        new(AddTagsToImagesToolName, "批量补标签（add_tags_to_images）",
+            "给多张图统一补几个标签：只加缺的那些，已有的不重复、英文描述不动。" +
+            "不读图也不叫模型，所以是瞬间完成的纯文本操作。",
+            "需要打开一个数据集（标注模式）"),
         new(SaveToolName, "写盘（save_caption）",
             "把改动写进 .txt 文件。", "需要开启「完全权限」"),
     };
@@ -180,11 +185,120 @@ public static class AgentKit
         ToolCatalog.FirstOrDefault(t => t.Name == name)?.Required == true;
 
     /// <summary>
-    /// 读：当前提示词的标签清单，**带每一个的大类**。
+    /// 写：**给多张图统一补几个标签**（不读图、不叫模型，纯文本操作）。
+    ///
+    /// 补的是助手自己指出过的缺口："`label_images` 只能选未标注或全部重做，
+    /// 没法只往里塞几个标签；而逐张修改一次只能改当前这一张"——于是"给所有缺
+    /// `you chan` 的图补上"原本只能一张一张来。
+    /// </summary>
+    public static AgentTool AddTagsToImagesTool => new(
+        AddTagsToImagesToolName,
+        "Add a few tags to MANY images at once, keeping each caption's existing tags and its " +
+        "English description untouched. Each image only receives the tags it is missing, so this " +
+        "is the right tool for \"make sure every image has the trigger word\" / " +
+        "\"给所有缺 X 的图补上\" / \"把 newest, safe 加到所有图里\". " +
+        "This does NOT look at the images and does NOT call a model: it is a text edit, so it is " +
+        "instant and costs nothing. Use it instead of " + LabelImagesToolName + " whenever the " +
+        "user wants to ADD tags rather than re-caption; " + LabelImagesToolName + " re-reads the " +
+        "images and OVERWRITES the captions, which is not what \"补上这几个标签\" means. " +
+        "Only images that already have a caption are touched unless include_unlabeled is true.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["tags"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "The exact tag strings to add, e.g. [\"you chan\", " +
+                                      "\"newest\", \"safe\"].",
+                },
+                ["include_unlabeled"] = new JsonObject
+                {
+                    ["type"] = "boolean",
+                    ["description"] = "Also touch images that have no caption yet (default " +
+                                      "false). Those would end up with only these few tags and " +
+                                      "no description, so leave it off unless the user asks.",
+                },
+                ["limit"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "Maximum number of images (0 or omitted = all that need it).",
+                },
+            },
+            ["required"] = new JsonArray { "tags" },
+        });
+
+    /// <summary>`add_tags_to_images` 解析出来的请求。</summary>
+    public sealed record AddTagsRequest(IReadOnlyList<string> Tags, bool IncludeUnlabeled,
+                                        int Limit, string Problem)
+    {
+        public bool Ok => Problem.Length == 0 && Tags.Count > 0;
+    }
+
+    /// <summary>解析 `add_tags_to_images`。</summary>
+    public static AddTagsRequest ParseAddTagsRequest(string arguments)
+    {
+        var tags = new List<string>();
+        var includeUnlabeled = false;
+        var limit = 0;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return new AddTagsRequest(tags, false, 0, "The arguments were not a JSON object.");
+
+            var root = doc.RootElement;
+            if (root.TryGetProperty("tags", out var arr))
+            {
+                if (arr.ValueKind == JsonValueKind.Array)
+                    foreach (var e in arr.EnumerateArray())
+                    {
+                        var t = (e.ValueKind == JsonValueKind.String ? e.GetString() : null)?.Trim() ?? "";
+                        if (t.Length > 0) tags.Add(t);
+                    }
+                else if (arr.ValueKind == JsonValueKind.String)
+                {
+                    // 写成 "a, b, c" 或单个标签也认（模型常这么写）
+                    foreach (var piece in (arr.GetString() ?? "")
+                             .Split(new[] { ',', '，', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var t = piece.Trim();
+                        if (t.Length > 0) tags.Add(t);
+                    }
+                }
+            }
+
+            includeUnlabeled = root.TryGetProperty("include_unlabeled", out var iu) &&
+                               iu.ValueKind == JsonValueKind.True;
+            limit = (int)Num(root, "limit");
+        }
+        catch (JsonException)
+        {
+            return new AddTagsRequest(tags, false, 0, "The arguments were not valid JSON.");
+        }
+
+        if (tags.Count == 0)
+            return new AddTagsRequest(tags, false, 0, "No tags were given.");
+
+        // 去掉重复（大小写不敏感），保留第一次出现的顺序
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        tags = tags.Where(seen.Add).ToList();
+
+        return new AddTagsRequest(tags, includeUnlabeled, Math.Max(0, limit), "");
+    }
     ///
     /// 与 `current_image` 的分工：那个回答"这是哪张图、数据集里还有什么"，
     /// 这个回答"现在这行提示词由哪些标签组成、各自属于哪一类"。
     /// 后者是模型要动顺序或改类型时的前提——不知道类型就没法判断该排到哪。
+    /// </summary>
+    /// <summary>
+    /// 读：当前提示词的标签清单，**带每一个的大类**。
+    ///
+    /// 与 `current_image` 的分工：那个回答"这是哪张图、数据集里还有什么"，
+    /// 这个回答"现在这行提示词由哪些标签组成、各自属于哪一类"。
     /// </summary>
     public static AgentTool ListTagsTool => new(
         ListTagsToolName,
@@ -705,8 +819,14 @@ public static class AgentKit
             tools.Add(SortTagsTool);
         }
 
-        // 批量放在 save 之前：它是"一次做完一大批"，语义上更接近主动作。
-        if (canBatchLabel) tools.Add(LabelImagesTool);
+        // 批量放在 save 之前：它们是"一次做完一大批"，语义上更接近主动作。
+        // 两个批量工具同一个前提（有数据集）：都是"用户明确要求的整集操作"，
+        // 所以都不额外要求完全权限。
+        if (canBatchLabel)
+        {
+            tools.Add(AddTagsToImagesTool);
+            tools.Add(LabelImagesTool);
+        }
         if (canSave) tools.Add(SaveTool);
         tools.Add(ProposeTool);
 
@@ -877,18 +997,21 @@ public static class AgentKit
                 "user applies and saves it themselves. Never say you saved, wrote or changed a " +
                 "file.\n");
 
-        // 批量。仅在标注模式、有数据集、且不在批量循环里时才有这个工具。
+        // 批量。仅在标注模式、有数据集、且不在批量循环里时才有这些工具。
         if (canBatchLabel)
             sb.Append(
-                "- Bulk labelling: when the user asks you to caption the dataset as a whole " +
-                "(\"把剩下的都标了\", \"批量打标\", \"auto-caption everything\"), call " +
-                LabelImagesToolName + " ONCE with the right scope. It does the whole job by " +
-                "itself — each image is read, tagged and written to disk — and it can take " +
-                "minutes, so tell the user it has started and do not also try to label images " +
-                "one by one. Default scope is \"unlabeled\" (only images with no caption yet); " +
-                "use \"all\" ONLY when the user explicitly asks to redo every image, because " +
-                "that overwrites captions that already exist. If the user actually means one " +
-                "specific image, do not use it: just look at that image and propose.\n");
+                "- Bulk work on the dataset. Two different jobs — pick the right one:\n" +
+                "  · `" + AddTagsToImagesToolName + "` ADDS a few tags to many images, keeping " +
+                "every caption's existing tags and its description. It does not read the images " +
+                "and does not call a model, so it is instant and free. Use this for \"every image " +
+                "should have the trigger word\", \"给所有缺 X 的图补上\", \"把 newest, safe 加到所有图里\".\n" +
+                "  · `" + LabelImagesToolName + "` RE-CAPTIONS images from scratch: each image is " +
+                "read and its .txt is OVERWRITTEN. Use it only when the user wants captions " +
+                "written, not when they want tags added — overwriting a caption they polished is " +
+                "not what \"补上这几个标签\" means. Its scope defaults to \"unlabeled\" (only " +
+                "images with no caption yet); use \"all\" ONLY when the user explicitly asks to " +
+                "redo every image.\n" +
+                "  Both can take a while for a large dataset; say so before you start.\n");
 
         return sb.ToString();
     }

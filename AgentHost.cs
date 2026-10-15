@@ -37,6 +37,7 @@ internal sealed class AgentHost : TagAgent.IHost
     private readonly Func<string>? _describeTags;
     private readonly Func<IReadOnlyList<string>, string?, (int Changed, string Message)>? _setTagSections;
     private readonly Func<(bool Changed, string Message)>? _sortTags;
+    private readonly Func<IReadOnlyList<string>, bool, int, (int Changed, string Message)>? _addTagsToImages;
 
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
@@ -48,7 +49,8 @@ internal sealed class AgentHost : TagAgent.IHost
                      Action<string>? batchProgress = null,
                      Func<string>? describeTags = null,
                      Func<IReadOnlyList<string>, string?, (int Changed, string Message)>? setTagSections = null,
-                     Func<(bool Changed, string Message)>? sortTags = null)
+                     Func<(bool Changed, string Message)>? sortTags = null,
+                     Func<IReadOnlyList<string>, bool, int, (int Changed, string Message)>? addTagsToImages = null)
     {
         _cfg = cfg;
         _llm = llm;
@@ -62,6 +64,7 @@ internal sealed class AgentHost : TagAgent.IHost
         _describeTags = describeTags;
         _setTagSections = setTagSections;
         _sortTags = sortTags;
+        _addTagsToImages = addTagsToImages;
 
         // 两个图像工具的兜底都是"如实说没有"：没接上实现时不抛异常、也不假装成功，
         // 免得出现"工具调了、回了句看不懂的话、模型照着编"。
@@ -118,6 +121,12 @@ internal sealed class AgentHost : TagAgent.IHost
 
     public (bool Changed, string Message) SortTags() =>
         _sortTags is null ? (false, "Reordering is not available here.") : _sortTags();
+
+    public (int Changed, string Message) AddTagsToImages(IReadOnlyList<string> tags,
+                                                         bool includeUnlabeled, int limit) =>
+        _addTagsToImages is null
+            ? (0, "Adding tags across the dataset is not available here.")
+            : _addTagsToImages(tags, includeUnlabeled, limit);
 
     public void ReportBatchProgress(string text)
     {

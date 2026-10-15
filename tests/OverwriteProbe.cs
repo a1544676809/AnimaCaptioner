@@ -191,6 +191,9 @@ public static class OverwriteProbe
         /// <summary>探针里不提供批量打标。</summary>
         /// <summary>探针里不开标签编辑能力。</summary>
         /// <summary>探针不过滤工具开关。</summary>
+        /// <summary>探针里不提供批量补标签。</summary>
+        public (int Changed, string Message) AddTagsToImages(IReadOnlyList<string> tags, bool includeUnlabeled, int limit) =>
+            (0, "bulk add tags is off in this probe");
         public AppSettings? Settings => null;
         public bool CanEditTags => false;
 

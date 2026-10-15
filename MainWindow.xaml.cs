@@ -2429,6 +2429,79 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// `add_tags_to_images`：给多张图统一补几个标签。
+    ///
+    /// **纯文本操作**：不读图、不叫模型。所以它是同步的、瞬间完成的，与批量打标
+    /// （要跑几分钟）完全不同的一条路。
+    ///
+    /// 判据取自**盘上那份** .txt，不是编辑器里的内存状态：
+    /// 这件事问的是"哪几张还缺这个标签"，而答案在文件里。用内存状态会在
+    /// "当前这张改了没存"时给出错误答案，而用户看到的数字会莫名其妙地差一张。
+    ///
+    /// 逐张落盘，一张失败不中断（与批量打标同一个理由：中途停下只会留下
+    /// "跑到一半"的状态）。返回的数字是**真的改了**的，不是"看过的"。
+    /// </summary>
+    private (int Changed, string Message) AgentAddTagsToImages(IReadOnlyList<string> tags,
+                                                               bool includeUnlabeled, int limit)
+    {
+        if (_mode != PromptMode.Label || _items.Count == 0)
+            return (0, "There is no dataset open, so there is nothing to update.");
+
+        // 先把每张盘上的标签读出来（在 UI 线程上拿路径，读盘可以在外面做）
+        var all = new List<AppendCandidate>(_items.Count);
+        for (var i = 0; i < _items.Count; i++)
+        {
+            var it = _items[i];
+            var path = it.CaptionPath;
+            var has = File.Exists(path);
+            all.Add(new AppendCandidate(i, it.Name, has,
+                                        has ? CaptionFile.Load(path).Tags : new List<string>()));
+        }
+
+        var options = new AppendOptions(IncludeUnlabeled: includeUnlabeled, Limit: limit);
+        var picked = BatchTagAdd.Choose(all, tags, options);
+        if (picked.Count == 0)
+            return (0, BatchTagAdd.Describe(picked, tags, all.Count));
+
+        var changed = 0;
+        var failed = new List<string>();
+        foreach (var c in picked)
+        {
+            try
+            {
+                var it = _items[c.Index];
+                var before = File.Exists(it.CaptionPath)
+                    ? File.ReadAllText(it.CaptionPath, Encoding.UTF8)
+                    : "";
+                var (text, added, _) = BatchTagAdd.Merge(before, tags, _vocab);
+                if (added == 0) continue;
+
+                File.WriteAllText(it.CaptionPath, text, new UTF8Encoding(false));
+                changed++;
+                // 让列表里的标签数/状态重新从盘上读（Tags 是懒加载的，清掉缓存即可）
+                it.Caption = null;
+                Log.Write($"batch add tags: {it.Name} +{added} -> {string.Join(", ", tags)}");
+            }
+            catch (Exception ex)
+            {
+                failed.Add($"{c.Name}: {ex.Message}");
+                Log.Write($"batch add tags failed at {c.Name}: {ex}");
+            }
+        }
+
+        // 当前那一张如果被改了，编辑器也要跟着（否则列表与正文框会不一致）
+        if (picked.Any(c => c.Index == _index))
+            OnUiThread(() => { LoadCurrent(); return true; }, true);
+
+        var msg = $"Added {string.Join(", ", tags)} to {changed} image(s). " +
+                  "Every caption kept its existing tags and its English description; " +
+                  "each image only received the tags it was missing." +
+                  (failed.Count > 0 ? $" {failed.Count} failed: {string.Join("; ", failed.Take(5))}" : "");
+        Log.Write($"agent add_tags_to_images: {changed}/{picked.Count} changed, {failed.Count} failed");
+        return (changed, msg);
+    }
+
+    /// <summary>
     /// 批量的**核心循环**。菜单入口和 `label_images` 工具都走这里——两份实现
     /// 迟早漂移，而漂移的后果是"助手批量打的和菜单打的不是同一种东西"。
     ///
@@ -5312,7 +5385,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
                                      // 读标签/改类型/规整顺序（写操作与「完全权限」同一个开关）
                                      describeTags: AgentDescribeTags,
                                      setTagSections: AgentSetTagSections,
-                                     sortTags: AgentSortTags);
+                                     sortTags: AgentSortTags,
+                                     addTagsToImages: AgentAddTagsToImages);
 
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,

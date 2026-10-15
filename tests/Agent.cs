@@ -1177,7 +1177,7 @@ public static class Agent
             True("开了批量就下发 label_images", withBatch.Contains(AgentKit.LabelImagesToolName));
             Eq("顺序：批量在 save 与 propose 之前", withBatch,
                "current_image|image_info|search_tags|web_search|select_image|view_region|" +
-               "label_images|save_caption|propose");
+               "add_tags_to_images|label_images|save_caption|propose");
 
             var noBatch = string.Join("|", AgentKit.Tools(true, withImages: true, canSave: true)
                                                 .Select(t => t.Name));
@@ -1275,7 +1275,8 @@ public static class Agent
                  on.Contains(AgentKit.SortTagsToolName));
             Eq("顺序：读/改/排序在批量与 save 之前", on,
                "current_image|image_info|search_tags|web_search|select_image|view_region|" +
-               "list_tags|set_tag_section|sort_tags|label_images|save_caption|propose");
+               "list_tags|set_tag_section|sort_tags|add_tags_to_images|label_images|" +
+               "save_caption|propose");
 
             var off = string.Join("|", AgentKit.Tools(true, canSave: true).Select(t => t.Name));
             True("没开时一个都不下发",
@@ -1450,6 +1451,138 @@ public static class Agent
             Eq("空表也能往返", AppSettings.FromJson(new AppSettings().ToJson())?.DisabledTools.Count, 0);
         }
 
+        Console.WriteLine("\n=== 36. 批量补标签（不读图、不叫模型）===");
+        {
+            // 助手自己指出过这个缺口："label_images 只能选未标注或全部重做，没法只往里
+            // 塞几个标签；而逐张修改一次只能改当前这一张"。这一节钉住那条补漏的路。
+            var add = new[] { "you chan", "newest", "safe" };
+
+            // ---- Merge：散文一字不动、已有的不重复、加完规整 ----
+            var (t1, a1, s1) = BatchTagAdd.Merge("solo, smile. She stands.", add, null);
+            Eq("加了缺的三个", a1, 3);
+            True("散文尾巴一字不动", t1.EndsWith("She stands."));
+            True("三个都进去了", add.All(x => t1.Contains(x)));
+            True("已有的没重复加", !s1.Contains("solo"));
+
+            var (t2, a2, _) = BatchTagAdd.Merge("newest, safe, you chan, solo", add, null);
+            Eq("全都有时一个都不加", a2, 0);
+            Eq("内容原样返回（不做无谓重排）", t2, "newest, safe, you chan, solo");
+
+            var (_, a3, skipped) = BatchTagAdd.Merge("Newest, SAFE. desc", add, null);
+            Eq("大小写不敏感：Safe 与 safe 是同一个", a3, 1);
+            True("重复的那些记进 skipped", skipped.Count == 2);
+
+            var (t4, a4, _) = BatchTagAdd.Merge("", add, null);
+            Eq("空 caption 也能补（给未标注的用）", a4, 3);
+            True("没有散文时不产生尾巴", !t4.Contains("."));
+
+            // 加完要规整：newest(period)/safe(safety) 应当排到 count 之前
+            var (t5, _, _) = BatchTagAdd.Merge("1girl, solo. desc", add, null);
+            True("newest 排到 1girl 之前（period 在 count 前）",
+                 t5.IndexOf("newest") < t5.IndexOf("1girl"));
+            True("you chan 在 1girl 之后（character 在 count 后）",
+                 t5.IndexOf("you chan") > t5.IndexOf("1girl"));
+            True("散文仍然完整", t5.EndsWith("desc"));
+
+            // ---- Choose：只挑真的缺的，且默认不碰未标注的 ----
+            var all = new List<AppendCandidate>
+            {
+                new(0, "a", Labeled: true,  Tags: new[] { "solo", "you chan", "newest", "safe" }),
+                new(1, "b", Labeled: true,  Tags: new[] { "solo", "smile" }),
+                new(2, "c", Labeled: true,  Tags: new[] { "newest" }),
+                new(3, "d", Labeled: false, Tags: Array.Empty<string>()),
+            };
+            var picked = BatchTagAdd.Choose(all, add, new AppendOptions());
+            Eq("挑出缺标签的两张（已全有的不进列表）",
+               string.Join("|", picked.Select(c => c.Name)), "b|c");
+            Eq("未标注的默认不碰", picked.Any(c => c.Name == "d"), false);
+
+            var withBlank = BatchTagAdd.Choose(all, add, new AppendOptions(IncludeUnlabeled: true));
+            Eq("显式打开才连未标注的一起处理",
+               string.Join("|", withBlank.Select(c => c.Name)), "b|c|d");
+
+            var limited = BatchTagAdd.Choose(all, add, new AppendOptions(Limit: 1));
+            Eq("Limit 生效", string.Join("|", limited.Select(c => c.Name)), "b");
+
+            Eq("没有要加的标签时不挑任何图",
+               BatchTagAdd.Choose(all, Array.Empty<string>(), new AppendOptions()).Count, 0);
+
+            True("摘要写清会补哪几个、以及不会动已有描述",
+                 BatchTagAdd.Describe(picked, add, all.Count).Contains("you chan") &&
+                 BatchTagAdd.Describe(picked, add, all.Count).Contains("英文描述不动"));
+            True("没有可补的图时如实说",
+                 BatchTagAdd.Describe(new List<AppendCandidate>(), add, all.Count)
+                     .Contains("没有需要补的图"));
+
+            // ---- Missing 的边界 ----
+            Eq("空白标签被忽略",
+               BatchTagAdd.Missing(new[] { "a" }, new[] { "  ", "a", "b" }).Count, 1);
+            Eq("have 为 null 也不炸",
+               BatchTagAdd.Missing(null!, new[] { "x" }).Count, 1);
+
+            // ---- 工具：参数解析 + 下发 ----
+            var r1 = AgentKit.ParseAddTagsRequest("""{"tags":["you chan","newest","safe"]}""");
+            True("解析正常", r1.Ok && r1.Tags.Count == 3 && !r1.IncludeUnlabeled && r1.Limit == 0);
+            var r2 = AgentKit.ParseAddTagsRequest("""{"tags":"you chan, newest","include_unlabeled":true,"limit":5}""");
+            True("tags 写成字符串、带逗号也认", r2.Ok && r2.Tags.Count == 2);
+            True("include_unlabeled 与 limit 读得到", r2.IncludeUnlabeled && r2.Limit == 5);
+            var r3 = AgentKit.ParseAddTagsRequest("""{"tags":["safe","SAFE","Safe"]}""");
+            Eq("标签去重（大小写不敏感）", r3.Tags.Count, 1);
+            True("没给 tags 报错", !AgentKit.ParseAddTagsRequest("{}").Ok);
+            True("坏 JSON 报错", !AgentKit.ParseAddTagsRequest("nope").Ok);
+
+            var withBatch = string.Join("|", AgentKit.Tools(true, withImages: true,
+                                                           canBatchLabel: true)
+                                                   .Select(t => t.Name));
+            True("有数据集时下发 add_tags_to_images",
+                 withBatch.Contains(AgentKit.AddTagsToImagesToolName));
+            Eq("顺序：补标签在批量打标之前", withBatch,
+               "current_image|image_info|search_tags|web_search|select_image|" +
+               "add_tags_to_images|label_images|propose");
+            True("没数据集时不下发",
+                 !AgentKit.Tools(true).Any(t => t.Name == AgentKit.AddTagsToImagesToolName));
+            True("工具描述说清它与批量打标的区别（不读图、不覆盖）",
+                 AgentKit.AddTagsToImagesTool.Description.Contains("OVERWRITES"));
+            True("清单里也有它（否则它永远关不掉）",
+                 AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.AddTagsToImagesToolName));
+            True("系统提示把它与批量打标并列讲清",
+                 AgentKit.SystemPrompt(true, false, canBatchLabel: true)
+                     .Contains(AgentKit.AddTagsToImagesToolName));
+
+            // ---- 工具真被调用 ----
+            var h = new FakeHost { CanBatchLabel = true };
+            h.Dataset.Add(new AgentImage("a", 0, true, 2, IsCurrent: true));
+            h.Turn(Tool("a1", AgentKit.AddTagsToImagesToolName,
+                        """{"tags":["you chan"],"include_unlabeled":true,"limit":7}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "给所有缺 you chan 的图补上");
+            Eq("只调一次", h.AddTagsCalls, 1);
+            Eq("标签原样传下去", string.Join(",", h.LastAddTags), "you chan");
+            True("include_unlabeled 与 limit 传下去了",
+                 h.LastAddIncludeUnlabeled && h.LastAddLimit == 7);
+            True("结果如实回给模型",
+                 h.SeenMessages.SelectMany(r => r)
+                     .Any(m => m["role"]?.GetValue<string>() == "tool" &&
+                               (m["content"]?.GetValue<string>() ?? "").Contains("3 image")));
+            True("日志里记了", o.Log.Any(l => l.Contains("批量补标签")));
+
+            // 没数据集时回绝，不碰 host
+            var h2 = new FakeHost { CanBatchLabel = false };
+            h2.Turn(Tool("a2", AgentKit.AddTagsToImagesToolName, """{"tags":["x"]}"""))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var denied = Run(h2, "补一下");
+            Eq("没能力时一次都不调", h2.AddTagsCalls, 0);
+            True("如实记成回绝", denied.Log.Any(l => l.Contains("不可用")));
+
+            // 参数不合法时也不碰 host
+            var h3 = new FakeHost { CanBatchLabel = true };
+            h3.Dataset.Add(new AgentImage("a", 0, true, 2, IsCurrent: true));
+            h3.Turn(Tool("a3", AgentKit.AddTagsToImagesToolName, "{}"))
+              .Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h3, "补一下");
+            Eq("没给标签时不执行", h3.AddTagsCalls, 0);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1539,6 +1672,22 @@ public static class Agent
         // ---- 标签清单 / 类型 / 排序 ----
         /// <summary>探针不过滤工具开关。</summary>
         public AppSettings? Settings => null;
+
+        public int AddTagsCalls { get; private set; }
+        public List<string> LastAddTags { get; private set; } = new();
+        public bool LastAddIncludeUnlabeled { get; private set; }
+        public int LastAddLimit { get; private set; }
+        public int AddTagsChanges { get; set; } = 3;
+        public string AddTagsMessage { get; set; } = "Added you chan, newest, safe to 3 image(s).";
+
+        public (int Changed, string Message) AddTagsToImages(IReadOnlyList<string> tags, bool includeUnlabeled, int limit)
+        {
+            AddTagsCalls++;
+            LastAddTags = tags.ToList();
+            LastAddIncludeUnlabeled = includeUnlabeled;
+            LastAddLimit = limit;
+            return (AddTagsChanges, AddTagsMessage);
+        }
         public bool CanEditTags { get; set; }
 
         /// <summary>DescribeTags 返回什么（默认给一条带类型的清单）。</summary>

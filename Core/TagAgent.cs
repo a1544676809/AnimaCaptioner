@@ -119,6 +119,13 @@ public sealed class TagAgent
         AppSettings? Settings { get; }
 
         /// <summary>
+        /// 给多张图统一补几个标签（**纯文本操作**：不读图、不叫模型）。
+        /// 返回：真的改了几张 + 一句给模型看的结果说明。
+        /// </summary>
+        (int Changed, string Message) AddTagsToImages(IReadOnlyList<string> tags,
+                                                     bool includeUnlabeled, int limit);
+
+        /// <summary>
         /// 带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。
         /// </summary>
         /// <param name="onProgress">
@@ -512,6 +519,37 @@ public sealed class TagAgent
                         var (changed, msg) = host.SortTags();
                         text = msg;
                         log.Add(changed ? "规整顺序 → 已重排" : "规整顺序 → 本来就是有序的");
+                    }
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.AddTagsToImagesToolName, StringComparison.Ordinal))
+                {
+                    string text;
+                    if (!canBatchLabel)
+                    {
+                        text = "Adding tags across the dataset is not available in this " +
+                               "conversation (it needs a dataset open in label mode).";
+                        log.Add("批量补标签（不可用）→ 已回绝");
+                    }
+                    else
+                    {
+                        var req = AgentKit.ParseAddTagsRequest(call.Arguments);
+                        if (!req.Ok)
+                        {
+                            text = req.Problem.Length > 0 ? req.Problem : "No tags were given.";
+                            log.Add("批量补标签 → 参数不合法");
+                        }
+                        else
+                        {
+                            // 同步、瞬时：不读图也不发请求，所以不需要"长工具"那套进度机制
+                            var (changed, msg) = host.AddTagsToImages(req.Tags, req.IncludeUnlabeled,
+                                                                      req.Limit);
+                            text = msg;
+                            log.Add($"批量补标签 {changed} 张 -> {string.Join(", ", req.Tags)}");
+                        }
                     }
                     Report(new ToolCallLog(call.Name, call.Arguments, text));
                     messages.Add(LlmClient.ToolMessage(call.Id, text));
