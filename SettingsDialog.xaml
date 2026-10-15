@@ -228,19 +228,27 @@
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                Text="本地模型首次请求要编译 GPU kernel，可能明显偏慢；超时设大一些更稳妥。" />
 
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="下面这组是**翻译与短任务**用的（标签释义、中译英散文、问模型找标签）：一句进一句出，400 就够，放大没有收益。AI 助手有自己的一组，在「AI 助手」页里。" />
+
                     <Grid ColumnSpacing="8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
-                        <NumberBox x:Name="MaxTokensBox" Header="max_tokens" Minimum="32" Maximum="8192"
+                        <NumberBox x:Name="MaxTokensBox" Header="max_tokens（翻译）" Minimum="32" Maximum="1048576"
                                    SpinButtonPlacementMode="Compact" />
                         <NumberBox Grid.Column="1" x:Name="TempBox" Header="temperature" Minimum="0" Maximum="2"
                                    SmallChange="0.1" SpinButtonPlacementMode="Compact" />
                         <NumberBox Grid.Column="2" x:Name="TimeoutBox" Header="超时（秒）" Minimum="10" Maximum="3600"
                                    SpinButtonPlacementMode="Compact" />
                     </Grid>
+
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="上限放到 1048576 是按服务端可能声明的最大输出（实测 DeepSeek 报 393216）。翻译那条路不建议调大。" />
                 </StackPanel>
 
                 <!-- ============ AI 助手 ============ -->
@@ -264,6 +272,24 @@
                     <TextBlock FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                Text="一轮 = 一次请求，一轮里模型可以同时发多个工具调用。给得大，复杂问题能查得透；每次请求十几秒，用光了就是可能的等待更久。默认 32。" />
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <!-- 0 = 自动。**默认就是 0**，因为写死一个数永远是猜：
+                             服务端自己报的出/上下文上限才是依据（见设置页那行提示）。 -->
+                        <NumberBox x:Name="AgentMaxTokensBox" Header="max_tokens（0 = 自动）"
+                                   Minimum="0" Maximum="1048576" SmallChange="1024"
+                                   SpinButtonPlacementMode="Compact" />
+                        <NumberBox Grid.Column="1" x:Name="AgentTempBox" Header="temperature"
+                                   Minimum="0" Maximum="2" SmallChange="0.1"
+                                   SpinButtonPlacementMode="Compact" />
+                    </Grid>
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="助手每一轮的额度单独设：一轮里可能带图（约 850 token）、带整份对话历史，还要先写几百 token 的思考链再发工具调用——实测复杂打标会把原来写死的 2400 用光。填 0 = 自动：按服务端 /models 报的输出上限算（没报就按上下文的一半），本机不联网时兜底 16384。" />
 
                     <!-- 完全权限。刻意排在最后、并单独给一段说明：它推翻的是
                          "助手只出提案、落盘由人点一下"这条原则，不该被顺手勾上。 -->

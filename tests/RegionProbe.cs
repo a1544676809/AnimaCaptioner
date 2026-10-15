@@ -202,6 +202,13 @@ public static class RegionProbe
         public List<string> SeenContent { get; } = new();
 
         public LlmClient.ChatImage? Crop { get; set; }
+        /// <summary>探针里用一个定值（产品路径按服务端能力解析）。</summary>
+        public int MaxTokensPerTurn => 2400;
+
+        /// <summary>探针不开写盘能力。</summary>
+        public bool CanSave => false;
+
+        public (bool Ok, string Message) Save() => (false, "saving is off in this probe");
 
         public bool CanWebSearch => false;
         public IReadOnlyList<AgentImage> Images => Dataset;

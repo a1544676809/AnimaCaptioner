@@ -55,6 +55,7 @@
     <Compile Include="..\Core\PromptHistory.cs" />
     <Compile Include="..\Core\PromptHistoryStore.cs" />
     <Compile Include="..\Core\AgentKit.cs" />
+    <Compile Include="..\Core\BatchPlan.cs" />
     <Compile Include="..\Core\AgentChatStore.cs" />
     <Compile Include="..\Core\TagAgent.cs" />
     <Compile Include="..\Core\ImageSizing.cs" />

@@ -54,6 +54,16 @@ public static class LlmLive
                           $"→ {(effort is null ? "不发 reasoning_effort" : "reasoning_effort=" + effort)}");
         Console.WriteLine();
 
+        // ---------- 预算：0 = 自动 ----------
+        // 这一行是"自动到底算成多少"的答案。用户设 0 时最该能看见的就是它——
+        // 否则"自动"是个黑盒，没法判断它有没有真拿到服务端声明的能力。
+        Console.WriteLine($"翻译那条路      = {cfg.MaxTokens}");
+        Console.WriteLine($"助手预算        = AgentMaxTokens={cfg.AgentMaxTokens} -> " +
+                          $"实际发送 {LlmClient.DescribeBudget(cfg.AgentMaxTokens, caps, AppSettings.AgentAutoFallback)}");
+        Console.WriteLine($"带工具那条路兜底 = {LlmClient.ResolveBudget(0, caps, LlmClient.ToolAutoFallback)}");
+        Console.WriteLine("（界面上限已放开；0 = 自动是按这个端点报的输出上限算的）");
+        Console.WriteLine();
+
         // ---------- 对照组 ----------
         // 只有档位是「关闭思考」时这个 A/B 才有意义：这一路要证明的正是
         // "把档位设成 none 之后思考真的停了"，而对照组复刻的是改动前那种状态

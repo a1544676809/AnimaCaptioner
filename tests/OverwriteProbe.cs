@@ -184,6 +184,13 @@ public static class OverwriteProbe
 
         /// <summary>回给模型的工具结果原文（按出现顺序去重）。</summary>
         public List<string> ToolResults { get; } = new();
+        /// <summary>探针里用一个定值（产品路径按服务端能力解析）。</summary>
+        public int MaxTokensPerTurn => 2400;
+
+        /// <summary>探针不开写盘能力。</summary>
+        public bool CanSave => false;
+
+        public (bool Ok, string Message) Save() => (false, "saving is off in this probe");
 
         public bool CanWebSearch => false;
         public IReadOnlyList<AgentImage> Images => Dataset;

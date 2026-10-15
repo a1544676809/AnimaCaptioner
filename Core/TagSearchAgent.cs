@@ -25,7 +25,18 @@ public sealed class TagSearchAgent
 {
     private readonly LlmClient _llm;
 
+    /// <summary>
+    /// 这一路的预算。**默认 0 = 自动**：带工具时思考链是开着的，而实测思考单独就能
+    /// 写几百 token，写死一个数迟早会在某个模型上截断（原来写死 1600）。
+    /// 0 由调用方按服务端声明的能力解析（见 <see cref="LlmClient.ResolveBudget"/>）。
+    /// </summary>
+    private int _budget;
+
     public TagSearchAgent(LlmClient llm) => _llm = llm;
+
+    /// <summary>这一轮实际要发的 max_tokens。0 = 自动，需要 cfg 才能解析。</summary>
+    private int Budget(AppSettings cfg) =>
+        _llm.BudgetFor(cfg, _budget, LlmClient.ToolAutoFallback);
 
     /// <summary>
     /// <paramref name="Found"/> 是工具实际返回过的全部命中（去重后交给界面）；
@@ -38,13 +49,6 @@ public sealed class TagSearchAgent
 
     /// <summary>工具循环轮数上限。每轮都是一次真实请求，太多会让等待时间失控。</summary>
     private const int MaxRounds = 3;
-
-    /// <summary>
-    /// 这一路的预算。**带工具时思考链是开着的**（见 ChatWithToolsAsync 的注释：
-    /// 关掉思考模型根本不发 tool_calls），而实测思考单独就能写几百 token，
-    /// 所以这里必须比"只写答案"的额度宽松得多，否则第二轮就 length 截断。
-    /// </summary>
-    private const int Budget = 1600;
 
     /// <summary>
     /// 工具说明。刻意写"每次都要先查"——和翻译那条路的"不知道才查"正好相反，
@@ -123,7 +127,7 @@ public sealed class TagSearchAgent
             rounds++;
 
             var turn = await _llm.ChatWithToolsAsync(
-                cfg, SystemPrompt, messages, new[] { AgentKit.SearchTool }, Budget, ct)
+                cfg, SystemPrompt, messages, new[] { AgentKit.SearchTool }, Budget(cfg), ct)
                 .ConfigureAwait(false);
 
             if (!turn.Ok)

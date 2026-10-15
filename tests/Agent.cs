@@ -1001,6 +1001,170 @@ public static class Agent
             Eq("空提案计数为 0", (add6, rem6), (0, 0));
         }
 
+        Console.WriteLine("\n=== 30. 预算：0 = 自动，按服务端声明的能力解析 ===");
+        {
+            // 用户报过"8192 不够用"，而真相比这更糟：**助手那条路根本读不到设置里的
+            // max_tokens** —— 它用的是写死的常量。现在统一走 AgentMaxTokens，
+            // 且 0 = 自动（按 /models 报的能力算）。这一节钉住那个解析。
+
+            var withOutput = new LlmClient.ModelInfo("m", MaxOutputTokens: 393216, ContextLength: 1048576);
+            var ctxOnly = new LlmClient.ModelInfo("m", ContextLength: 40960);
+            var nothing = new LlmClient.ModelInfo("m");
+
+            Eq("显式值优先于一切", LlmClient.ResolveBudget(400, withOutput, 16384), 400);
+            Eq("0 + 服务端报了输出上限 -> 用它",
+               LlmClient.ResolveBudget(0, withOutput, 16384), 393216);
+            Eq("0 + 只报了上下文 -> 用一半（给输入留一半）",
+               LlmClient.ResolveBudget(0, ctxOnly, 16384), 20480);
+            Eq("0 + 什么都没报 -> 兜底",
+               LlmClient.ResolveBudget(0, nothing, 16384), 16384);
+            Eq("0 + 没有能力对象 -> 兜底",
+               LlmClient.ResolveBudget(0, null, 16384), 16384);
+            Eq("兜底值本身是 0 也不许发出 0（那会被网关当默认或报错）",
+               LlmClient.ResolveBudget(0, null, 0), 1);
+
+            Eq("自动预算：优先 max_output_tokens", LlmClient.ResolveAutoBudget(withOutput), 393216);
+            Eq("自动预算：退回上下文一半", LlmClient.ResolveAutoBudget(ctxOnly), 20480);
+            Eq("自动预算：都没有就是 0", LlmClient.ResolveAutoBudget(nothing), 0);
+
+            True("说明里写清了自动算成多少（含来源）",
+                 LlmClient.DescribeBudget(0, withOutput, 16384).Contains("393216") &&
+                 LlmClient.DescribeBudget(0, withOutput, 16384).Contains("max_output_tokens"));
+            True("显式值时说明就是那个数",
+                 LlmClient.DescribeBudget(400, withOutput, 16384) == "400");
+
+            // 默认必须是 0（自动）。写死成某个数字就回到了"永远是猜"。
+            Eq("AgentMaxTokens 默认 0（自动）", new AppSettings().AgentMaxTokens, 0);
+            Eq("翻译那档默认仍是 400", new AppSettings().MaxTokens, 400);
+            True("助手与翻译的温度是两个独立字段",
+                 new AppSettings { Temperature = 0.9, AgentTemperature = 0.1 } is { Temperature: 0.9, AgentTemperature: 0.1 });
+
+            // 落盘往返
+            var rt = AppSettings.FromJson(new AppSettings
+            { AgentMaxTokens = 12345, AgentTemperature = 0.7 }.ToJson());
+            Eq("助手预算能落盘再读回", rt?.AgentMaxTokens, 12345);
+            Eq("助手温度能落盘再读回", rt?.AgentTemperature, 0.7);
+            Eq("0 也能落盘再读回（不是被当成未设置）",
+               AppSettings.FromJson(new AppSettings { AgentMaxTokens = 0 }.ToJson())?.AgentMaxTokens, 0);
+        }
+
+        Console.WriteLine("\n=== 31. save_caption：只在完全权限下可用，且只表达意图 ===");
+        {
+            // 用户要求"给 agent 加入保存的能力，开启完全权限就可用"。
+            // 关键词是**只在完全权限下**：关着时不下发这个工具。
+            var off = string.Join("|", AgentKit.Tools(true, withImages: true,
+                                                      canViewRegion: true, canSave: false)
+                                              .Select(t => t.Name));
+            True("没开完全权限时不下发 save_caption", !off.Contains(AgentKit.SaveToolName));
+
+            var on = string.Join("|", AgentKit.Tools(true, withImages: true,
+                                                     canViewRegion: true, canSave: true)
+                                             .Select(t => t.Name));
+            True("开了才下发", on.Contains(AgentKit.SaveToolName));
+            Eq("顺序：save 在 propose 之前", on,
+               "current_image|image_info|search_tags|web_search|select_image|view_region|save_caption|propose");
+
+            // 系统提示必须**明确禁止**它在没有权限时说"我保存了"
+            True("开了时说清能写盘、且写盘靠 save_caption",
+                 AgentKit.SystemPrompt(true, false, canSave: true).Contains(AgentKit.SaveToolName));
+            True("关着时明说不能写文件、不许说存了",
+                 AgentKit.SystemPrompt(true, false, canSave: false).Contains("may NOT write files"));
+
+            // ---- 关键：save_caption 只**记意图**，不当场写盘 ----
+            // 实测踩到的坑：完全权限下让助手"改完保存"，它调 save_caption 的那一刻
+            // 编辑器里还是旧内容（提案要等循环返回才应用），当场写盘存下去的是上一次
+            // 的东西——而且会回报"保存成功"。所以意图挂在提案上带回，由界面在应用后写。
+            var h = new FakeHost { CanSave = true };
+            h.Turn(Tool("s1", AgentKit.SaveToolName, "{}"))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":["solo"]}"""));
+            var o = Run(h, "你直接改好存了吧");
+            Eq("循环里**没有**当场写盘（Save 一次都没被调）", h.SaveCalls, 0);
+            True("意图挂在提案上带回", o.Proposal is { SaveToDisk: true });
+            True("日志说明是排队", o.Log.Any(l => l.Contains("排队")));
+            var queued = h.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("回给模型的话说清「提案落定后才写」", queued.Contains("as soon as"));
+
+            // save 出现在 propose **之后**也要接住（模型两种顺序都写过）
+            var h2 = new FakeHost { CanSave = true };
+            h2.Turn(new LlmClient.ToolTurn(true, "", "", new List<LlmClient.ToolCall>
+            {
+                new("p2", AgentKit.ProposeToolName, """{"add_tags":["solo"]}"""),
+                new("s2", AgentKit.SaveToolName, "{}"),
+            }, "", ""));
+            var o2b = Run(h2, "改完保存");
+            True("propose 在前时 save 的意图也被接住",
+                 o2b.Proposal is { SaveToDisk: true });
+
+            // 没调 save 时标记为假（默认不自动存）
+            var h3 = new FakeHost { CanSave = true };
+            h3.Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":["solo"]}"""));
+            var o3c = Run(h3, "改一下");
+            True("没要求保存时不动磁盘", o3c.Proposal is { SaveToDisk: false });
+
+            // 没有权限却被调用：回绝，**不碰磁盘、也不设意图**
+            var h4 = new FakeHost { CanSave = false };
+            h4.Turn(Tool("s4", AgentKit.SaveToolName, "{}"))
+              .Turn(Tool("p4", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o4b = Run(h4, "存一下");
+            Eq("没权限时一次都没写", h4.SaveCalls, 0);
+            True("如实记成回绝", o4b.Log.Any(l => l.Contains("未开完全权限")));
+            True("也不留下写盘意图", o4b.Proposal is null or { SaveToDisk: false });
+        }
+
+        Console.WriteLine("\n=== 32. 批量打标：范围选择与记账 ===");
+        {
+            // 这一节钉的是"会动哪几张"。选错了范围会**改写用户的训练集**，
+            // 而那种损失不可逆（批量写盘不经过「应用」，Ctrl+Z 也回不来）。
+            var all = new List<BatchCandidate>
+            {
+                new(0, "a", Labeled: true,  TagCount: 12),
+                new(1, "b", Labeled: false, TagCount: 0),
+                new(2, "c", Labeled: true,  TagCount: 0),    // 有 .txt 但是空的
+                new(3, "d", Labeled: false, TagCount: 0),
+                new(4, "e", Labeled: true,  TagCount: 5),
+            };
+
+            var onlyUnlabeled = BatchPlan.Choose(all, new BatchOptions());
+            Eq("默认只挑未标注的（含空的 .txt）", string.Join("|", onlyUnlabeled.Select(c => c.Name)),
+               "b|c|d");
+
+            var keepEmpty = BatchPlan.Choose(all, new BatchOptions(SkipEmptyCaptions: false));
+            Eq("不把空 .txt 当未标注时只剩两张", string.Join("|", keepEmpty.Select(c => c.Name)), "b|d");
+
+            var everything = BatchPlan.Choose(all, new BatchOptions(OnlyUnlabeled: false));
+            Eq("取消「只处理未标注」就是全部（顺序保持数据集原序）",
+               string.Join("|", everything.Select(c => c.Name)), "a|b|c|d|e");
+
+            var limited = BatchPlan.Choose(all, new BatchOptions(OnlyUnlabeled: false, Limit: 2));
+            Eq("Limit 生效", string.Join("|", limited.Select(c => c.Name)), "a|b");
+
+            Eq("空数据集不炸", BatchPlan.Choose(new List<BatchCandidate>(), new BatchOptions()).Count, 0);
+
+            // 摘要要把"会覆盖几张"说出来——那是用户点确认前唯一的机会
+            var desc = BatchPlan.Describe(everything, all.Count);
+            True("摘要提到会覆盖已有标注", desc.Contains("覆盖") && desc.Contains("3 张"));
+            Eq("没有可处理项时明说", BatchPlan.Describe(new List<BatchCandidate>(), all.Count),
+               "没有需要处理的图片（数据集共 5 张）。");
+
+            // 记账：四种结论必须分开，否则用户分不清"跑完了"和"跑挂了"
+            var rep = new BatchReport();
+            rep.Add("a", BatchStatus.Written);
+            rep.Add("b", BatchStatus.Unchanged);
+            rep.Add("c", BatchStatus.NoProposal);
+            rep.Add("d", BatchStatus.Failed, "HTTP 500");
+            Eq("处理总数", rep.Attempted, 4);
+            Eq("写入数", rep.Written, 1);
+            Eq("无需改动数", rep.Unchanged, 1);
+            Eq("没提案数", rep.NoProposal, 1);
+            Eq("失败数", rep.Failed, 1);
+            True("摘要四类都写出来", rep.Summary().Contains("写入 1") &&
+                 rep.Summary().Contains("无需改动 1") &&
+                 rep.Summary().Contains("没提案 1") && rep.Summary().Contains("失败 1"));
+            True("失败原因留在说明里", rep.Notes.Any(n => n.Contains("HTTP 500")));
+            True("没提案也留一句（它不算错误）", rep.Notes.Any(n => n.Contains("没有提出任何改动")));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1056,6 +1220,21 @@ public static class Agent
         public Func<string, bool> Known { get; set; } = _ => true;
 
         public bool CanWebSearch { get; set; } = true;
+
+        /// <summary>这一轮的预算。测试里给个定值即可（产品路径会按服务端能力解析）。</summary>
+        public int MaxTokensPerTurn { get; set; } = 2400;
+
+        /// <summary>是否允许 save_caption（对应「完全权限」）。</summary>
+        public bool CanSave { get; set; }
+
+        /// <summary>Save() 被调用的次数（**现在不该再有人调它**：写盘由界面在提案应用后做）。</summary>
+        public int SaveCalls { get; private set; }
+
+        public (bool Ok, string Message) Save()
+        {
+            SaveCalls++;
+            return (true, "Saved \"a\" to disk.");
+        }
 
         /// <summary>被要求走流式的轮数。</summary>
         public int StreamRequested { get; private set; }

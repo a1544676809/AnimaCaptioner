@@ -392,11 +392,45 @@ public sealed class AppSettings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool? LegacyDisableThinking { get; set; }
 
+    /// <summary>
+    /// **翻译与短任务**的 max_tokens（标签释义、中译英散文、问模型找标签那条路）。
+    /// 默认 400。
+    ///
+    /// 这些任务是"一句进、一句出"，预算按答案长度定就够了——放大没有收益，
+    /// 只是把上下文里可用于输出的额度占掉（有些网关会按 max_tokens 预留）。
+    /// **AI 助手不读这个值**，它有自己的 <see cref="AgentMaxTokens"/>。
+    /// </summary>
     public int MaxTokens { get; set; } = 400;
+
     public double Temperature { get; set; } = 0.3;
     public int TimeoutSeconds { get; set; } = 300;
 
     // ---- AI 助手 ----
+
+    /// <summary>
+    /// **AI 助手**每一轮的 max_tokens。**0 = 自动**（默认）。
+    ///
+    /// 为什么与翻译分开：两者要的额度差一个量级。翻译是"一句进一句出"（400 足够），
+    /// 而助手一轮里可能带图（约 850 token）、带整份对话历史、还要先写几百 token
+    /// 的思考链再发工具调用——实测复杂打标（读图 + 十几轮查库 + 提案）会把
+    /// 写死的 2400 吃光，表现为"模型不听话"或"没提出提案"。
+    ///
+    /// **为什么 0 比一个大数字更好**：max_tokens 是"思考 + 答案"的总预算，
+    /// 而服务端自己知道上下文与输出上限（`/models` 的 `context_window` /
+    /// `max_output_tokens`，实测 DeepSeek 报 1048576 / 393216）。写死一个数永远
+    /// 是猜：小了截断，大了可能超过服务端允许而被拒。0 表示"按 <see cref="LlmClient"/>
+    /// 解析出来的自动值发"——解析不出来时用 <see cref="AgentAutoFallback"/> 兜底。
+    /// </summary>
+    public int AgentMaxTokens { get; set; }
+
+    /// <summary>
+    /// 自动预算解析不出服务端能力时的兜底值。不写 0：那样请求会退化成"不限制"，
+    /// 而多数网关把它当默认小值或直接报错。
+    /// </summary>
+    public const int AgentAutoFallback = 16384;
+
+    /// <summary>AI 助手用的温度。与翻译分开：助手要"照做"，翻译要"稳"。</summary>
+    public double AgentTemperature { get; set; } = 0.3;
 
     /// <summary>
     /// 打开 AI 助手面板：右栏下半部分从"确定性的中译英翻译器"换成能读图、能查词库、

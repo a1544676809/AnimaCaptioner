@@ -54,6 +54,18 @@ public sealed record AgentTurn(bool FromUser, string Text);
 /// 少写一个标签就会**静默清掉**一条真实标注；而逐条列出的删除在提案卡片上看得见、
 /// 可以核对，漏了也只是"没删干净"，不会毁掉东西。这个取舍与"Unknown 不丢弃"同源。
 /// </param>
+/// <param name="SaveToDisk">
+/// 模型是否要求把结果**写进磁盘**（它调了 save_caption）。
+///
+/// 这个标记与"谁在什么时候写"是分开的，因为**写盘必须发生在提案落进编辑器之后**：
+/// 模型在循环里调 save_caption 那一刻，编辑器里还是旧内容（提案要等循环返回、
+/// 由界面应用，见 MainWindow 的 ApplyAgentProposal）。所以工具只表达**意图**，
+/// 真正的写在应用之后由界面执行——否则存下去的是上一次的内容，
+/// 而它看起来"保存成功"了。
+///
+/// 实测踩到过：完全权限下让助手"改完保存"，模型没能把两件事串起来
+/// （propose 一调循环就结束，save 排不到），文件一个字都没变。
+/// </param>
 public sealed record AgentProposal(
     IReadOnlyList<string> AddTags,
     IReadOnlyList<string> Known,
@@ -61,7 +73,8 @@ public sealed record AgentProposal(
     string Prose,
     bool ReplaceProse,
     string Note,
-    IReadOnlyList<string>? RemoveTags = null)
+    IReadOnlyList<string>? RemoveTags = null,
+    bool SaveToDisk = false)
 {
     public bool HasTags => AddTags.Count > 0;
     public bool HasProse => Prose.Length > 0;
@@ -88,6 +101,35 @@ public static class AgentKit
     public const string SelectImageToolName = "select_image";
     public const string ImageInfoToolName = "image_info";
     public const string ViewRegionToolName = "view_region";
+    public const string SaveToolName = "save_caption";
+
+    /// <summary>
+    /// 把改动**写进磁盘**。
+    ///
+    /// 只在开了「完全权限」时下发。那个开关的语义是"让模型自己动手，不用你点确认"，
+    /// 而在此之前"改完还得用户手动 Ctrl+S"——名不副实，且实测造成过误解：
+    /// 用户以为自动写入即落盘，去看文件发现没变，于是"它说覆盖了其实没覆盖"。
+    ///
+    /// 说明里强调两件事：
+    /// 1. **它落盘的是编辑器里当前那段内容**（包含你之前用 propose 写进去的），
+    ///    不是"另存一份"；
+    /// 2. 没把握就不要存——训练集里的 .txt 被写错是**不可逆**的（撤销只在内存里，
+    ///    不会把文件回滚）。
+    /// </summary>
+    public static AgentTool SaveTool => new(
+        SaveToolName,
+        "Save the current image's caption to disk (the .txt next to the image). Until this " +
+        "is called, everything you proposed lives only in the editor and the user has to press " +
+        "Ctrl+S themselves. Call it once after your changes are complete, when the user asked " +
+        "you to do the whole job (or agreed that you may write). Do NOT call it when you are " +
+        "only proposing something for the user to review — and if you are unsure whether the " +
+        "prompt is right, do not save: overwriting a training caption is not reversible from " +
+        "here (Ctrl+Z only undoes the editor in memory, not the file). No arguments.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject(),
+        });
 
     /// <summary>
     /// 问"这张图本身是什么"。**纯文本、没有 token 成本**，所以尽可以调。
@@ -333,9 +375,12 @@ public static class AgentKit
     /// 两件事：放大后的图是靠"往对话里插一条图文消息"送出去的，而这次没带图
     /// （用户关掉了「带当前图片」）时那条路走不通。这时既不能下发 view_region
     /// （它必然失败），也不该让它以为能看——那等于绕过用户明确关掉的那个开关。
+    ///
+    /// <paramref name="canSave"/> 对应「完全权限」。关着时**不下发** save_caption：
+    /// 那个开关的意义就是"不许它自己动手"，下发一个必然被拒的工具只是白烧一轮。
     /// </summary>
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
-                                        bool canViewRegion = false)
+                                        bool canViewRegion = false, bool canSave = false)
     {
         var tools = new List<AgentTool>();
         if (withImages)
@@ -347,6 +392,7 @@ public static class AgentKit
         if (webSearch) tools.Add(WebSearchTool);
         if (withImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
+        if (canSave) tools.Add(SaveTool);
         tools.Add(ProposeTool);
         return tools;
     }
@@ -368,7 +414,8 @@ public static class AgentKit
     ///    "至少两句"吃过一次训练集污染（见 LlmClient.ProseSystemPrompt 的长注释），
     ///    所以这里同样把长度交给输入决定。
     /// </summary>
-    public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false)
+    public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false,
+                                      bool canSave = false)
     {
         var sb = new System.Text.StringBuilder();
         sb.Append(
@@ -462,6 +509,20 @@ public static class AgentKit
                 "something new: do not answer it as a message, just look at it.\n" +
                 "- Every image you ask for costs tokens of its own. Prefer one crop over a grid, " +
                 "and never ask for the same region twice.\n");
+
+        if (canSave)
+            sb.Append(
+                "- Saving: you have \"full access\", so changes are written into the editor " +
+                "automatically and `" + SaveToolName + "` writes them to the .txt file on disk. " +
+                "Nothing is on disk until you call it. Call it once at the end when the user " +
+                "asked you to do the whole job; do not call it when you are only proposing " +
+                "something for review. Overwriting a training caption is NOT reversible from " +
+                "here, so never save a prompt you are not confident about.\n");
+        else
+            sb.Append(
+                "- You may NOT write files: everything you propose stays in the editor until the " +
+                "user applies and saves it themselves. Never say you saved, wrote or changed a " +
+                "file.\n");
 
         return sb.ToString();
     }

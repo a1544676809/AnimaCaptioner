@@ -48,6 +48,22 @@ internal sealed class AgentHost : TagAgent.IHost
             (false, ImageTools.NotAttached, (IReadOnlyList<LlmClient.ChatImage>)Array.Empty<LlmClient.ChatImage>())));
     }
 
+    /// <summary>
+    /// 每一轮的 max_tokens。**0 = 自动**：按服务端 /models 声明的能力解析
+    /// （<see cref="LlmClient.ResolveBudget"/>）。
+    ///
+    /// 现算而不是启动时算一次：能力是异步拿到的（<c>EnsureCapsAsync</c>），
+    /// 启动那一刻往往还不知道，而"第一次请求就用了兜底值"会让用户以为自动没生效。
+    /// </summary>
+    public int MaxTokensPerTurn =>
+        LlmClient.ResolveBudget(_cfg.AgentMaxTokens, _llm.Caps(_cfg), AppSettings.AgentAutoFallback);
+
+    /// <summary>
+    /// 「完全权限」= 允许模型要求写盘（它调 save_caption）。
+    /// 真正的写在界面那边、在提案应用之后执行——见 <see cref="TagAgent.IHost.CanSave"/>。
+    /// </summary>
+    public bool CanSave => _cfg.AgentFullAccess;
+
     /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
     public IReadOnlyList<AgentImage> Images => _images();
 
@@ -76,12 +92,17 @@ internal sealed class AgentHost : TagAgent.IHost
     /// <summary>
     /// 带工具的一轮。把进度回调透传给 <see cref="LlmClient.ChatWithToolsAsync"/>——
     /// 给了它就走流式，界面能实时看到思考链。
+    ///
+    /// 温度显式传助手那一档（<see cref="AppSettings.AgentTemperature"/>）：
+    /// 这个方法是助手与翻译**共用**的，而两者的温度诉求不同（助手要照做、翻译要稳），
+    /// 让它跟着 <c>cfg.Temperature</c> 走就会把翻译的设定渗进助手。
     /// </summary>
     public Task<LlmClient.ToolTurn> TurnAsync(string systemPrompt, IReadOnlyList<AgentTool> tools,
                                               List<JsonObject> messages, int maxTokens,
                                               CancellationToken ct,
                                               Action<string, string>? onProgress = null) =>
-        _llm.ChatWithToolsAsync(_cfg, systemPrompt, messages, tools, maxTokens, ct, onProgress);
+        _llm.ChatWithToolsAsync(_cfg, systemPrompt, messages, tools, maxTokens, ct, onProgress,
+                                _cfg.AgentTemperature);
 
     public async Task<string> SearchWebAsync(string query, CancellationToken ct)
     {

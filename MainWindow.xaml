@@ -145,6 +145,13 @@
                 </MenuFlyoutItem>
                 <MenuFlyoutItem Text="跳到第一张" Click="JumpFirst_Click" />
                 <MenuFlyoutSeparator />
+                <!-- 批量打标：一条无人值守的循环。放在「浏览」里而不是「标签」里，
+                     因为它的粒度是"整个数据集"，不是"当前这一行"。 -->
+                <MenuFlyoutItem x:Name="BatchLabelItem" Text="自动标注未标注的图片…"
+                                Click="BatchLabel_Click">
+                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE945;" /></MenuFlyoutItem.Icon>
+                </MenuFlyoutItem>
+                <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="预览大图…" Click="Preview_Click"
                                 KeyboardAcceleratorTextOverride="空格（列表有焦点时）">
                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A9;" /></MenuFlyoutItem.Icon>

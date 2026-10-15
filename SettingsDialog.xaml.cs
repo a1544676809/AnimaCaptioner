@@ -33,6 +33,13 @@ public sealed partial class SettingsDialog : ContentDialog
     /// <summary>最近一次从服务端取到的模型，键是 id（忽略大小写）。给当前填写项补说明用。</summary>
     private readonly Dictionary<string, LlmClient.ModelInfo> _modelInfos = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 提示行渲染那一刻"助手 max_tokens"框里的值（0 = 自动）。
+    /// 只是个快照——用来决定要不要把"自动算成了多少"写进提示行，
+    /// 不参与保存（保存时直接读控件）。
+    /// </summary>
+    private int _agentMaxTokensBoxValue;
+
     /// <summary>还没取过列表时提示行显示的内容。</summary>
     private const string ModelHintIdle =
         "模型名可以从服务端拉取：点「获取列表」或「测试连接」都会请求 GET /models。" +
@@ -93,6 +100,8 @@ public sealed partial class SettingsDialog : ContentDialog
         AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
         AgentFullAccessBox.IsChecked = cfg.AgentFullAccess;
         AgentRoundsBox.Value = cfg.AgentMaxRounds;
+        AgentMaxTokensBox.Value = cfg.AgentMaxTokens;
+        AgentTempBox.Value = cfg.AgentTemperature;
         SyncAgentBoxes();
         MaxTokensBox.Value = cfg.MaxTokens;
         TempBox.Value = cfg.Temperature;
@@ -1036,6 +1045,10 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.AgentFullAccess = AgentFullAccessBox.IsChecked == true;
         cfg.AgentMaxRounds = (int)(double.IsNaN(AgentRoundsBox.Value) ? 32 : AgentRoundsBox.Value);
+        // 0 是合法值（= 自动），所以兜底也回 0 而不是某个大数字：读懂"自动"的
+        // 那一层是 LlmClient.ResolveBudget，这里不该替它做决定。
+        cfg.AgentMaxTokens = (int)(double.IsNaN(AgentMaxTokensBox.Value) ? 0 : AgentMaxTokensBox.Value);
+        cfg.AgentTemperature = double.IsNaN(AgentTempBox.Value) ? 0.3 : AgentTempBox.Value;
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
         cfg.Temperature = double.IsNaN(TempBox.Value) ? 0.3 : TempBox.Value;
         cfg.TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value);
@@ -1431,6 +1444,8 @@ public sealed partial class SettingsDialog : ContentDialog
 
         if (!string.IsNullOrWhiteSpace(current) && _modelInfos.TryGetValue(current, out var info))
         {
+            _agentMaxTokensBoxValue = double.IsNaN(AgentMaxTokensBox.Value)
+                ? 0 : (int)AgentMaxTokensBox.Value;
             ModelListText.Foreground = HintBrush;
             sb.Append($"当前「{info.Id}」");
             var detail = info.Describe();
@@ -1440,11 +1455,20 @@ public sealed partial class SettingsDialog : ContentDialog
             sb.Append(detail.Length > 0 ? '：' + detail : "（服务端没有提供模型说明）");
 
             // 服务端允许的输出上限常常远大于界面这个框的上限（实测 DeepSeek：
-            // 393216 vs 界面的 8192）。不说明的话，用户会以为"模型就只能写这么长"。
-            if (info.MaxOutputTokens > 0 && MaxTokensBox.Maximum > 0 &&
-                info.MaxOutputTokens > MaxTokensBox.Maximum)
-                sb.Append($"（该模型允许输出到 {info.MaxOutputTokens}，" +
-                          $"界面 max_tokens 上限是 {MaxTokensBox.Maximum:0}）");
+            // 393216）。现在不再把框卡在 8192 了，但仍要说明——用户会以为
+            // "模型就只能写这么长"。
+            if (info.MaxOutputTokens > 0)
+                sb.Append($"（该模型允许输出到 {info.MaxOutputTokens}）");
+
+            // 助手那一档填 0（自动）时，把**实际会算成多少**写出来。
+            // 不写的话"自动"是个黑盒：用户没法判断它是不是拿到了服务端的能力。
+            if (_agentMaxTokensBoxValue == 0)
+            {
+                var auto = LlmClient.ResolveAutoBudget(info);
+                sb.Append(auto > 0
+                    ? $" · 助手预算自动 = {auto:N0}"
+                    : $" · 助手预算自动算不出（该模型没报输出上限与上下文）");
+            }
 
             var alias = (info.Aliases ?? new List<string>())
                 .Where(a => !string.Equals(a, info.Id, StringComparison.OrdinalIgnoreCase))

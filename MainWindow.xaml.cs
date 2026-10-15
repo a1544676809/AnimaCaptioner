@@ -2078,10 +2078,290 @@ public sealed partial class MainWindow : Window
     private void Prev_Click(object sender, RoutedEventArgs e) => Navigate(-1);
     private void Next_Click(object sender, RoutedEventArgs e) => Navigate(1);
 
-    // ================= 保存 =================
+    // ================= 批量自动打标 =================
+    //
+    // 无人值守地跑一遍"读图 → 咨询模型 → 写进 caption"。它和面板里的助手**共用
+    // 同一个 TagAgent 循环**（同一套系统提示、同一套工具、同一套预算与保存逻辑），
+    // 这里只负责"换图 / 喂输入 / 收结果"这三件事。**不另写一条打标路径**：
+    // 两份实现迟早漂移，而漂移的后果是"手动打的和批量打的写得不一样"。
 
-    private bool SaveCurrent(bool showDialog)
+    /// <summary>批量循环正在跑。期间禁掉再入与换图，避免两处同时改同一个文档。</summary>
+    private bool _batchRunning;
+
+    private async void BatchLabel_Click(object sender, RoutedEventArgs e)
     {
+        if (_mode != PromptMode.Label) { await Info("只在标注模式下可用", "批量打标要有一个图片数据集。"); return; }
+        if (_batchRunning) { await Info("正在跑", "上一批还没结束。"); return; }
+        if (_items.Count == 0) { await Info("没有图片", "先打开一个训练集目录。"); return; }
+
+        if (_llm.Caps(_cfg)?.SupportsImage == false)
+        {
+            await Info("这个模型不吃图", $"「{_cfg.Model}」在服务端声明为纯文本输入，" +
+                "批量打标会变成凭空描述——那正是最该避免的一种「成功」。");
+            return;
+        }
+
+        // ---- 范围与确认 ----
+        var options = await AskBatchOptionsAsync();
+        if (options is null) return;
+
+        var all = BuildBatchCandidates();
+        var picked = BatchPlan.Choose(all, options);
+        if (picked.Count == 0) { await Info("没有需要处理的图片", BatchPlan.Describe(picked, all.Count)); return; }
+
+        var confirm = new ContentDialog
+        {
+            Title = "开始批量打标",
+            Content = new TextBlock
+            {
+                TextWrapping = TextWrapping.Wrap,
+                Text = BatchPlan.Describe(picked, all.Count) + "\n\n" +
+                       "每张都要发一次（或几次）请求，可能要几分钟到几十分钟。" +
+                       "过程中可以随时点「停止」——已经写完的那几张会保留。\n\n" +
+                       (options.OnlyUnlabeled
+                           ? "只处理未标注的图片，已标注的不会被碰。"
+                           : "⚠ 已取消「只处理未标注」，已有标注会被覆盖（不可逆）。"),
+            },
+            PrimaryButtonText = "开始",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+
+        await RunBatchLabelAsync(picked, options);
+    }
+
+    /// <summary>范围选择对话框。返回 null = 用户取消。</summary>
+    private async Task<BatchOptions?> AskBatchOptionsAsync()
+    {
+        var onlyUnlabeled = new CheckBox { Content = "只处理还没有 .txt 的图片（推荐）", IsChecked = true };
+        var skipEmpty = new CheckBox { Content = "把「有 .txt 但一个标签都没有」也当成未标注", IsChecked = true };
+        var limitBox = new NumberBox
+        {
+            Header = "最多处理几张（0 = 不限）",
+            Minimum = 0,
+            Maximum = 100000,
+            Value = 0,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Width = 240,
+        };
+
+        var panel = new StackPanel { Spacing = 10 };
+        panel.Children.Add(onlyUnlabeled);
+        panel.Children.Add(skipEmpty);
+        panel.Children.Add(limitBox);
+        panel.Children.Add(new TextBlock
+        {
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            Text = "批量打标用的是助手那套提示词与工具（查词库、可放大细节），" +
+                   "所以它给的是与手动打标同一种结果。写入会直接落盘（每张各写一个 .txt），" +
+                   "Ctrl+Z 撤不回来——想先看效果就用面板里的助手处理一张。",
+        });
+
+        var dlg = new ContentDialog
+        {
+            Title = "批量自动打标",
+            Content = panel,
+            PrimaryButtonText = "下一步",
+            CloseButtonText = "取消",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        if (await dlg.ShowAsync() != ContentDialogResult.Primary) return null;
+
+        var limit = double.IsNaN(limitBox.Value) ? 0 : (int)limitBox.Value;
+        return new BatchOptions(
+            OnlyUnlabeled: onlyUnlabeled.IsChecked == true,
+            SkipEmptyCaptions: skipEmpty.IsChecked == true,
+            Limit: Math.Max(0, limit));
+    }
+
+    /// <summary>把当前数据集折成批量处理的候选项（在 UI 线程上读）。</summary>
+    private IReadOnlyList<BatchCandidate> BuildBatchCandidates()
+    {
+        var list = new List<BatchCandidate>(_items.Count);
+        for (var i = 0; i < _items.Count; i++)
+        {
+            var it = _items[i];
+            // 标签数取**盘上那份**（DatasetItem.Tags 会按需读盘，没读过就现读）：
+            // 批量打标决策的是"这张要不要重做"，判据是盘上状态，不是编辑器里
+            // 尚未保存的改动。
+            var tagCount = it.HasCaption ? it.Tags.Count : 0;
+            list.Add(new BatchCandidate(i, it.Name, it.HasCaption, tagCount));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 批量循环本体。
+    ///
+    /// 三处刻意的设计：
+    /// 1. **每张图独立一轮对话**（历史只有这一句）。把上一张的上下文带过来会让模型
+    ///    拿前一张的画面描述这一张——而它"看起来"还是在正常工作。
+    /// 2. **每张都重新读图**：图片只在最后一轮挂着，所以必须现读。
+    /// 3. **一张失败不中断**：记下来接着跑，最后统一报告。中途停下会留下
+    ///    "跑到一半"的状态，而用户看到的只是一个红叉。
+    /// </summary>
+    private async Task RunBatchLabelAsync(IReadOnlyList<BatchCandidate> picked, BatchOptions options)
+    {
+        _batchRunning = true;
+        var report = new BatchReport();
+        var stop = new CancellationTokenSource();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // 停止按钮：用一个可取消的对话框占位，跑的时候点它就能停。
+        var stopDlg = new ContentDialog
+        {
+            Title = "正在批量打标",
+            Content = new TextBlock { Text = "准备中…", TextWrapping = TextWrapping.Wrap },
+            CloseButtonText = "停止",
+            XamlRoot = Content.XamlRoot,
+        };
+        var progress = (TextBlock)stopDlg.Content;
+
+        // 不 await：对话框只是"进度 + 停止"的载体，循环在另一条路上跑。
+        var dlgTask = stopDlg.ShowAsync().AsTask();
+        stopDlg.CloseButtonClick += (_, _) => stop.Cancel();
+
+        try
+        {
+            for (var n = 0; n < picked.Count; n++)
+            {
+                if (stop.IsCancellationRequested) break;
+
+                var c = picked[n];
+                progress.Text = $"第 {n + 1} / {picked.Count} 张：{c.Name}\n\n" +
+                                $"已完成：{report.Summary()}\n已用 {sw.Elapsed.TotalSeconds:F0} 秒";
+
+                var status = await LabelOneAsync(c.Index, stop.Token, report);
+                report.Add(c.Name, status.Status, status.Note);
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            try { stopDlg.Hide(); } catch { }
+            try { await dlgTask; } catch { }
+            _batchRunning = false;
+        }
+
+        sw.Stop();
+        var body = new StackPanel { Spacing = 8 };
+        body.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            Text = report.Summary() + $"\n用时 {sw.Elapsed.TotalSeconds:F0} 秒。" +
+                   (stop.IsCancellationRequested ? "\n\n（中途停止了，已完成的那几张保留。）" : ""),
+        });
+        if (report.Notes.Count > 0)
+        {
+            body.Children.Add(new TextBlock
+            {
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                Text = "需要你知道的：\n" + string.Join("\n", report.Notes.Take(30)),
+            });
+        }
+        await Info("批量打标结束", body);
+        Log.Write($"batch label done: {report.Summary()}");
+    }
+
+    /// <summary>
+    /// 处理一张：切到它 → 读图 → 跑一轮助手 → 落盘。
+    ///
+    /// 返回给记账用的状态。**"模型没提案"与"失败"分开**：前者是模型觉得这张图
+    /// 没什么可写的（合法结果），后者才是出问题——混在一起用户就分不清
+    /// "跑完了"和"跑挂了"。
+    /// </summary>
+    private async Task<(BatchStatus Status, string Note)> LabelOneAsync(
+        int index, CancellationToken ct, BatchReport report)
+    {
+        try
+        {
+            if (ct.IsCancellationRequested) return (BatchStatus.Failed, "已取消");
+
+            // 切图必须回 UI 线程（会动列表选中与当前文档）。这会顺带把上一张
+            // 静默保存——与用户自己翻图完全一致。
+            OnUiThread(() =>
+            {
+                if (index != _index) { SaveCurrent(showDialog: false); Select(index); }
+                return true;
+            }, false);
+
+            var path = OnUiThread(() => CurrentImagePath(), (string?)null);
+            if (path is null) return (BatchStatus.Failed, "找不到图片路径");
+
+            var image = await ImagePayload.LoadAsync(path);
+            if (image is null) return (BatchStatus.Failed, "图片读不出来");
+
+            // 与手动路径同一条：不带历史，只这一句。
+            const string ask =
+                "请为这张图写标注：按你的规则先查词库，然后提出该加的标签和一段英文散文。" +
+                "只要画面里真实存在的内容，不要编。";
+
+            var host = new AgentHost(_cfg, _llm, _search, _vocab,
+                                     images: AgentImageList,
+                                     selectImage: AgentSelectImage,
+                                     imageInfo: () => AgentImageInfoAsync(image is not null),
+                                     viewRegion: args => AgentViewRegionAsync(args, image is not null));
+
+            var outcome = await _agent.RunAsync(
+                host, new[] { new AgentTurn(true, ask) },
+                new LlmClient.ChatImage(ImagePayload.Mime, image.Jpeg), ct,
+                maxRounds: _cfg.AgentMaxRounds);
+
+            if (!outcome.Ok) return (BatchStatus.Failed, outcome.Error);
+
+            if (outcome.Proposal is not { } p || p.IsEmpty)
+                return (BatchStatus.NoProposal, "");
+
+            // 落进编辑器（与「完全权限」同一条路），再显式存盘。
+            // **不依赖 save_caption 工具**：那是给模型决定"什么时候存"用的，
+            // 而批量这条路是我们自己知道"现在必须存"。
+            var (changed, refused) = OnUiThread(() =>
+            {
+                ApplyAgentProposal(p, single: false);
+                var wrote = SaveCurrent(showDialog: false, out var r);
+                return (wrote, r);
+            }, (false, false));
+
+            if (refused) return (BatchStatus.Failed, "保存被拒（读不到正文）");
+            if (!changed)
+            {
+                // 内容没变也可能是"模型给的正好就是现有内容"——那是正常结果，
+                // 不该报成失败。
+                return (BatchStatus.Unchanged, "");
+            }
+            return (BatchStatus.Written, "");
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"batch label failed at {index}: {ex}");
+            return (BatchStatus.Failed, ex.Message);
+        }
+    }
+
+
+    private bool SaveCurrent(bool showDialog) => SaveCurrent(showDialog, out _);
+
+    /// <summary>
+    /// 保存当前文档。<paramref name="refused"/> 为真表示**这次保存被守卫拒绝了**
+    /// （读不到提示词框里的正文），文件**没有**被碰过——与"内容没变所以没写"
+    /// 是完全不同的两件事，调用方必须分得开。
+    ///
+    /// 区分它是因为实测有过一句话造成的误解：助手那条路把两种都报成"已保存"，
+    /// 而用户去看盘上文件没变，于是得到"它说保存了其实没有"。返回值只能是
+    /// "文件字节变没变"，表达不了"为什么没变"。
+    /// </summary>
+    private bool SaveCurrent(bool showDialog, out bool refused)
+    {
+        refused = false;
+
         // 写标签模式绝不能走这条路：这里会往 item.CaptionPath 写 .txt，
         // 而那个模式根本没有当前图片（_index 可能是上一次标注留下的残值）。
         // 那样会**静默改掉训练集里的某个 caption**。
@@ -2100,6 +2380,7 @@ public sealed partial class MainWindow : Window
         // ——把"读不到"当成"内容为空"写下去，正是把一次读取失败变成数据丢失的那一步。
         if (!TryGetCaptionText(out var captionText))
         {
+            refused = true;
             Log.Write($"save skipped: cannot read the caption box; refused to overwrite " +
                       $"{Path.GetFileName(item.CaptionPath)}");
             if (showDialog)
@@ -2131,6 +2412,7 @@ public sealed partial class MainWindow : Window
                 // 另一回事，那时应当如实写下去（SaveBody 内部对内容未变也已短路）。
                 if (PromptText.Rebuild(tags, parsed.ProseTail, ", ").Trim().Length == 0)
                 {
+                    refused = true;
                     Log.Write($"skip creating empty caption for {Path.GetFileName(item.CaptionPath)}");
                     if (showDialog)
                         _ = Info("没有内容", "这一行还是空的，未创建 .txt。\n\n" +
@@ -2175,6 +2457,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            refused = true;
             Log.Write("save FAILED: " + ex);
             _ = Info("保存失败", ex.Message);
             return false;
@@ -4600,13 +4883,21 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 ApplyAgentProposal(autoProp, single: false);
                 AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.ToolCalls, proposal: null);
 
-                // **说清"写进提示词"不等于"存到文件"。** 完全权限改的是编辑器里那一段，
-                // 盘上的 .txt 要按 Ctrl+S 才写（与手动改标签完全一致）。原先只说
-                // "直接写入"，用户去看列表发现变了、去看文件没变，就成了"它说覆盖了、
-                // 其实没变"的现场——实测复现过（见 tests/OverwriteProbe.cs 的注释）。
-                AgentAddNote("已按「完全权限」写进提示词：" + DescribeProposal(autoProp) +
-                             "。**还没保存到文件**——按 Ctrl+S 才写进 .txt。Ctrl+Z 可整体撤销。");
-                Log.Write("agent full-access write（仅内存，未落盘）: " + DescribeProposal(autoProp));
+                // **完全权限 = 它把活干完，包括存盘。** 这里不等模型调 save_caption，
+                // 而是直接存——实测它**靠不住**：明确说了"改完直接保存到文件"、
+                // 工具也下发了，它两轮里一次都没调（日志 round=1 calls=4 / round=2 calls=1，
+                // 里面没有 save_caption）。而"完全权限"这个开关对用户的承诺正是
+                // "不用我管"，让结果取决于模型记不记得调某个工具，等于把承诺押在它身上。
+                //
+                // 模型**显式**调了 save_caption 也一样会走到这里（那条路只设标记），
+                // 所以两种意图的结果一致：都落盘。
+                var (ok, msg) = AgentSaveCurrent();
+                AgentAddNote(ok
+                    ? "已按「完全权限」写进提示词**并存到文件**：" + DescribeProposal(autoProp) +
+                      "。Ctrl+Z 可撤销编辑器里的改动（文件不会跟着回滚，需要的话再存一次覆盖）。"
+                    : "已按「完全权限」写进提示词，但**存文件没成功**：" + msg);
+                Log.Write($"agent full-access write+save ok={ok} modelAsked={autoProp.SaveToDisk}: " +
+                          DescribeProposal(autoProp));
             }
             else
             {
@@ -4835,6 +5126,47 @@ private void EndEdit(bool commit, bool lostFocus = false)
     private static ImageFacts ToFacts(FileFacts f, AgentImageSnapshot snap, bool attached) =>
         new(f.Name, f.Format, f.FileBytes, f.StoredWidth, f.StoredHeight, f.Orientation,
             attached, snap.Index, snap.Total, snap.CaptionTags);
+
+    /// <summary>
+    /// `save_caption`：把当前这张图的 caption 写进磁盘。
+    ///
+    /// **只有开了「完全权限」才会被调用**（关着时 TagAgent 不下发这个工具，
+    /// 万一来调用也会被它回绝）。所以这里不再问一次——那正是「完全权限」的语义。
+    ///
+    /// 走的是和用户按 `Ctrl+S` **完全相同**的那条路（<c>SaveCurrent</c>），
+    /// 不另写一份落盘逻辑：格式化、字节风格（BOM/行尾/分隔符）、空内容守卫
+    /// 全在那一处，重复实现必然漂移——而漂移的后果是训练集的 .txt 被写坏。
+    /// 整段在 UI 线程上跑（保存要读提示词框，见 <see cref="OnUiThread"/>）。
+    /// </summary>
+    private (bool Ok, string Message) AgentSaveCurrent()
+    {
+        var ui = OnUiThread(() =>
+        {
+            var path = CurrentImagePath();
+            if (path is null)
+                return (Ok: false, Message: "There is no image to save (the editor has no dataset open).");
+
+            var changed = SaveCurrent(showDialog: false, out var refused);
+            var name = Path.GetFileName(path);
+
+            // **三种结果必须分开说。** 返回值只表达"文件字节变没变"，
+            // 而"没变"有两种截然不同的原因：内容本来就是最新的（成功），
+            // 以及保存被守卫拒绝、文件根本没碰（失败）。把后者说成"已保存"
+            // 就是那句最难查的谎——用户以为写进去了，盘上其实没变。
+            if (refused)
+                return (Ok: false, Message:
+                    $"\"{name}\" was NOT saved: the editor could not read the caption text, so " +
+                    "the file was left untouched on purpose. Tell the user plainly; do not claim " +
+                    "you saved it.");
+
+            return (Ok: true, Message: changed
+                ? $"Saved \"{name}\" to disk."
+                : $"\"{name}\" was already up to date on disk — nothing needed writing.");
+        }, (Ok: false, Message: "Saving is not available right now."));
+
+        Log.Write($"agent save_caption: ok={ui.Ok} {ui.Message}");
+        return ui;
+    }
 
     /// <summary>
     /// 生成中的实时块（思考链 + 已吐出的正文）。**结束时会把它整个删掉**，

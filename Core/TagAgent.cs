@@ -38,6 +38,31 @@ public sealed class TagAgent
         /// </summary>
         string Search(string query, out List<TagSearch.Hit> hits, out bool splitMatch);
 
+        /// <summary>
+        /// 每一轮的 max_tokens 从哪里来。**由 host 在每轮现取**，不在这里写死。
+        ///
+        /// 原先这里是个常量 2400，而它实际是"答案 400 + 思考余量"的合成值——
+        /// 复杂打标（带图 + 十几轮查库 + 提案）会把它吃光，症状是"模型不听话"或
+        /// "没提出提案"，而用户调大设置里的 max_tokens 也没用（那条路读不到它）。
+        ///
+        /// 现在统一走 host：真实实现从 <see cref="AppSettings.AgentMaxTokens"/> 取，
+        /// **0 = 自动**（按服务端声明的能力解析，见 <see cref="LlmClient.ResolveBudget"/>）。
+        /// </summary>
+        int MaxTokensPerTurn { get; }
+
+        /// <summary>
+        /// 能不能用 `save_caption` 工具要求写盘。
+        ///
+        /// 与「完全权限」同一个开关：那个开关的语义就是"让模型自己动手，不用你点
+        /// 确认"，而"改完还要手动 Ctrl+S"会让"完全权限"名不副实——实测就发生过
+        /// 用户以为自动写入即落盘、而盘上文件没变的事（见 docs/12-ai-assistant.md）。
+        /// 关着的时候不下发这个工具（它必然失败），符合"不发注定失败的工具"那条。
+        ///
+        /// 注意**只表达意图**：真正写盘由界面在提案落进编辑器之后做
+        /// （<see cref="AgentProposal.SaveToDisk"/>）。
+        /// </summary>
+        bool CanSave { get; }
+
         /// <summary>带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。</summary>
         /// <param name="onProgress">
         /// 给了就要求实现走**流式**，把生成中的（已累积思考, 已累积正文）回调出来，
@@ -122,13 +147,6 @@ public sealed class TagAgent
     private const int DefaultMaxRounds = 32;
 
     /// <summary>
-    /// 这一路的预算。带工具时思考链是开着的（见 LlmClient.ChatWithToolsAsync 的注释：
-    /// 关掉思考模型根本不发 tool_calls），而读图之后思考还会更长，所以比
-    /// TagSearchAgent 的 1600 再宽一些。
-    /// </summary>
-    private const int Budget = 2400;
-
-    /// <summary>
     /// 一次对话里最多插入多少张放大图。**这是给上下文兜底的上限**，不是省事。
     ///
     /// 每张 1024 长边约 850 token，而且**一旦插进 messages 就会留在后面每一轮请求里**
@@ -154,12 +172,17 @@ public sealed class TagAgent
         var hasImage = image is not null && history.Any(t => t.FromUser);
         var dataset = host.Images;
 
+        // 预算由 host 现取（0 = 自动，见 IHost.MaxTokensPerTurn）。**不在这里写死**：
+        // 写死的 2400 正是"复杂打标永远不够用、而用户调设置也没用"的那个原因。
+        var budget = host.MaxTokensPerTurn;
+
         // 能不能真的把图放大：放大后的图是靠"往对话里插一条图文 user 消息"送出去的，
         // 而这条这次对话里必须已经有图（否则等于绕过用户关掉的「带当前图片」开关）。
         var canViewRegion = hasImage;
-        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion);
+        var canSave = host.CanSave;
+        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave);
         var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
-                                   canViewRegion: canViewRegion);
+                                   canViewRegion: canViewRegion, canSave: canSave);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -176,6 +199,12 @@ public sealed class TagAgent
         // 这一轮攒下的放大图，以及整次对话还剩多少张图的额度（见 MaxRegionImages）。
         var pendingImages = new List<LlmClient.ChatImage>();
         var imageBudget = MaxRegionImages;
+
+        // 模型有没有要求把结果写进磁盘。**必须跨轮存活**：它可能在第 1 轮就说
+        // "改完存一下"、第 4 轮才 propose，而"每轮重置"会把那个意图丢掉
+        // （实测：完全权限下让它"改完保存"，文件一个字都没变）。
+        // 只表达意图，真正的写盘在界面那边、等提案应用之后（见 AgentProposal.SaveToDisk）。
+        var wantsSave = false;
 
         // 这三样必须在**第一个 Done 之前**声明：Done 是捕获它们的局部函数，
         // 声明晚于使用会报 CS0165（用了未赋值的局部变量）——编译器只看赋值顺序。
@@ -223,7 +252,7 @@ public sealed class TagAgent
         {
             rounds++;
 
-            var turn = await host.TurnAsync(system, tools, messages, Budget, ct, onProgress)
+            var turn = await host.TurnAsync(system, tools, messages, budget, ct, onProgress)
                                   .ConfigureAwait(false);
             Collect(turn.Reasoning);
             if (!turn.Ok)
@@ -247,6 +276,13 @@ public sealed class TagAgent
             // tool_call_id 必须原样回灌，否则小模型对不上号会反复调同一个工具
             messages.Add(LlmClient.AssistantMessage(turn.Content, turn.Calls));
 
+            // 这一轮模型有没有要求写盘。**它在 propose 之前还是之后都可能出现**，
+            // 所以在整轮扫描里记下来，而不是就地写盘——写盘必须等提案落进编辑器
+            // （那一刻编辑器里还是旧内容，见 AgentProposal.SaveToDisk 的注释）。
+            //
+            // **wantsSave 声明在循环外**（见上面）：模型完全可能在第 1 轮就说
+            // "改完存一下"、第 4 轮才 propose，而每轮重置会把那个意图丢掉
+            // ——实测就这么错过一次。
             foreach (var call in turn.Calls)
             {
                 if (string.Equals(call.Name, AgentKit.ProposeToolName, StringComparison.Ordinal))
@@ -270,7 +306,17 @@ public sealed class TagAgent
                         $"认得 {proposal.Known.Count} 个、查不到 {proposal.Unknown.Count} 个" +
                         (proposal.HasRemovals ? $"，删除 {proposal.Remove.Count} 个" : "") +
                         (proposal.HasProse ? "，含一段散文" : "")));
-                    return Done(true, reply, proposal, rounds, "");
+
+                    // **写盘意图挂在提案上带走**，由界面在应用之后执行。
+                    // 本轮里 save_caption 可能出现在 propose **之前或之后**
+                    // （模型两种顺序都写过），所以这里先扫一遍整轮——
+                    // 直接 return 会把排在 propose 后面的那次 save 漏掉
+                    // （实测：完全权限下让它"改完保存"，文件没变）。
+                    var saveWanted = wantsSave || turn.Calls.Any(c =>
+                        string.Equals(c.Name, AgentKit.SaveToolName, StringComparison.Ordinal));
+
+                    return Done(true, reply, proposal with { SaveToDisk = saveWanted && canSave },
+                                rounds, "");
                 }
 
                 if (string.Equals(call.Name, AgentKit.CurrentImageToolName, StringComparison.Ordinal))
@@ -343,6 +389,37 @@ public sealed class TagAgent
                         imageBudget -= imgs.Count;
                         pendingImages.AddRange(imgs);
                     }
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.SaveToolName, StringComparison.Ordinal))
+                {
+                    // 不下发时模型不会调它；真调了（幻觉工具名）也如实回绝，
+                    // 而不是"当作成功"——那正是"它说存了其实没存"的来源。
+                    if (!canSave)
+                    {
+                        const string denied =
+                            "Saving is not allowed in this conversation. The user has not given " +
+                            "you write access — everything you propose stays in the editor until " +
+                            "they apply and save it themselves.";
+                        log.Add("保存（未开完全权限）→ 已回绝");
+                        Report(new ToolCallLog(call.Name, call.Arguments, denied));
+                        messages.Add(LlmClient.ToolMessage(call.Id, denied));
+                        continue;
+                    }
+
+                    // **只记意图，不在这里写盘。** 此刻编辑器里还是旧内容（提案还没被
+                    // 应用），现在写下去的是上一次的东西，而它会回报"保存成功"。
+                    // 真正的写盘由界面在应用提案之后执行（见 AgentProposal.SaveToDisk）。
+                    wantsSave = true;
+                    const string queued =
+                        "Understood — the caption will be written to disk as soon as your " +
+                        "proposal is applied. Keep going: the tags and prose still have to be " +
+                        "proposed with " + AgentKit.ProposeToolName + " (that is what actually " +
+                        "changes the prompt).";
+                    log.Add("保存 → 已排队（提案应用后落盘）");
+                    Report(new ToolCallLog(call.Name, call.Arguments, queued));
+                    messages.Add(LlmClient.ToolMessage(call.Id, queued));
                     continue;
                 }
 
@@ -431,7 +508,7 @@ public sealed class TagAgent
         // 只留 propose 同时满足两件事：它没法继续搜（不然会一直搜下去），
         // 但**仍然能交出结构化提案**。
         var proposeOnly = tools.Where(t => t.Name == AgentKit.ProposeToolName).ToList();
-        var final = await host.TurnAsync(system, proposeOnly, messages, Budget, ct,
+        var final = await host.TurnAsync(system, proposeOnly, messages, budget, ct,
                                          onProgress)
                               .ConfigureAwait(false);
         Collect(final.Reasoning);

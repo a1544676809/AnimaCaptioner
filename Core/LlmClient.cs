@@ -356,7 +356,7 @@ public sealed class LlmClient : IDisposable
     /// 答案一个字都写不出来。所以开思考时给思考单独留额度，让用户的
     /// MaxTokens 仍然完整地留给答案。
     /// </summary>
-    private const int ReasoningHeadroom = 1200;
+    public const int ReasoningHeadroom = 1200;
 
     /// <summary>
     /// 从一段文本里剥掉内联的思考标记。
@@ -484,7 +484,8 @@ public sealed class LlmClient : IDisposable
         AppSettings cfg, string systemPrompt, List<JsonObject> messages,
         IReadOnlyList<AgentTool> tools, int maxTokens,
         CancellationToken ct = default,
-        Action<string, string>? onProgress = null)
+        Action<string, string>? onProgress = null,
+        double? temperature = null)
     {
         if (string.IsNullOrWhiteSpace(cfg.ApiBaseUrl))
             return new ToolTurn(false, "", "", new(), "", "未配置接口地址");
@@ -513,7 +514,7 @@ public sealed class LlmClient : IDisposable
             ["model"] = string.IsNullOrWhiteSpace(cfg.Model) ? "local" : cfg.Model,
             ["messages"] = msgs,
             ["max_tokens"] = maxTokens,
-            ["temperature"] = cfg.Temperature,
+            ["temperature"] = temperature ?? cfg.Temperature,
         };
 
         // 空工具列表 = 这一轮不给工具。**不能下发 `"tools": []`**：有些服务
@@ -692,6 +693,69 @@ public sealed class LlmClient : IDisposable
         {
             return new ToolTurn(false, "", "", new(), raw, "响应解析失败：" + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 自动预算解析不出服务端能力时的兜底。**带工具的那些路用它**：
+    /// 工具轮要"先思考、再发 tool_calls、再写答案"，比只写答案的任务需要宽得多的额度，
+    /// 而写 0（不限制）在多数网关上是"用默认小值"或直接报错，比一个明确的大数字难查。
+    /// </summary>
+    public const int ToolAutoFallback = 8192;
+
+    /// <summary>实例版：按当前配置去问服务端能力，再解析预算。</summary>
+    public int BudgetFor(AppSettings cfg, int configured, int fallback) =>
+        ResolveBudget(configured, Caps(cfg), fallback);
+
+    /// <summary>
+    /// 把"用户设的预算"折成这次请求真正要发的 <c>max_tokens</c>。
+    ///
+    /// <paramref name="configured"/> 为 **0 表示自动**：按服务端在 <c>/models</c> 里
+    /// 声明过的能力算（<see cref="ResolveAutoBudget"/>），算不出来就用
+    /// <paramref name="fallback"/>。
+    ///
+    /// 为什么要有这一层：max_tokens 是**思考 + 答案**的总预算，而它该多大完全取决于
+    /// 服务端允许多少。写死永远是猜——写小了模型还在思考就被截断（实测过，见
+    /// <see cref="ReasoningHeadroom"/>），写大了可能超过服务端的输出上限而被拒。
+    /// 服务端自己报出来的那两个数才是唯一可靠的依据。
+    /// </summary>
+    public static int ResolveBudget(int configured, ModelInfo? caps, int fallback)
+    {
+        if (configured > 0) return configured;
+        var auto = ResolveAutoBudget(caps);
+        return auto > 0 ? auto : Math.Max(1, fallback);
+    }
+
+    /// <summary>
+    /// 自动预算：服务端声明了输出上限就用它，否则按上下文的一半估。
+    /// 两者都拿不到时返回 0（由调用方兜底）。
+    ///
+    /// 三个数字的取舍：
+    /// - **优先 `max_output_tokens`**：那是服务端明说的"一次最多输出多少"，
+    ///   正是 max_tokens 该守的那个界线（实测 DeepSeek 报 393216）。
+    /// - 没有它时用 **`context_window` 的一半**：本地 llama-server 只报
+    ///   <c>meta.n_ctx</c>（实测 40960）。留一半给输入——提示词、工具说明、
+    ///   整份对话历史、以及图片都算输入，而这一路输入往往比输出大。
+    /// - **绝不返回"无限"**：不限制的请求在多数网关上是"用默认值"或直接报错，
+    ///   两者都比一个明确的大数字难查。
+    /// </summary>
+    public static int ResolveAutoBudget(ModelInfo? caps)
+    {
+        if (caps is null) return 0;
+        if (caps.MaxOutputTokens > 0) return caps.MaxOutputTokens;
+        if (caps.ContextLength > 0) return Math.Max(1024, caps.ContextLength / 2);
+        return 0;
+    }
+
+    /// <summary>这次请求实际用掉的预算，供界面告诉用户"自动"到底算成了多少。</summary>
+    public static string DescribeBudget(int configured, ModelInfo? caps, int fallback)
+    {
+        var used = ResolveBudget(configured, caps, fallback);
+        if (configured > 0) return configured.ToString();
+        var src = ResolveAutoBudget(caps) > 0
+            ? (caps!.MaxOutputTokens > 0 ? "服务端 max_output_tokens"
+                                         : $"服务端 context_window({caps.ContextLength}) 的一半")
+            : "服务端没报能力，用兜底值";
+        return $"{used}（自动：{src}）";
     }
 
     /// <summary>从 tool_call 的 arguments 里取 query 字段。取不到时返回空串，由调用方决定怎么办。</summary>

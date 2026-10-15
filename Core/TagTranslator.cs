@@ -36,6 +36,10 @@ public sealed class TagTranslator
     /// <summary>
     /// 带思考的翻译要留足预算：实测思考链单独就能写几百 token，
     /// 给 300 时第二轮直接 length 截断（既没正文也没 tool_calls）。
+    ///
+    /// **这一路刻意不跟着"自动预算"走**：它是"一句进、一句出"的短任务
+    /// （要的是一句中文释义），放大预算没有收益，只是把上下文里可用于输出的
+    /// 额度占掉。真正需要大额度的是助手那条路（见 AgentMaxTokens）。
     /// </summary>
     private const int ToolBudget = 1600;
 
