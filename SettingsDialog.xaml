@@ -63,6 +63,12 @@
                         <TextBlock Text="AI 助手" />
                     </StackPanel>
                 </ListViewItem>
+                <ListViewItem Tag="tools" AutomationProperties.Name="助手工具">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE90F;" FontSize="14" />
+                        <TextBlock Text="助手工具" />
+                    </StackPanel>
+                </ListViewItem>
                 <ListViewItem Tag="search" AutomationProperties.Name="联网搜索">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                         <FontIcon Glyph="&#xE774;" FontSize="14" />
@@ -298,6 +304,21 @@
                     <TextBlock FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                Text="⚠ 完全权限让渡的是「模型改了训练集而你没看见」这条保证：从打开那一刻起，助手想改就改，不问。它仍然只算一个撤销点（Ctrl+Z 能全退），每次写入也都会记进日志。建议只在你盯着屏幕、且信任当前模型与接口时打开。" />
+                </StackPanel>
+
+                <!-- ============ 助手工具 ============ -->
+                <!-- 行是**代码生成**的（AgentKit.ToolCatalog 是唯一来源）：
+                     十二个工具逐个写 XAML 的话，将来加一个工具就会漏写一行，
+                     而漏写的表现是"这个工具永远关不掉"——界面上看不出来。 -->
+                <StackPanel x:Name="PageTools" Spacing="10">
+                    <TextBlock Text="助手能用哪些工具" FontWeight="SemiBold" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="关掉的工具不会下发给模型，它也就不会去调用——系统提示里同样不会提到。这一页只决定「允不允许」；某些工具还需要前提条件（比如完全权限、打开数据集、启用搜索），前提没满足时即使勾着也不会生效，行末会写出来。" />
+                    <StackPanel x:Name="ToolRows" Spacing="2" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="关掉「提出改动」之后助手就只能回答问题、改不了提示词——除非你确实只想拿它当顾问，否则别关。" />
                 </StackPanel>
 
                 <!-- ============ 联网搜索 ============ -->

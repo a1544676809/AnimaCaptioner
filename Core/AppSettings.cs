@@ -74,6 +74,19 @@ public sealed class AppSettings
     public bool AgentFullAccess { get; set; }
 
     /// <summary>
+    /// 用户在设置里**关掉**的工具名（<see cref="AgentKit.ToolCatalog"/> 里那些）。
+    ///
+    /// 存"关掉的"而不是"打开的"：将来新加的工具默认就是可用的，不需要用户去补勾
+    /// ——反过来存"打开的"会让新工具在所有人的机器上都默认不可用，而那种缺失
+    /// 表现为"助手好像变笨了"，很难联想到设置里少了一个勾。
+    ///
+    /// 这是**用户的意愿**，与"这个工具现在能不能用"是两件事：后者还取决于前提
+    /// （没有数据集就没有 label_images、没开完全权限就没有 save_caption）。
+    /// 两者都满足才真的下发。设置页会把前提没满足的那几条写出来。
+    /// </summary>
+    public List<string> DisabledTools { get; set; } = new();
+
+    /// <summary>
     /// 助手工具循环的轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
     ///
     /// 默认 32，比原先写死的 4 大得多——实测 4 轮一问"查 A 和 B 两个标签"就用光，

@@ -99,6 +99,9 @@ internal sealed class AgentHost : TagAgent.IHost
             ? Task.FromResult(("Bulk labelling is not available here.", false))
             : _labelImages(arguments, ct);
 
+    /// <summary>给 TagAgent 过滤"设置里关掉的工具"用。</summary>
+    public AppSettings? Settings => _cfg;
+
     /// <summary>
     /// 能不能读标签清单、改类型、规整顺序。与「完全权限」同一个开关：
     /// 改类型会**持久化**一条偏好、规整会改提示词顺序，两者都属于"它自己动手"。

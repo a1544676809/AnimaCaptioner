@@ -102,6 +102,10 @@ public sealed partial class SettingsDialog : ContentDialog
         AgentRoundsBox.Value = cfg.AgentMaxRounds;
         AgentMaxTokensBox.Value = cfg.AgentMaxTokens;
         AgentTempBox.Value = cfg.AgentTemperature;
+
+        // 工具开关：配置里存的是"关掉的"，所以这里取反
+        foreach (var (name, box) in _toolBoxes)
+            box.IsChecked = !AgentKit.IsDisabled(cfg, name);
         SyncAgentBoxes();
         MaxTokensBox.Value = cfg.MaxTokens;
         TempBox.Value = cfg.Temperature;
@@ -144,6 +148,67 @@ public sealed partial class SettingsDialog : ContentDialog
             ? pg : "model");
 
         BuildColorRows();
+        BuildToolRows();
+    }
+
+    // ---- 助手工具开关 ----
+
+    /// <summary>每个工具的勾选框，键是工具名。</summary>
+    private readonly Dictionary<string, CheckBox> _toolBoxes = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 按 <see cref="AgentKit.ToolCatalog"/> 生成工具列表（**唯一来源**：逐个写 XAML
+    /// 的话，将来加工具就会漏一行，而漏写的表现是"这个工具永远关不掉"，界面上看不出来）。
+    ///
+    /// 每行三件事：勾选框、工具名、以及**前提条件**。前提写出来很重要——用户勾了却
+    /// 不生效时，没有这行提示就只能猜（比如"完全权限"没开时 save_caption 不会下发）。
+    /// </summary>
+    private void BuildToolRows()
+    {
+        ToolRows.Children.Clear();
+        _toolBoxes.Clear();
+
+        foreach (var t in AgentKit.ToolCatalog)
+        {
+            var row = new StackPanel { Spacing = 1, Margin = new Thickness(0, 4, 0, 4) };
+
+            var box = new CheckBox
+            {
+                Content = t.Title,
+                IsChecked = true,   // 默认全开；Load 会按配置覆盖
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, "工具 " + t.Name);
+            _toolBoxes[t.Name] = box;
+            row.Children.Add(box);
+
+            var detail = new TextBlock
+            {
+                Text = t.Detail,
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(28, 0, 0, 0),
+                Foreground = (Microsoft.UI.Xaml.Media.Brush)
+                             Application.Current.Resources["TextFillColorTertiaryBrush"],
+            };
+            row.Children.Add(detail);
+
+            if (t.Requires.Length > 0)
+            {
+                row.Children.Add(new TextBlock
+                {
+                    Text = "前提：" + t.Requires + "（没满足时即使勾着也不生效）",
+                    FontSize = 11,
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(28, 0, 0, 0),
+                    Foreground = (Microsoft.UI.Xaml.Media.Brush)
+                                 Application.Current.Resources["TextFillColorTertiaryBrush"],
+                });
+            }
+
+            ToolRows.Children.Add(row);
+        }
+
+        Log.Write($"settings: {AgentKit.ToolCatalog.Length} tool rows built");
     }
 
     // ---- 模型站点 ----
@@ -538,6 +603,7 @@ public sealed partial class SettingsDialog : ContentDialog
         _pages["model"] = PageModel;
         _pages["effort"] = PageEffort;
         _pages["agent"] = PageAgent;
+        _pages["tools"] = PageTools;
         _pages["search"] = PageSearch;
         _pages["paths"] = PagePaths;
         _pages["vocab"] = PageVocab;
@@ -1049,6 +1115,13 @@ public sealed partial class SettingsDialog : ContentDialog
         // 那一层是 LlmClient.ResolveBudget，这里不该替它做决定。
         cfg.AgentMaxTokens = (int)(double.IsNaN(AgentMaxTokensBox.Value) ? 0 : AgentMaxTokensBox.Value);
         cfg.AgentTemperature = double.IsNaN(AgentTempBox.Value) ? 0.3 : AgentTempBox.Value;
+
+        // 工具开关：存"关掉的"，且**按 ToolCatalog 的顺序**写，文件里看起来稳定
+        // （字典顺序随实现变，每次保存都抖动会让人以为设置被改了）。
+        cfg.DisabledTools = AgentKit.ToolCatalog
+            .Where(t => _toolBoxes.TryGetValue(t.Name, out var b) && b.IsChecked != true)
+            .Select(t => t.Name)
+            .ToList();
         cfg.MaxTokens = (int)(double.IsNaN(MaxTokensBox.Value) ? 400 : MaxTokensBox.Value);
         cfg.Temperature = double.IsNaN(TempBox.Value) ? 0.3 : TempBox.Value;
         cfg.TimeoutSeconds = (int)(double.IsNaN(TimeoutBox.Value) ? 300 : TimeoutBox.Value);

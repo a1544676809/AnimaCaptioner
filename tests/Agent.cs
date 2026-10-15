@@ -1368,6 +1368,88 @@ public static class Agent
                  AnyToolMsg(h3, "Unknown section") && AnyToolMsg(h3, "character(角色)"));
         }
 
+        Console.WriteLine("\n=== 35. 设置里的工具开关 ===");
+        {
+            // 用户要求："在设置搞一个工具列表，用户可以自由选择哪些工具开，哪些关。"
+            var cfg = new AppSettings();
+            Eq("默认一个都不关", cfg.DisabledTools.Count, 0);
+
+            // 清单必须覆盖**全部**工具：漏写一个，它就永远关不掉，而界面上看不出来
+            var allNames = AgentKit.Tools(true, withImages: true, canViewRegion: true,
+                                          canSave: true, canBatchLabel: true, canEditTags: true)
+                                   .Select(t => t.Name).ToList();
+            var catalogNames = AgentKit.ToolCatalog.Select(t => t.Name).ToList();
+            Eq("清单与工具表一一对应", string.Join(",", allNames.OrderBy(x => x)),
+               string.Join(",", catalogNames.OrderBy(x => x)));
+            True("每个都写了中文名与说明",
+                 AgentKit.ToolCatalog.All(t => t.Title.Length > 0 && t.Detail.Length > 0));
+            True("有前提的那几个写明了前提",
+                 AgentKit.ToolCatalog.First(t => t.Name == AgentKit.SaveToolName).Requires.Contains("完全权限") &&
+                 AgentKit.ToolCatalog.First(t => t.Name == AgentKit.LabelImagesToolName).Requires.Contains("数据集"));
+            True("propose 被标成必需", AgentKit.IsRequired(AgentKit.ProposeToolName));
+
+            // ---- 关掉一个：工具表里没有它，提示词里也不提它 ----
+            var noWeb = new AppSettings { DisabledTools = { AgentKit.WebSearchToolName } };
+            var t1 = AgentKit.Tools(true, cfg: noWeb).Select(t => t.Name).ToList();
+            True("关掉 web_search 后它不在工具表里", !t1.Contains(AgentKit.WebSearchToolName));
+            True("别的工具不受影响", t1.Contains(AgentKit.SearchToolName) &&
+                                     t1.Contains(AgentKit.ProposeToolName));
+            // 提示词里 web_search **从不按名字出现**：开着时什么都不说（工具表里有就够了），
+            // 关掉时才明说"没有这个工具、别去找"。所以判据要用那句否定的话。
+            True("关掉后提示词明说没有搜索工具",
+                 AgentKit.SystemPrompt(true, true, cfg: noWeb)
+                     .Contains("The web search tool is not available"));
+            True("没关时不说这句话",
+                 !AgentKit.SystemPrompt(true, true)
+                     .Contains("The web search tool is not available"));
+            True("关掉后也不提 web_search 这个名字",
+                 !AgentKit.SystemPrompt(true, true, cfg: noWeb).Contains(AgentKit.WebSearchToolName));
+
+            // 大小写不敏感（配置可能被手改）
+            var oddCase = new AppSettings { DisabledTools = { "WEB_SEARCH" } };
+            True("工具名比对忽略大小写",
+                 !AgentKit.Tools(true, cfg: oddCase).Any(t => t.Name == AgentKit.WebSearchToolName));
+
+            // ---- 关掉两个、留一个：提示词只提留下的 ----
+            var onlyList = new AppSettings
+            {
+                DisabledTools = { AgentKit.SetTagSectionToolName, AgentKit.SortTagsToolName },
+            };
+            var p = AgentKit.SystemPrompt(true, false, canEditTags: true, cfg: onlyList);
+            True("留下的那个还提", p.Contains(AgentKit.ListTagsToolName));
+            True("关掉的两个都不提",
+                 !p.Contains(AgentKit.SetTagSectionToolName) && !p.Contains(AgentKit.SortTagsToolName));
+            var t2 = AgentKit.Tools(false, canEditTags: true, cfg: onlyList).Select(t => t.Name).ToList();
+            Eq("工具表里也只剩那一个",
+               string.Join(",", t2.Where(n => n is "list_tags" or "set_tag_section" or "sort_tags")),
+               "list_tags");
+
+            // 三个标签工具全关掉时，整段说明都不该出现
+            var noneTags = new AppSettings
+            {
+                DisabledTools = { AgentKit.ListTagsToolName, AgentKit.SetTagSectionToolName,
+                                  AgentKit.SortTagsToolName },
+            };
+            True("全关掉后连「读标签」那段都不出现",
+                 !AgentKit.SystemPrompt(true, false, canEditTags: true, cfg: noneTags)
+                     .Contains("Reading and re-typing tags"));
+
+            // ---- 关掉 propose：允许，后果自负 ----
+            var noPropose = new AppSettings { DisabledTools = { AgentKit.ProposeToolName } };
+            True("propose 也能关（用户要的是自由选择）",
+                 !AgentKit.Tools(true, cfg: noPropose).Any(t => t.Name == AgentKit.ProposeToolName));
+
+            // ---- 落盘往返 ----
+            var rt = AppSettings.FromJson(new AppSettings
+            {
+                DisabledTools = { AgentKit.WebSearchToolName, AgentKit.ViewRegionToolName },
+            }.ToJson());
+            Eq("工具开关能落盘再读回", rt?.DisabledTools.Count, 2);
+            True("内容正确", rt!.DisabledTools.Contains(AgentKit.WebSearchToolName) &&
+                             rt.DisabledTools.Contains(AgentKit.ViewRegionToolName));
+            Eq("空表也能往返", AppSettings.FromJson(new AppSettings().ToJson())?.DisabledTools.Count, 0);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1455,6 +1537,8 @@ public static class Agent
         public void ReportBatchProgress(string text) => BatchProgress.Add(text);
 
         // ---- 标签清单 / 类型 / 排序 ----
+        /// <summary>探针不过滤工具开关。</summary>
+        public AppSettings? Settings => null;
         public bool CanEditTags { get; set; }
 
         /// <summary>DescribeTags 返回什么（默认给一条带类型的清单）。</summary>

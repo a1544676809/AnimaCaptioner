@@ -112,6 +112,74 @@ public static class AgentKit
         string.Join(", ", TagSections.All.Select(s => $"{s.Key}({s.Title})"));
 
     /// <summary>
+    /// 设置页「工具」那一页的清单：每个工具一行。
+    /// </summary>
+    /// <param name="Name">工具名（存进 <see cref="AppSettings.DisabledTools"/> 的就是它）。</param>
+    /// <param name="Title">给人看的中文名。</param>
+    /// <param name="Detail">它是干什么的、什么时候会被调用。</param>
+    /// <param name="Requires">
+    /// 前提条件的人话说明；空串 = 没有前提。**前提没满足时这个工具本来就不会下发**
+    /// （不发一个注定失败的工具），设置页要把这件事写出来，否则用户会以为勾了就生效。
+    /// </param>
+    /// <param name="Required">
+    /// true = 关掉它助手基本就没用了（`propose` 是唯一能改动提示词的途径）。
+    /// 仍然允许关（用户要"自由选择"），但设置页会给出警告。
+    /// </param>
+    public sealed record AgentToolInfo(string Name, string Title, string Detail,
+                                       string Requires, bool Required = false);
+
+    /// <summary>
+    /// 全部工具。顺序即设置页里的显示顺序（按用途分组）。
+    /// **这份清单是设置页与过滤逻辑的唯一来源**：漏写一个工具，它就会永远无法关闭
+    /// ——而那种缺失在界面上看不出来（列表里就是少一行）。
+    /// </summary>
+    public static readonly AgentToolInfo[] ToolCatalog =
+    {
+        new(ProposeToolName, "提出改动（propose）",
+            "助手唯一的改动途径：把要加的标签、要删的标签、英文散文交出来。" +
+            "关掉它，助手就只能回答问题、不能改提示词。", "", Required: true),
+        new(SearchToolName, "查词库（search_tags）",
+            "在本地标签词库里检索，确认标签名拼写正确、拿到中文释义。", ""),
+        new(WebSearchToolName, "联网搜索（web_search）",
+            "遇到不认识的标签时上网查一下。", "需要先在「联网搜索」页启用搜索后端"),
+        new(CurrentImageToolName, "查当前图片（current_image）",
+            "读当前这张图的文件名、已有标注、以及数据集里还有哪些图。", "需要打开一个数据集（标注模式）"),
+        new(ImageInfoToolName, "查图片信息（image_info）",
+            "读分辨率、宽高比等，用来判断构图。", "需要打开一个数据集（标注模式）"),
+        new(SelectImageToolName, "切图（select_image）",
+            "切到数据集里的另一张图。", "需要打开一个数据集（标注模式）"),
+        new(ViewRegionToolName, "放大细节（view_region）",
+            "把图裁一块、放大后再看，用来确认小配饰之类的细节。", "需要这次对话带了图"),
+        new(ListTagsToolName, "读标签清单（list_tags）",
+            "按顺序列出提示词里的标签，带每个的大类、词库认不认得、类型是不是手改的。",
+            "需要开启「完全权限」"),
+        new(SetTagSectionToolName, "定标签类型（set_tag_section）",
+            "给标签指定大类。**词库里没有的自定义标签只能靠它定类型**。",
+            "需要开启「完全权限」"),
+        new(SortTagsToolName, "规整顺序（sort_tags）",
+            "按官方大类顺序重排标签（段内顺序不动，散文尾巴不碰）。", "需要开启「完全权限」"),
+        new(LabelImagesToolName, "批量打标（label_images）",
+            "一次给整个数据集打标，无人值守跑完。", "需要打开一个数据集（标注模式）"),
+        new(SaveToolName, "写盘（save_caption）",
+            "把改动写进 .txt 文件。", "需要开启「完全权限」"),
+    };
+
+    /// <summary>这个工具被用户在设置里关掉了吗。</summary>
+    public static bool IsDisabled(AppSettings cfg, string name) =>
+        cfg.DisabledTools.Any(d => string.Equals(d, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>按用户的开关过滤一遍（前提条件由调用方的 flag 负责）。</summary>
+    private static List<AgentTool> ApplyDisabled(AppSettings? cfg, IEnumerable<AgentTool> tools) =>
+        cfg is null ? tools.ToList() : tools.Where(t => !IsDisabled(cfg, t.Name)).ToList();
+
+    /// <summary>
+    /// 设置页里的默认值：`propose` 与查词库不给关（关掉助手就没用了），
+    /// 但**仍然允许**——用户要的是"自由选择"，我们只把后果说清楚。
+    /// </summary>
+    public static bool IsRequired(string name) =>
+        ToolCatalog.FirstOrDefault(t => t.Name == name)?.Required == true;
+
+    /// <summary>
     /// 读：当前提示词的标签清单，**带每一个的大类**。
     ///
     /// 与 `current_image` 的分工：那个回答"这是哪张图、数据集里还有什么"，
@@ -616,7 +684,8 @@ public static class AgentKit
     /// </summary>
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
-                                        bool canBatchLabel = false, bool canEditTags = false)
+                                        bool canBatchLabel = false, bool canEditTags = false,
+                                        AppSettings? cfg = null)
     {
         var tools = new List<AgentTool>();
         if (withImages)
@@ -629,7 +698,6 @@ public static class AgentKit
         if (withImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
 
-        // 读标签清单：只要有一个可以改的文档就该给（它也是"该不该改"的前提）。
         if (canEditTags)
         {
             tools.Add(ListTagsTool);
@@ -641,7 +709,10 @@ public static class AgentKit
         if (canBatchLabel) tools.Add(LabelImagesTool);
         if (canSave) tools.Add(SaveTool);
         tools.Add(ProposeTool);
-        return tools;
+
+        // 最后再按用户在设置里的开关过一遍：**前提**（上面那些 flag）与**意愿**
+        // （这里）是两件事，两者都满足才真的下发。
+        return ApplyDisabled(cfg, tools);
     }
 
     /// <summary>
@@ -663,8 +734,17 @@ public static class AgentKit
     /// </summary>
     public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false,
                                       bool canSave = false, bool canBatchLabel = false,
-                                      bool canEditTags = false)
+                                      bool canEditTags = false, AppSettings? cfg = null)
     {
+        // 用户在设置里关掉的工具**不能出现在提示词里**：提示词说了而工具表里没有，
+        // 模型会去调一个不存在的工具（然后拿到一条错误，白花一轮）。
+        bool On(string name) => cfg is null || !IsDisabled(cfg, name);
+        canWebSearch &= On(WebSearchToolName);
+        canViewRegion &= On(ViewRegionToolName);
+        canSave &= On(SaveToolName);
+        canBatchLabel &= On(LabelImagesToolName);
+        canEditTags &= On(ListTagsToolName) || On(SetTagSectionToolName) || On(SortTagsToolName);
+
         var sb = new System.Text.StringBuilder();
         sb.Append(
             "You are the prompt assistant inside AnimaCaptioner, a tool a Chinese-speaking " +
@@ -760,18 +840,28 @@ public static class AgentKit
 
         // 标签清单 / 类型 / 排序。仅在允许改标签时下发。
         if (canEditTags)
-            sb.Append(
-                "- Reading and re-typing tags: `" + ListTagsToolName + "` lists the caption's " +
-                "tags with the section each one is in. Use `" + SetTagSectionToolName + "` when a " +
-                "tag sits in the wrong section — especially tags the vocabulary does not know " +
-                "(custom trigger words, made-up names), which default to \"general\" and cannot " +
-                "be typed any other way. Use `" + SortTagsToolName + "` to tidy the order " +
-                "(quality → meta → year → safety → count → character → series → artist → " +
-                "general; order inside a section is preserved).\n" +
-                "  Sections: " + SectionCatalog() + ".\n" +
-                "  Setting a section is a persistent preference, so only do it when you are " +
-                "sure: read the tags first, and never guess a section for a tag you have not " +
-                "seen. The user can undo it, but they should not have to.\n");
+        {
+            var bits = new List<string>();
+            if (On(ListTagsToolName))
+                bits.Add("`" + ListTagsToolName + "` lists the caption's tags with the section " +
+                         "each one is in");
+            if (On(SetTagSectionToolName))
+                bits.Add("`" + SetTagSectionToolName + "` sets which section a tag belongs to — " +
+                         "use it for tags the vocabulary does not know (custom trigger words, " +
+                         "made-up names), which default to \"general\" and cannot be typed any " +
+                         "other way");
+            if (On(SortTagsToolName))
+                bits.Add("`" + SortTagsToolName + "` tidies the order (quality → meta → year → " +
+                         "safety → count → character → series → artist → general; order inside " +
+                         "a section is preserved)");
+
+            sb.Append("- Reading and re-typing tags: ").Append(string.Join(". ", bits))
+              .Append(".\n")
+              .Append("  Sections: ").Append(SectionCatalog()).Append(".\n")
+              .Append("  Setting a section is a persistent preference, so only do it when you " +
+                      "are sure: read the tags first, and never guess a section for a tag you " +
+                      "have not seen. The user can undo it, but they should not have to.\n");
+        }
 
         if (canSave)
             sb.Append(

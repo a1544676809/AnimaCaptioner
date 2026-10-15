@@ -208,6 +208,8 @@ public static class RegionProbe
         /// <summary>探针不开写盘能力。</summary>
         /// <summary>探针里不提供批量打标。</summary>
         /// <summary>探针里不开标签编辑能力。</summary>
+        /// <summary>探针不过滤工具开关。</summary>
+        public AppSettings? Settings => null;
         public bool CanEditTags => false;
 
         public string DescribeTags() => "tags are off in this probe";

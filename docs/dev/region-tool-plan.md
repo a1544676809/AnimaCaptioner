@@ -360,7 +360,41 @@ TagAgent **立刻结束这一轮**而不是继续问模型。不这么做的话�
 范围选择与记账是纯函数（`Core/BatchPlan.cs`），所以"会动哪几张、结果怎么数"
 能在回归里直接断言——这正是最该钉住的部分：选错范围会改写用户的训练集。
 
+## 设置里的工具开关（用户自由选择哪些工具开）
+
+用户要求："在设置搞一个工具列表，用户可以自由选择哪些工具开，哪些关。"
+
+- `AgentKit.ToolCatalog` 是**唯一来源**：设置页的行由它生成，过滤逻辑也用它。
+  逐个写 XAML 的话，将来加工具就会漏一行，而漏写的表现是"这个工具永远关不掉"
+  ——界面上看不出来（就是少一行）。回归里钉住"清单与 `Tools()` 输出一一对应"。
+- 配置存**关掉的**（`AppSettings.DisabledTools`）而不是打开的：新工具默认可用，
+  不需要用户补勾。反过来存"打开的"会让新工具在所有人机器上默认不可用，
+  而那种缺失表现为"助手好像变笨了"，很难联想到设置里少了一个勾。
+- **前提与意愿分开**：`Tools()` 的 flag 管前提（有没有数据集、有没有完全权限、
+  有没有启用搜索），`DisabledTools` 管意愿，两者都满足才下发。设置页把前提写在
+  每一行下面——否则用户勾了不生效只能猜。
+- **提示词也要跟着改**：提示词里说了而工具表里没有，模型会去调一个不存在的工具、
+  白花一轮。所以 `SystemPrompt` 也吃 `DisabledTools`，逐个工具判断；三个标签工具
+  那段改成按"留下的那几个"拼句子，全关掉时整段都不出现。
+- 关掉 `propose` 是**允许的**（用户要的是自由选择），只是后果写清楚：
+  关掉之后助手只能回答问题、改不了提示词。
+
+真机实测（`--settings` + `AC_SETTINGS_PAGE=tools`）：
+
+```
+找到 12 个工具勾选框
+  工具 propose / search_tags / web_search / current_image / image_info /
+      select_image / view_region / list_tags / set_tag_section / sort_tags /
+      label_images / save_caption
+取消勾选 web_search：On -> Off，保存后 settings.json 里 DisabledTools = web_search
+```
+
+（顺带：设置对话框这次是用 `--settings` 启动开关打开的，不是点菜单——菜单在自动化下
+点不动，合成输入到不了这个窗口，抢不到前台。这个坑之前踩过，`OpenSettingsForTest()`
+就是为这个留的口子。）
+
 ## 助手读标签 / 改类型 / 排顺序（`list_tags` / `set_tag_section` / `sort_tags`）
+
 
 用户要求："agent 的工具应该能读取 tag 及其种类，以及对数据库内没有的 tag 进行种类
 标注。也可以执行 tag 排序等功能。"

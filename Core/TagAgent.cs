@@ -112,6 +112,13 @@ public sealed class TagAgent
         (bool Changed, string Message) SortTags();
 
         /// <summary>
+        /// 当前配置。**只为了让"设置里关掉的工具"能被过滤掉**：前提条件（有没有数据集、
+        /// 有没有完全权限）走上面那些 flag，用户的开关走这一份。
+        /// 可以是 null（探针/测试里不关心设置）——那时不过滤。
+        /// </summary>
+        AppSettings? Settings { get; }
+
+        /// <summary>
         /// 带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。
         /// </summary>
         /// <param name="onProgress">
@@ -234,10 +241,11 @@ public sealed class TagAgent
         // 批量只在"有数据集、且当前不在批量循环里"时下发（防自我递归，见 CanBatchLabel）。
         var canBatchLabel = host.CanBatchLabel && dataset.Count > 0;
         var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave,
-                                           canBatchLabel, canEditTags);
+                                           canBatchLabel, canEditTags, host.Settings);
         var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
                                    canViewRegion: canViewRegion, canSave: canSave,
-                                   canBatchLabel: canBatchLabel, canEditTags: canEditTags);
+                                   canBatchLabel: canBatchLabel, canEditTags: canEditTags,
+                                   cfg: host.Settings);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
