@@ -845,6 +845,162 @@ public static class Agent
                                          new PixelRect(0, 0, 400, 300), 400, 300) < 1.15);
         }
 
+        Console.WriteLine("\n=== 28. 覆盖标签：propose 必须有删除通道 ===");
+        {
+            // 用户报过的问题：连让助手"覆盖"两次，它每次都说覆盖了，而标签列表看着没变。
+            // 根因是 propose 原先只有 add_tags —— 模型**没有手段**表达"删掉那些"，
+            // 于是"覆盖"只能退化成"往里加"，而它照样在 note 里写"已替换"。
+            // 复现与现场证据见 tests/OverwriteProbe.cs（corecheck overwrite）。
+
+            var knownSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "solo", "smile", "upper body", "blonde hair", "twintails" };
+            bool IsK(string t) => knownSet.Contains(t);
+
+            var before = new[] { "1girl", "solo", "blonde hair", "twintails", "blue eyes" };
+
+            // 模型说"覆盖成这三条"时该发的形状
+            var p = AgentKit.ParseProposal("""
+                {"remove_tags":["1girl","blonde hair","twintails","blue eyes"],
+                 "add_tags":["solo","smile","upper body"],
+                 "note":"已覆盖为三条"}
+                """, IsK);
+            True("解析出删除通道", p.HasRemovals);
+            Eq("要删的个数", p.Remove.Count, 4);
+            Eq("要删的内容", string.Join("|", p.Remove), "1girl|blonde hair|twintails|blue eyes");
+            Eq("要加的个数", p.AddTags.Count, 3);
+            True("有删除时 IsEmpty 为假", !p.IsEmpty);
+
+            // 落地：现有 ∪ 加 − 删，应当正好等于用户要的三条
+            var after = before
+                .Where(t => !p.Remove.Contains(t, StringComparer.OrdinalIgnoreCase))
+                .Concat(p.AddTags)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            Eq("落地后正好是用户要的三条", string.Join("|", after), "solo|smile|upper body");
+
+            // 没有 remove_tags 时行为一字不变（既有调用方不必改）
+            var old = AgentKit.ParseProposal("""{"add_tags":["solo"]}""", IsK);
+            True("缺 remove_tags 时删除列表为空", !old.HasRemovals);
+            Eq("Remove 永不为 null", old.Remove.Count, 0);
+            True("纯加法仍然是 HasTags", old.HasTags);
+
+            // 同一个标签既说删又说加：判给"加"（保守，免得手抖删掉东西）
+            var both = AgentKit.ParseProposal("""
+                {"add_tags":["solo"],"remove_tags":["solo","blonde hair"]}
+                """, IsK);
+            Eq("既删又加的判给加，不进删除列表", string.Join("|", both.Remove), "blonde hair");
+            Eq("加的那条还在", string.Join("|", both.AddTags), "solo");
+
+            // 大小写不同也算同一个标签
+            var caseMix = AgentKit.ParseProposal("""
+                {"add_tags":["Solo"],"remove_tags":["solo"]}
+                """, IsK);
+            Eq("忽略大小写判重", caseMix.Remove.Count, 0);
+
+            // 手抖宽容：remove_tags 写成逗号分隔的字符串也要收
+            var sloppy = AgentKit.ParseProposal("""{"remove_tags":"`1girl`, blonde hair"}""", IsK);
+            Eq("字符串也按逗号拆", string.Join("|", sloppy.Remove), "1girl|blonde hair");
+
+            // 工具声明里必须有这个字段，且说明写清"不许谎称替换过"
+            var props = AgentKit.ProposeTool.Parameters["properties"]!;
+            True("propose 声明了 remove_tags", props["remove_tags"] is not null);
+            True("说明里写明只能靠它来删",
+                 AgentKit.ProposeTool.Parameters["properties"]!["remove_tags"]!["description"]!
+                     .GetValue<string>().Contains("REMOVE"));
+            True("系统提示要求替换时必须列 remove_tags",
+                 AgentKit.SystemPrompt(true, false).Contains("remove_tags"));
+
+            // current_image 必须把现有标签**原样列出来**，否则模型无从知道该删哪些
+            var h = new FakeHost();
+            h.Dataset.Add(new AgentImage("a", 0, true, 5, IsCurrent: true,
+                                         Tags: new[] { "1girl", "solo", "blonde hair" }));
+            h.Turn(Tool("i", AgentKit.CurrentImageToolName, "{}"))
+             .Turn(Tool("p", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h, "现在有哪些标签");
+            var info = h.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("列出了现有标签名", info.Contains("1girl, solo, blonde hair"));
+            True("告诉模型用 remove_tags 删", info.Contains("remove_tags"));
+
+            // 只报数量是不够的（这正是原来的样子）
+            var h2 = new FakeHost();
+            h2.Dataset.Add(new AgentImage("a", 0, true, 5, IsCurrent: true));
+            h2.Turn(Tool("i2", AgentKit.CurrentImageToolName, "{}"))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "现在有哪些标签");
+            var info2 = h2.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("没给标签名时不瞎编列表", !info2.Contains("Its current tags"));
+
+            // 日志与工具结果都要体现删除（界面上那一步要看得见）
+            var h3 = new FakeHost();
+            h3.Dataset.Add(new AgentImage("a", 0, true, 5, IsCurrent: true));
+            h3.Turn(Tool("p3", AgentKit.ProposeToolName,
+                """{"add_tags":["solo"],"remove_tags":["blonde hair","twintails"]}"""));
+            var overwriteOutcome = Run(h3, "覆盖成 solo");
+            True("日志里写了删几个", overwriteOutcome.Log.Any(l => l.Contains("删除 2 个")));
+            True("工具调用记录里也写了",
+                 overwriteOutcome.ToolCalls is not null &&
+                 overwriteOutcome.ToolCalls.Any(c => c.Result.Contains("删除 2 个")));
+        }
+
+        Console.WriteLine("\n=== 29. 覆盖的合并语义：先删后加、忽略大小写、既删又加判给加 ===");
+        {
+            // 第 28 节验的是"参数解析"，这一节验"解析出来的东西怎么合并进现有列表"
+            // ——用户报的"感觉没变化"就发生在这一步与它的下游（保存）。
+            var knownSet2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "solo", "smile", "upper body", "1girl", "blonde hair" };
+            bool IsK2(string t) => knownSet2.Contains(t);
+
+            var before = new[] { "1girl", "solo", "blonde hair", "twintails" };
+
+            // 用户要的：覆盖成三条 → 结果必须正好是三条
+            var p = AgentKit.ParseProposal("""
+                {"remove_tags":["1girl","blonde hair","twintails"],
+                 "add_tags":["solo","smile","upper body"]}
+                """, IsK2);
+            var (merged, added, removed) = AgentKit.MergeProposal(before, p);
+            Eq("合并后正好三条", string.Join("|", merged), "solo|smile|upper body");
+            Eq("删掉 3 个", removed, 3);
+            Eq("新增 2 个（solo 本来就在）", added, 2);
+            Eq("入参没被改动", string.Join("|", before), "1girl|solo|blonde hair|twintails");
+
+            // 模型把手抖写出的"既删又加"一起发过来时（实测就这么干过：
+            // 16 个全列进 remove、要留的三个又列进 add），结果仍然是对的
+            var all = new[] { "a", "b", "c" };
+            var messy = AgentKit.ParseProposal("""
+                {"remove_tags":["a","b","c","A"],"add_tags":["a","b","c"]}
+                """, IsK2);
+            var (m2, add2, rem2) = AgentKit.MergeProposal(all, messy);
+            Eq("既删又加不丢标签", string.Join("|", m2), "a|b|c");
+            Eq("没有真的删", rem2, 0);
+            Eq("也没有真的加", add2, 0);
+
+            // 纯删除（用户说"把 X 去掉"）
+            var del = AgentKit.ParseProposal("""{"remove_tags":["blonde hair"]}""", IsK2);
+            var (m3, _, rem3) = AgentKit.MergeProposal(before, del);
+            Eq("只删不加", string.Join("|", m3), "1girl|solo|twintails");
+            Eq("删了一个", rem3, 1);
+
+            // 删一个不在列表里的：如实算作没删到，不报错
+            var miss = AgentKit.ParseProposal("""{"remove_tags":["nope"]}""", IsK2);
+            var (m4, _, rem4) = AgentKit.MergeProposal(before, miss);
+            Eq("没删到就一个都不动", string.Join("|", m4), "1girl|solo|blonde hair|twintails");
+            Eq("计数如实为 0", rem4, 0);
+
+            // 大小写不同算同一个标签
+            var ci = AgentKit.ParseProposal("""{"remove_tags":["1GIRL"]}""", IsK2);
+            var (m5, _, rem5) = AgentKit.MergeProposal(before, ci);
+            Eq("忽略大小写删掉", string.Join("|", m5), "solo|blonde hair|twintails");
+            Eq("算删到了", rem5, 1);
+
+            // 空提案不动任何东西（只有一个 note 的那次实测）
+            var note = AgentKit.ParseProposal("""{"add_tags":[],"remove_tags":[],"note":"这次不改"}""", IsK2);
+            var (m6, add6, rem6) = AgentKit.MergeProposal(before, note);
+            Eq("空提案不改列表", string.Join("|", m6), string.Join("|", before));
+            Eq("空提案计数为 0", (add6, rem6), (0, 0));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }

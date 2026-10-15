@@ -257,15 +257,18 @@ public sealed class TagAgent
                         reply = proposal.Note.Length > 0
                             ? proposal.Note
                             : $"已提出 {proposal.AddTags.Count} 个标签" +
+                              (proposal.HasRemovals ? $"，并删除 {proposal.Remove.Count} 个" : "") +
                               (proposal.HasProse ? "和一段散文" : "") + "。";
 
                     log.Add($"提案：{proposal.Known.Count} 个词库认得、" +
                             $"{proposal.Unknown.Count} 个词库查不到" +
+                            (proposal.HasRemovals ? $"，删除 {proposal.Remove.Count} 个" : "") +
                             (proposal.HasProse ? "，另有一段散文" : ""));
 
                     // 提案到手就停：后面即使还有搜到一半的概念也不必再花请求。
                     Report(new ToolCallLog(call.Name, call.Arguments,
                         $"认得 {proposal.Known.Count} 个、查不到 {proposal.Unknown.Count} 个" +
+                        (proposal.HasRemovals ? $"，删除 {proposal.Remove.Count} 个" : "") +
                         (proposal.HasProse ? "，含一段散文" : "")));
                     return Done(true, reply, proposal, rounds, "");
                 }
@@ -460,6 +463,14 @@ public sealed class TagAgent
         sb.Append(cur.Labeled
             ? $"It already has a caption with {cur.TagCount} tag(s)."
             : "It has no caption yet.");
+
+        // **把现有标签原样列出来。** 只报数量是不够的：用户说"覆盖成这三条"时，
+        // 模型必须知道是哪几条才能把它们放进 remove_tags。不列的话它只知道
+        // "有 16 个"，于是只能往 add_tags 里塞、然后在 note 里声称替换了——
+        // 实测就是这么发生的（见 tests/OverwriteProbe.cs）。
+        if (cur.Tags is { Count: > 0 })
+            sb.Append("\nIts current tags, in order: ").Append(string.Join(", ", cur.Tags))
+              .Append("\nTo REMOVE any of them, list them in remove_tags of the proposal.");
 
         // 顺带把邻居列出来，模型才可能"切到下一张"——否则它连名字都不知道。
         sb.Append("\nDataset:");

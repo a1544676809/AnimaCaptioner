@@ -81,6 +81,7 @@
     <Compile Include="Headers.cs" />
     <Compile Include="LlmLive.cs" />
     <Compile Include="RegionProbe.cs" />
+    <Compile Include="OverwriteProbe.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
 </Project>

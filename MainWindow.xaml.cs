@@ -4192,7 +4192,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
                          // 这句必须跟着「完全权限」走：开着的时候还说"要你点应用"，
                          // 就是在明确地报一个错误的行为预期。
                          (_cfg.AgentFullAccess
-                             ? "**完全权限已打开：它会直接写进提示词**，不问你（Ctrl+Z 可整体撤销）。"
+                             ? "**完全权限已打开：它会直接改进提示词**，不问你要不要（改的是编辑器里那一段，" +
+                               "**要按 Ctrl+S 才写进文件**；Ctrl+Z 可整体撤销）。"
                              : "**要你点应用才写进去**。") +
                          (AgentImageBox.IsChecked == true
                              ? "这一屏会带上当前这张图。"
@@ -4598,9 +4599,14 @@ private void EndEdit(bool commit, bool lostFocus = false)
             {
                 ApplyAgentProposal(autoProp, single: false);
                 AgentAddAssistant(outcome.Reply, outcome.Reasoning, outcome.ToolCalls, proposal: null);
-                AgentAddNote("已按「完全权限」直接写入：" + DescribeProposal(autoProp) +
-                             "。Ctrl+Z 可整体撤销。");
-                Log.Write("agent full-access write: " + DescribeProposal(autoProp));
+
+                // **说清"写进提示词"不等于"存到文件"。** 完全权限改的是编辑器里那一段，
+                // 盘上的 .txt 要按 Ctrl+S 才写（与手动改标签完全一致）。原先只说
+                // "直接写入"，用户去看列表发现变了、去看文件没变，就成了"它说覆盖了、
+                // 其实没变"的现场——实测复现过（见 tests/OverwriteProbe.cs 的注释）。
+                AgentAddNote("已按「完全权限」写进提示词：" + DescribeProposal(autoProp) +
+                             "。**还没保存到文件**——按 Ctrl+S 才写进 .txt。Ctrl+Z 可整体撤销。");
+                Log.Write("agent full-access write（仅内存，未落盘）: " + DescribeProposal(autoProp));
             }
             else
             {
@@ -4678,7 +4684,14 @@ private void EndEdit(bool commit, bool lostFocus = false)
         for (var i = 0; i < _items.Count; i++)
         {
             var it = _items[i];
-            list.Add(new AgentImage(it.Name, i, it.HasCaption, it.Tags.Count, i == _index));
+            var current = i == _index;
+
+            // **当前这张要带上标签名，而且取的是编辑器里的状态（_pendingTags），
+            // 不是盘上那份。** 两者可能不一致（用户改了还没保存），而模型要改的
+            // 正是用户眼前那一段——按盘上报会让它去删一些编辑器里根本没有的标签。
+            // 只有当前那张需要：其余图只用来"知道有个邻居可以切过去"。
+            list.Add(new AgentImage(it.Name, i, it.HasCaption, it.Tags.Count, current,
+                                    current ? new List<string>(_pendingTags) : null));
         }
         return list;
     }
@@ -5262,6 +5275,35 @@ private void EndEdit(bool commit, bool lostFocus = false)
         var body = new StackPanel { Spacing = 8 };
         var buttons = new List<Button>();
 
+        // **先显示要删的。** 顺序与落地一致（先删后加），而且"覆盖"这个诉求下
+        // 用户第一眼要确认的正是"哪些会没掉"——放在下面容易被当成又一批要加的。
+        if (p.HasRemovals)
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = $"将从提示词里删除 {p.Remove.Count} 个标签",
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.IndianRed),
+            });
+
+            var removeList = new StackPanel { Spacing = 4 };
+            foreach (var tag in p.Remove)
+            {
+                var cn = _vocab?.LookupCn(tag) ?? "";
+                var label = new StringBuilder("－ ").Append(tag);
+                if (cn.Length > 0) label.Append("  ·  ").Append(cn);
+
+                removeList.Children.Add(new TextBlock
+                {
+                    Text = label.ToString(),
+                    FontSize = 12,
+                    Foreground = new SolidColorBrush(Microsoft.UI.Colors.IndianRed),
+                    IsTextSelectionEnabled = true,
+                });
+            }
+            body.Children.Add(removeList);
+        }
+
         if (p.HasTags)
         {
             body.Children.Add(new TextBlock
@@ -5334,9 +5376,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var applyBtn = new Button
         {
-            Content = p.HasTags && p.HasProse
-                ? $"应用（{p.AddTags.Count} 个标签 + 散文）"
-                : p.HasTags ? $"应用（{p.AddTags.Count} 个标签）" : "应用（散文）",
+            Content = DescribeApply(p),
         };
         applyBtn.Click += (_, _) =>
         {
@@ -5359,12 +5399,29 @@ private void EndEdit(bool commit, bool lostFocus = false)
     }
 
     /// <summary>
+    /// 「应用」按钮上的字。**删除必须写出来**：只写"应用（3 个标签）"而实际会删掉
+    /// 13 个的话，用户点下去之前根本不知道自己要丢掉什么——而这一下是不可逆的
+    /// （撤销只能退一步，且不会告诉他删了什么）。
+    /// </summary>
+    private static string DescribeApply(AgentProposal p)
+    {
+        var parts = new List<string>();
+        if (p.HasRemovals) parts.Add($"删 {p.Remove.Count} 个");
+        if (p.HasTags) parts.Add($"{p.AddTags.Count} 个标签");
+        if (p.HasProse) parts.Add("散文");
+        return parts.Count > 0 ? "应用（" + string.Join(" + ", parts) + "）" : "应用";
+    }
+
+    /// <summary>
     /// 一句话说清这次自动写入到底写了什么（日志与界面提示共用）。
     /// 只给摘要不给全文：散文可能很长，而界面那条说明已经指着文档了。
     /// </summary>
     private static string DescribeProposal(AgentProposal p)
     {
         var parts = new List<string>();
+        if (p.HasRemovals) parts.Add($"删除 {p.Remove.Count} 个标签（" +
+                                     $"{string.Join("、", p.Remove.Take(8))}" +
+                                     (p.Remove.Count > 8 ? "…" : "") + "）");
         if (p.HasTags) parts.Add($"{p.AddTags.Count} 个标签（{string.Join("、", p.AddTags.Take(8))}" +
                                  (p.AddTags.Count > 8 ? "…" : "") + "）");
         if (p.HasProse) parts.Add($"一段散文（{p.Prose.Length} 字）");
@@ -5384,14 +5441,12 @@ private void EndEdit(bool commit, bool lostFocus = false)
 
         PushUndo("AI 助手");
 
-        var added = 0;
-        foreach (var tag in p.AddTags)
-        {
-            if (_pendingTags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase))) continue;
-            _pendingTags.Add(tag);
-            added++;
-        }
-        if (added > 0) _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
+        // 合并语义（先删后加、忽略大小写、既删又加判给加）在 AgentKit.MergeProposal 里，
+        // 那边是纯函数、有断言；这里只负责把结果落到文档上，不另写一份规则
+        // ——两份实现迟早漂移，而漂移的表现就是"界面上写的和实际落地的不一样"。
+        var (merged, added, removed) = AgentKit.MergeProposal(_pendingTags, p);
+        _pendingTags = merged;
+        if (added > 0 || removed > 0) _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
         CommitPrompt();
 
         if (p.HasProse)
@@ -5414,7 +5469,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
             }
         }
 
-        Log.Write($"agent applied: tags+={added} prose={(p.HasProse ? (p.ReplaceProse ? "replace" : "append") : "none")} " +
+        Log.Write($"agent applied: tags+={added} tags-={removed} " +
+                  $"prose={(p.HasProse ? (p.ReplaceProse ? "replace" : "append") : "none")} " +
                   $"total={_pendingTags.Count} single={single}");
     }
 

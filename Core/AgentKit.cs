@@ -15,8 +15,18 @@ public sealed record AgentTool(string Name, string Description, JsonObject Param
 /// <param name="Labeled">是否已经有 caption。</param>
 /// <param name="TagCount">已有标签数。</param>
 /// <param name="IsCurrent">是不是当前正在编辑的那张。</param>
+/// <param name="Tags">
+/// 这张图**当前已有哪些标签**（按原顺序，字面量）。只有"当前那张"会被填上，
+/// 其余的留 null——把整个数据集的标签都列出来既浪费上下文，也不是模型要的信息。
+///
+/// 这一项是补上的：原先只有 <see cref="TagCount"/>，于是模型**知道有 16 个标签、
+/// 却不知道是哪 16 个**。用户说"把标签覆盖成这三条"时它连该删哪些都说不出来，
+/// 只能一边往 add_tags 里塞、一边在 note 里写"已替换"——实测就是这么发生的
+/// （见 tests/OverwriteProbe.cs）。
+/// </param>
 public sealed record AgentImage(string Name, int Index, bool Labeled, int TagCount,
-                                bool IsCurrent = false);
+                                bool IsCurrent = false,
+                                IReadOnlyList<string>? Tags = null);
 
 /// <summary>对话历史里的一轮。带图的那一轮由调用方用 <see cref="LlmClient.UserMessage"/> 组装。</summary>
 public sealed record AgentTurn(bool FromUser, string Text);
@@ -29,18 +39,39 @@ public sealed record AgentTurn(bool FromUser, string Text);
 /// 用的是同一条规则。词库不是全集（实测 679 个真实标签里 74 个查不到），所以
 /// Unknown **不丢弃**、只在界面上标出来——静默改掉用户的写法等于偷改训练集
 /// （见 <see cref="TagEdit"/> 的类注释），这一条比"看起来干净"重要得多。
-/// </summary>
+///
+/// <param name="RemoveTags">
+/// 要从提示词里**删掉**的标签（<see cref="Remove"/>，永不为 null）。
+///
+/// 这个通道是补上的，来历值得记：原先只有 <c>add_tags</c>，于是用户说"把标签覆盖成
+/// 这三条"时，模型**根本没有手段表达"删掉那些"**——它只能往里加，然后如实与否全看
+/// 它自己的措辞。实测（tests/OverwriteProbe.cs，本地模型）：它发出
+/// <c>{"add_tags":["solo","smile","upper body"]}</c>，note 写"将标签替换为用户指定的
+/// 三个标签"，而落地的结果是 16 个现有标签一个没少、三个新标签里三个都已在列表里，
+/// **列表看起来完全没变**，用户看到的却是"它说覆盖了"。
+///
+/// 用"删哪些 + 加哪些"而不是"直接给出最终列表"（<c>set_tags</c>），是因为后者一旦模型
+/// 少写一个标签就会**静默清掉**一条真实标注；而逐条列出的删除在提案卡片上看得见、
+/// 可以核对，漏了也只是"没删干净"，不会毁掉东西。这个取舍与"Unknown 不丢弃"同源。
+/// </param>
 public sealed record AgentProposal(
     IReadOnlyList<string> AddTags,
     IReadOnlyList<string> Known,
     IReadOnlyList<string> Unknown,
     string Prose,
     bool ReplaceProse,
-    string Note)
+    string Note,
+    IReadOnlyList<string>? RemoveTags = null)
 {
     public bool HasTags => AddTags.Count > 0;
     public bool HasProse => Prose.Length > 0;
-    public bool IsEmpty => !HasTags && !HasProse;
+
+    /// <summary>要移除的标签。**永不为 null**——调用方不必到处判空。</summary>
+    public IReadOnlyList<string> Remove => RemoveTags ?? Array.Empty<string>();
+
+    public bool HasRemovals => Remove.Count > 0;
+
+    public bool IsEmpty => !HasTags && !HasProse && !HasRemovals;
 }
 
 /// <summary>
@@ -255,6 +286,20 @@ public static class AgentKit
                                       "search_tags results. Omit tags already present in the " +
                                       "prompt. Empty array if nothing should be added.",
                 },
+                ["remove_tags"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "Tag names to REMOVE from the prompt, copied exactly from " +
+                                      "the list current_image gives you (the tags it already " +
+                                      "has). Use this when the user asks to replace, clear or " +
+                                      "rework the tags instead of adding to them: pass the ones " +
+                                      "that must go here and the ones that must stay or be " +
+                                      "added in add_tags. Without this the prompt can only " +
+                                      "grow, so never say you replaced or removed something " +
+                                      "unless you listed it here. Empty array if nothing " +
+                                      "should be removed.",
+                },
                 ["prose"] = new JsonObject
                 {
                     ["type"] = "string",
@@ -370,7 +415,14 @@ public static class AgentKit
             "accurate tags are worth more than twenty guesses.\n" +
             "- At the very end call " + ProposeToolName + " exactly once with the tags to " +
             "add and the prose paragraph. Keep your reply text to one or two short Chinese " +
-            "sentences; the user reads the proposal, not the reply.\n");
+            "sentences; the user reads the proposal, not the reply.\n" +
+            "- The prompt can only be changed through " + ProposeToolName + ": " +
+            "`add_tags` adds, `remove_tags` deletes. When the user asks to REPLACE, clear or " +
+            "rework the tags (\"覆盖成\", \"换成\", \"只留\", \"原来那些不要了\"), you MUST list " +
+            "the tags that have to go in `remove_tags` — otherwise they stay and the prompt " +
+            "only grows. Call " + CurrentImageToolName + " first to see exactly which tags it " +
+            "has. **Never say you replaced or removed something you did not put in " +
+            "remove_tags**: if you only added, say you added.\n");
 
         // Anima 的提示词结构。**模型不可能自己知道**（这是这个模型的约定，不是通用
         // 常识），而不知道就会犯两种错：把标签按字母序或热度排，以及把画师名写成
@@ -415,7 +467,44 @@ public static class AgentKit
     }
 
     /// <summary>
-    /// 把 <c>propose</c> 的 arguments 解析成提案。<paramref name="isKnown"/> 由调用方
+    /// 把一条提案合并进一份标签列表。**纯逻辑**，所以"覆盖"这条语义能被直接断言，
+    /// 不必开起界面来试（tests/Agent.cs 第 29 节）。
+    ///
+    /// 顺序是**先删后加**：模型偶尔会把同一个标签同时写进两边（实测），
+    /// 而 <see cref="ParseProposal"/> 已经把它判给"加"，这里再保一道——
+    /// 于是无论调用方按什么顺序理解，结果都一样。
+    ///
+    /// 大小写按 OrdinalIgnoreCase 比：`1Girl` 与 `1girl` 是同一个标签。
+    /// 返回的是新列表，不改入参。
+    /// </summary>
+    public static (List<string> Tags, int Added, int Removed) MergeProposal(
+        IReadOnlyList<string> current, AgentProposal p)
+    {
+        var tags = new List<string>(current);
+
+        var removed = 0;
+        foreach (var tag in p.Remove)
+        {
+            var hit = tags.FindIndex(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase));
+            if (hit < 0) continue;
+            tags.RemoveAt(hit);
+            removed++;
+        }
+
+        var added = 0;
+        foreach (var tag in p.AddTags)
+        {
+            if (tags.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase))) continue;
+            tags.Add(tag);
+            added++;
+        }
+
+        return (tags, added, removed);
+    }
+
+    /// <summary>
+    /// <see cref="RegionRequest"/> 之外的另一处参数解析：把 <c>propose</c> 的
+    /// arguments 解析成提案。<paramref name="isKnown"/> 由调用方
     /// 注入（真实路径是 <see cref="TagSections.IsKnownTag"/> 配当前词库），
     /// 这样回归测试不需要词库也能验 Known/Unknown 的分流。
     ///
@@ -426,6 +515,7 @@ public static class AgentKit
     public static AgentProposal ParseProposal(string arguments, Func<string, bool>? isKnown)
     {
         var tags = new List<string>();
+        var removes = new List<string>();
         var prose = "";
         var replace = false;
         var note = "";
@@ -437,6 +527,9 @@ public static class AgentKit
 
             if (root.TryGetProperty("add_tags", out var at))
                 CollectTags(at, tags);
+
+            if (root.TryGetProperty("remove_tags", out var rt))
+                CollectTags(rt, removes);
 
             if (root.TryGetProperty("prose", out var p) && p.ValueKind == JsonValueKind.String)
                 prose = (p.GetString() ?? "").Trim();
@@ -455,10 +548,14 @@ public static class AgentKit
         }
 
         // 去重按 OrdinalIgnoreCase，与列表里的"已在列表里了"判据一致
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var unique = new List<string>(tags.Count);
-        foreach (var t in tags)
-            if (seen.Add(t)) unique.Add(t);
+        var unique = Dedupe(tags);
+
+        // **同一个标签既说要删又说要加**是模型的手抖（实测常见的自我矛盾）。
+        // 判给"加"：删了再加等于没删，而用户多半是想让它留下，且加法本来就是
+        // 原有行为——保守的那一侧留在这里，免得一次手抖把标签删掉。
+        var removeUnique = Dedupe(removes)
+            .Where(t => !unique.Contains(t, StringComparer.OrdinalIgnoreCase))
+            .ToList();
 
         var known = new List<string>();
         var unknown = new List<string>();
@@ -468,7 +565,17 @@ public static class AgentKit
             else unknown.Add(t);
         }
 
-        return new AgentProposal(unique, known, unknown, prose, replace, note);
+        return new AgentProposal(unique, known, unknown, prose, replace, note, removeUnique);
+    }
+
+    /// <summary>忽略大小写去重，同时保留第一次出现的写法与顺序。</summary>
+    private static List<string> Dedupe(IReadOnlyList<string> src)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unique = new List<string>(src.Count);
+        foreach (var t in src)
+            if (seen.Add(t)) unique.Add(t);
+        return unique;
     }
 
     /// <summary>

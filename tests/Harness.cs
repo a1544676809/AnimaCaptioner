@@ -70,6 +70,10 @@ internal static class Harness
                 // 参数：探针图片目录（默认 %TEMP%\ac-imgprobe，或 AC_PROBEIMG）。
                 return CoreCheck.RegionProbe.Run(Arg(1) ?? null);
 
+            case "overwrite":
+                // 临时探针：真实网络。用户说"把标签覆盖成 X"时，这条路到底做了什么。
+                return CoreCheck.OverwriteProbe.Run();
+
             case "sections":
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 return Sections.Run(dataset!);
