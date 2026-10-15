@@ -158,8 +158,44 @@ public sealed class TagAgent
         /// 实测里模型因此干脆不切（切了没意义），用户看到的就是"让它逐张检查，
         /// 它只检查了当前这一张"。所以切成功的图要当成一张新图塞回对话
         /// （与 view_region 同一条路）。
+        ///
+        /// **为什么是异步的**：它要读盘 + 解码新那张图，而这两件事原先在 UI 线程上
+        /// **同步**等（<c>GetAwaiter().GetResult()</c>）。那个 Task 需要回到 UI 线程
+        /// 才能完成——自己等自己，整个界面就此卡死（托管栈实测：UI 线程停在
+        /// <c>TaskAwaiter.GetResult()</c> 里，进程 CPU 归零，窗口彻底不动）。
+        /// 所以读图必须 await 到后台去，UI 线程只做"校验 + 换文档"这一小段。
         /// </summary>
-        (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name);
+        Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> SelectImageAsync(
+            string name, CancellationToken ct);
+
+        /// <summary>
+        /// 这里能不能切图。**批量内层那一轮必须是 false。**
+        ///
+        /// 外层批量循环已经替它选好了这一张，模型若再切走，`propose` 落到的就是
+        /// 另一张图——而外层记账还以为在改这一张。实测过这条：内层那一轮的系统提示
+        /// 里没有"别自己走"那句（那一段只在批量工具下发时才拼），而 `select_image`
+        /// 却照旧在工具表里，两个条件凑在一起就是一个洞。
+        /// </summary>
+        bool CanSwitchImages { get; }
+
+        /// <summary>
+        /// 能不能**逐张走**：模型自己用 `select_image` 一张一张看、每张 `propose` 一次，
+        /// 而 <see cref="ApplyProposalNow"/> 当场把那张写进盘。
+        ///
+        /// 真实实现要求「完全权限」开着（逐张走的每一步都是写盘，而"不许它自己动手"
+        /// 的语义下不该有这条路）。没接上实现时恒为 false——那时 `propose` 仍旧
+        /// 结束整轮，模型一次只能改当前这一张。
+        /// </summary>
+        bool CanApplyNow { get; }
+
+        /// <summary>
+        /// 逐张走时把提案**立即**应用到当前那张图并落盘，返回一句给模型看的回执。
+        ///
+        /// 与"提案结束整轮、由界面在最后应用"那条路的区别就在**时机**：这里必须现在
+        /// 就落到盘上，否则模型切到下一张时，这一张的改动会被下一次应用覆盖掉
+        /// （编辑器只有一份文档）。只在 <see cref="CanApplyNow"/> 为真时被调用。
+        /// </summary>
+        (string Message, bool Ok) ApplyProposalNow(AgentProposal proposal);
 
         /// <summary>
         /// 当前这张图的**文件事实**（尺寸、EXIF 方向、格式、大小、被缩到多小），
@@ -227,6 +263,21 @@ public sealed class TagAgent
     private const int MaxRegionImages = 12;
 
     /// <summary>
+    /// 逐张走时一次对话最多处理几张图。**这是防跑飞的上限**，不是省事。
+    ///
+    /// 逐张走是"模型自己决定走到哪一张"，没有这个上限时它可能一直在数据集里转
+    /// （尤其在小数据集上：改完一圈又回头"再检查一遍"）。20 张覆盖了"先过一遍新收的图"
+    /// 这个常见用法，而每张都要读图 + 好几次请求，20 张已经是十几分钟的量级——
+    /// 到顶就让它收尾，用户想继续可以在下一条消息里说。
+    /// </summary>
+    public const int MaxWalkImages = 20;
+
+    /// <summary>逐张走到上限时回给模型的话（让它收尾而不是硬停，测试里也按它断言）。</summary>
+    public const string WalkLimitNotice =
+        "You have reached the limit of images for one pass. Stop switching images now " +
+        "and give the user a short summary in Simplified Chinese of what you changed.";
+
+    /// <summary>
     /// 跑一轮。历史里最后一轮必须是本次的输入，图片只挂在那一轮上——
     /// 把图挂到每一轮会让后面每一次请求都重复付一次图片的 token。
     /// </summary>
@@ -253,12 +304,25 @@ public sealed class TagAgent
         var canEditTags = host.CanEditTags;
         // 批量只在"有数据集、且当前不在批量循环里"时下发（防自我递归，见 CanBatchLabel）。
         var canBatchLabel = host.CanBatchLabel && dataset.Count > 0;
+
+        // 切图工具的来源：有数据集 + 这里允许切（批量内层不允许，见 CanSwitchImages）
+        // + 用户没在设置里把它关掉（Settings 为 null = 探针/测试，不做过滤）。
+        var canSwitch = host.CanSwitchImages && dataset.Count > 0
+                        && (host.Settings is null
+                            || !AgentKit.IsDisabled(host.Settings, AgentKit.SelectImageToolName));
+
+        // 逐张走：模型自己 select_image → propose → select_image，每张当场落盘。
+        // **必须开「完全权限」**：这条路的每一步都是写盘，而那个开关的语义正是
+        // "允许它自己动手，不用你点确认"。关着时 propose 仍旧结束整轮（一次改一张）。
+        var canWalk = canSwitch && canSave && host.CanApplyNow;
+
         var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave,
-                                           canBatchLabel, canEditTags, host.Settings);
+                                           canBatchLabel, canEditTags, host.Settings,
+                                           canWalk: canWalk, canSwitch: canSwitch);
         var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
                                    canViewRegion: canViewRegion, canSave: canSave,
                                    canBatchLabel: canBatchLabel, canEditTags: canEditTags,
-                                   cfg: host.Settings);
+                                   cfg: host.Settings, canSwitchImages: canSwitch);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -275,6 +339,9 @@ public sealed class TagAgent
         // 这一轮攒下的放大图，以及整次对话还剩多少张图的额度（见 MaxRegionImages）。
         var pendingImages = new List<LlmClient.ChatImage>();
         var imageBudget = MaxRegionImages;
+
+        // 逐张走已经处理过几张（见 MaxWalkImages）。只在 canWalk 时有意义。
+        var walked = 0;
 
         // 模型有没有要求把结果写进磁盘。**必须跨轮存活**：它可能在第 1 轮就说
         // "改完存一下"、第 4 轮才 propose，而"每轮重置"会把那个意图丢掉
@@ -383,10 +450,41 @@ public sealed class TagAgent
                         (proposal.HasRemovals ? $"，删除 {proposal.Remove.Count} 个" : "") +
                         (proposal.HasProse ? "，含一段散文" : "")));
 
-                    // **写盘意图挂在提案上带走**，由界面在应用之后执行。
-                    // 本轮里 save_caption 可能出现在 propose **之前或之后**
-                    // （模型两种顺序都写过），所以这里先扫一遍整轮——
-                    // 直接 return 会把排在 propose 后面的那次 save 漏掉
+                    // **逐张走**：当场应用并落盘，然后继续这一轮——模型才能接着
+                    // `select_image` 去下一张。必须现在落盘而不是攒着：编辑器只有一份
+                    // 文档，下一张的提案会覆盖这一张的改动（见 ApplyProposalNow 的注释）。
+                    if (canWalk && walked < MaxWalkImages)
+                    {
+                        var (msg, applied) = host.ApplyProposalNow(proposal);
+                        walked++;
+                        log.Add(applied
+                            ? $"逐张应用（第 {walked} 张）"
+                            : $"逐张应用失败（第 {walked} 张）");
+                        Report(new ToolCallLog(call.Name, call.Arguments, msg));
+
+                        var left = MaxWalkImages - walked;
+                        messages.Add(LlmClient.ToolMessage(call.Id,
+                            msg + $" That was image {walked} of this pass; {left} more are " +
+                                  "allowed. If the user asked you to go through more images, " +
+                            "call " + AgentKit.SelectImageToolName + " to open the next one, " +
+                            "look at it, and " + AgentKit.ProposeToolName + " again. When you " +
+                            "are done, reply with a short summary in Simplified Chinese."));
+                        continue;
+                    }
+
+                    // 到上限了：如实说清，并把工具意思收回来（让它收尾而不是硬停）。
+                    if (canWalk)
+                    {
+                        log.Add("逐张走：已到张数上限");
+                        Report(new ToolCallLog(call.Name, call.Arguments, WalkLimitNotice));
+                        messages.Add(LlmClient.ToolMessage(call.Id, WalkLimitNotice));
+                        continue;
+                    }
+
+                    // 提案到手就停：后面即使还有搜到一半的概念也不必再花请求。
+                    // 写盘意图挂在提案上带走，由界面在应用之后执行。本轮里 save_caption
+                    // 可能出现在 propose **之前或之后**（模型两种顺序都写过），所以这里
+                    // 先扫一遍整轮——直接 return 会把排在 propose 后面的那次 save 漏掉
                     // （实测：完全权限下让它"改完保存"，文件没变）。
                     var saveWanted = wantsSave || turn.Calls.Any(c =>
                         string.Equals(c.Name, AgentKit.SaveToolName, StringComparison.Ordinal));
@@ -417,7 +515,8 @@ public sealed class TagAgent
                         continue;
                     }
 
-                    var (ok, msg, switched) = host.SelectImage(want);
+                    var (ok, msg, switched) = await host.SelectImageAsync(want, ct)
+                                                         .ConfigureAwait(false);
                     log.Add(ok ? $"切到「{want}」" : $"切图失败（{want}）");
 
                     // **把新图塞回对话**，否则模型切了也看不见（见 SelectImage 的注释）。

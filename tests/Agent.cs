@@ -1653,10 +1653,95 @@ public static class Agent
                  AgentKit.LabelImagesTool.Parameters["properties"]!["instruction"]!["description"]!
                      .GetValue<string>().Contains("逐张检查"));
             var prompt = AgentKit.SystemPrompt(true, false, canBatchLabel: true);
-            True("系统提示明确说「别自己用 select_image 走一遍」",
+            True("没有逐张能力时，系统提示仍旧说「别自己用 select_image 走一遍」",
                  prompt.Contains("do NOT try to walk the images yourself"));
             True("并说清原因：一轮只能改一张",
                  prompt.Contains("one turn can only change one image"));
+
+            // ---- 根因 3：给了逐张能力之后，得真的把路打开（见第 38 节） ----
+            var walkPrompt = AgentKit.SystemPrompt(true, false, canBatchLabel: true, canWalk: true);
+            True("给了逐张能力时，提示词改成「自己用 select_image 一张张走」",
+                 walkPrompt.Contains("go through the images one by one") &&
+                 walkPrompt.Contains("your turn CONTINUES"));
+            True("并写明一轮最多几张（否则模型会一直转）",
+                 walkPrompt.Contains(TagAgent.MaxWalkImages.ToString()));
+            True("逐张这条路上不再有那条禁令",
+                 !walkPrompt.Contains("do NOT try to walk the images yourself"));
+            True("label_images 没被删掉（整集重打仍旧走它）",
+                 walkPrompt.Contains(AgentKit.LabelImagesToolName));
+
+            // 切图能力被收走时（批量内层那一轮），提示词与工具表都不能再提它——
+            // 说了而没有，模型会去调一个不存在的工具。
+            var noSwitch = AgentKit.SystemPrompt(true, false, canBatchLabel: true, canSwitch: false);
+            True("canSwitch=false 时提示词不再讲逐张走",
+                 !noSwitch.Contains("go through the images one by one"));
+            True("canSwitch=false 时切图工具不下发",
+                 !AgentKit.Tools(true, withImages: true, canBatchLabel: true,
+                                 canSwitchImages: false)
+                          .Any(t => t.Name == AgentKit.SelectImageToolName));
+            True("默认仍下发（保住「有数据集就能切」的老行为）",
+                 AgentKit.Tools(true, withImages: true)
+                          .Any(t => t.Name == AgentKit.SelectImageToolName));
+        }
+
+        Console.WriteLine("\n=== 38. 逐张走：每张当场落盘，一轮里能走多张 ===");
+        {
+            // 逐张走的前提：完全权限（CanSave）+ 能立即应用 + 能切图。
+            var h = new FakeHost { CanSave = true, CanApplyNow = true };
+            h.Dataset.AddRange(new[]
+            {
+                new AgentImage("a", 0, true, 1, IsCurrent: true),
+                new AgentImage("b", 1, true, 3),
+            });
+
+            // 一轮对话里：切到 b → 提案 → 切回 a → 提案 → 收尾回答。
+            // 关键在**第二次提案还要能落地**——以前第一次 propose 就 return 了。
+            h.Turn(Tool("s1", AgentKit.SelectImageToolName, """{"name":"b"}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":["smile"]}"""))
+             .Turn(Tool("s2", AgentKit.SelectImageToolName, """{"name":"a"}"""))
+             .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":["blush"]}"""))
+             .Turn(new LlmClient.ToolTurn(true, "两张都看过了。", "",
+                                          new List<LlmClient.ToolCall>(), "", ""));
+            var o = Run(h, "逐张检查一遍");
+
+            True("跑成功了", o.Ok);
+            Eq("两张各当场应用了一次（而不是只改当前那张）", h.AppliedNow.Count, 2);
+            Eq("第一次应用的是 smile", string.Join(",", h.AppliedNow[0].AddTags), "smile");
+            Eq("第二次应用的是 blush（说明第一次没把整轮结束掉）",
+               string.Join(",", h.AppliedNow[1].AddTags), "blush");
+            True("提案不再留在 Outcome 里让界面最后应用（已经落盘了）", o.Proposal is null);
+            True("回执告诉模型这是第几张、还剩几张",
+                 h.SeenMessages.SelectMany(r => r).Any(m =>
+                     m["role"]?.GetValue<string>() == "tool" &&
+                     (m["content"]?.GetValue<string>() ?? "").Contains("image 1 of this pass")));
+            True("日志里记了逐张应用", o.Log.Any(l => l.Contains("逐张应用")));
+
+            // 没有"立即应用"时（完全权限关着、或批量内层那一轮），propose 仍旧结束整轮。
+            var h2 = new FakeHost { CanSave = true, CanApplyNow = false };
+            h2.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h2.Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":["smile"]}"""));
+            var ow2 = Run(h2, "加个 smile");
+            Eq("没有逐张能力时不立即应用", h2.AppliedNow.Count, 0);
+            True("提案照旧带回去让界面应用", ow2.Proposal is not null);
+            Eq("老行为：拿到的就是这一个提案",
+               string.Join(",", ow2.Proposal!.AddTags), "smile");
+
+            // 到张数上限就收手：后面的 propose 不再落盘，而是回一句让它收尾。
+            var h3 = new FakeHost { CanSave = true, CanApplyNow = true };
+            h3.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            for (var i = 0; i < TagAgent.MaxWalkImages; i++)
+                h3.Turn(Tool($"p{i}", AgentKit.ProposeToolName, "{\"add_tags\":[\"t" + i + "\"]}"));
+            h3.Turn(Tool("over", AgentKit.ProposeToolName, """{"add_tags":["over"]}"""))
+              .Turn(new LlmClient.ToolTurn(true, "到上限了。", "",
+                                           new List<LlmClient.ToolCall>(), "", ""));
+            var ow3 = Run(h3, "把整个数据集走一遍");
+
+            Eq("应用次数正好停在上限", h3.AppliedNow.Count, TagAgent.MaxWalkImages);
+            True("到上限后回的是「收尾」那句话，而不是继续落盘",
+                 h3.SeenMessages.SelectMany(r => r).Any(m =>
+                     m["role"]?.GetValue<string>() == "tool" &&
+                     (m["content"]?.GetValue<string>() ?? "").Contains("reached the limit")));
+            True("日志里记了到上限", ow3.Log.Any(l => l.Contains("已到张数上限")));
         }
 
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
@@ -1723,6 +1808,27 @@ public static class Agent
 
         /// <summary>是否允许 label_images 批量打标。</summary>
         public bool CanBatchLabel { get; set; }
+
+        // ---- 切图 / 逐张走 ----
+
+        /// <summary>这里能不能切图。默认 true（沿用"有数据集就能切"），批量内层那条路是 false。</summary>
+        public bool CanSwitchImages { get; set; } = true;
+
+        /// <summary>能不能把提案当场应用并落盘（逐张走的前提之一）。</summary>
+        public bool CanApplyNow { get; set; }
+
+        /// <summary>逐张走时每个被立即应用的提案，按顺序记下来（供断言"改了几张、改了什么"）。</summary>
+        public List<AgentProposal> AppliedNow { get; } = new();
+
+        /// <summary>立即应用的回执；<see cref="ApplyNowOk"/> 为 false 时可以模拟"读不到正文"。</summary>
+        public bool ApplyNowOk { get; set; } = true;
+        public string ApplyNowMessage { get; set; } = "Applied and written to disk.";
+
+        public (string Message, bool Ok) ApplyProposalNow(AgentProposal proposal)
+        {
+            AppliedNow.Add(proposal);
+            return (ApplyNowMessage, ApplyNowOk);
+        }
 
         /// <summary>批量被调用的次数与上次收到的参数（供断言"跑了几次、范围是什么"）。</summary>
         public int BatchCalls { get; private set; }
@@ -1854,14 +1960,19 @@ public static class Agent
             return Task.FromResult((true, "enlarged region attached", (IReadOnlyList<LlmClient.ChatImage>)images));
         }
 
-        public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name)
+        public Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> SelectImageAsync(
+            string name, CancellationToken ct)
         {
             SelectRequests.Add(name);
-            if (!SelectSucceeds) return (false, $"No image named \"{name}\".", null);
+            if (!SelectSucceeds)
+                return Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                    (false, $"No image named \"{name}\".", null));
 
             // 本来就在这张：与真实现一致——不返回图（没有新图可看）
             var already = Dataset.Any(x => x.IsCurrent && x.Name == name);
-            if (already) return (true, $"Already on \"{name}\".", null);
+            if (already)
+                return Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                    (true, $"Already on \"{name}\".", null));
 
             // 切换当前项，并让下一次 current_image 能看到变化
             for (var i = 0; i < Dataset.Count; i++)
@@ -1871,7 +1982,8 @@ public static class Agent
             var img = SelectReturnsImage
                 ? new LlmClient.ChatImage("image/jpeg", new byte[] { 1, 2, 3 })
                 : null;
-            return (true, $"Switched to \"{name}\".", img);
+            return Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                (true, $"Switched to \"{name}\".", img));
         }
 
         /// <summary>切图是否带回新那张的字节（默认带，与真实现一致）。</summary>

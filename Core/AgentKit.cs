@@ -681,9 +681,11 @@ public static class AgentKit
     public static AgentTool SelectImageTool => new(
         SelectImageToolName,
         "Switch the editor to another image of the dataset. Give the file name as shown by " +
-        "current_image (with or without the extension). Use this ONLY when the user asks to " +
-        "move to another image — for example 'go to the next one' or 'open xxx'. Switching " +
-        "saves the current image's caption to disk first, so do not call it just to look around.",
+        "current_image (with or without the extension). The image you switch to is attached " +
+        "to this conversation, so you can look at it right away. Use it when the user asks " +
+        "you to move to another image (\"go to the next one\", \"open xxx\"), or when they " +
+        "asked you to go through the images one by one. Switching saves the current image's " +
+        "caption to disk first, so it is not free: do not switch on a whim.",
         new JsonObject
         {
             ["type"] = "object",
@@ -809,11 +811,15 @@ public static class AgentKit
     ///
     /// <paramref name="canSave"/> 对应「完全权限」。关着时**不下发** save_caption：
     /// 那个开关的意义就是"不许它自己动手"，下发一个必然被拒的工具只是白烧一轮。
+    ///
+    /// <paramref name="canSwitchImages"/> 是**这里**能不能切图。默认 true = 沿用
+    /// "有数据集就能切"的老行为；**批量内层那一轮必须传 false**——外层循环已经替它
+    /// 选好了这一张，模型再切走就会把提案落到别的图上，而外层还以为在改这一张。
     /// </summary>
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
                                         bool canBatchLabel = false, bool canEditTags = false,
-                                        AppSettings? cfg = null)
+                                        AppSettings? cfg = null, bool canSwitchImages = true)
     {
         var tools = new List<AgentTool>();
         if (withImages)
@@ -823,7 +829,7 @@ public static class AgentKit
         }
         tools.Add(SearchTool);
         if (webSearch) tools.Add(WebSearchTool);
-        if (withImages) tools.Add(SelectImageTool);
+        if (withImages && canSwitchImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
 
         if (canEditTags)
@@ -868,7 +874,8 @@ public static class AgentKit
     /// </summary>
     public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false,
                                       bool canSave = false, bool canBatchLabel = false,
-                                      bool canEditTags = false, AppSettings? cfg = null)
+                                      bool canEditTags = false, AppSettings? cfg = null,
+                                      bool canWalk = false, bool canSwitch = true)
     {
         // 用户在设置里关掉的工具**不能出现在提示词里**：提示词说了而工具表里没有，
         // 模型会去调一个不存在的工具（然后拿到一条错误，白花一轮）。
@@ -878,6 +885,9 @@ public static class AgentKit
         canSave &= On(SaveToolName);
         canBatchLabel &= On(LabelImagesToolName);
         canEditTags &= On(ListTagsToolName) || On(SetTagSectionToolName) || On(SortTagsToolName);
+        // 切图工具被关掉、或这里根本不该切时，提示词里也就不能提它。
+        canSwitch &= On(SelectImageToolName);
+        canWalk &= canSwitch;
 
         var sb = new System.Text.StringBuilder();
         sb.Append(
@@ -1013,8 +1023,9 @@ public static class AgentKit
 
         // 批量。仅在标注模式、有数据集、且不在批量循环里时才有这些工具。
         if (canBatchLabel)
+        {
             sb.Append(
-                "- Bulk work on the dataset. Two different jobs — pick the right one:\n" +
+                "- Bulk work on the dataset. Three different jobs — pick the right one:\n" +
                 "  · `" + AddTagsToImagesToolName + "` ADDS a few tags to many images, keeping " +
                 "every caption's existing tags and its description. It does not read the images " +
                 "and does not call a model, so it is instant and free. Use this for \"every image " +
@@ -1025,15 +1036,37 @@ public static class AgentKit
                 "not what \"补上这几个标签\" means. Its scope defaults to \"unlabeled\" (only " +
                 "images with no caption yet); use \"all\" ONLY when the user explicitly asks to " +
                 "redo every image.\n" +
-                "  Both can take a while for a large dataset; say so before you start.\n" +
-                "  **If the user asks you to go through the dataset image by image** " +
-                "(\"逐张检查一遍\", \"check every image\", \"该补的补该删的删\"), call " +
-                LabelImagesToolName + " ONCE with scope=\"all\" and an `instruction` saying what " +
-                "to do with each image — do NOT try to walk the images yourself with " +
-                SelectImageToolName + ": one turn can only change one image (the proposal ends " +
-                "your turn), so a 17-image pass would need 17 separate messages. The bulk call " +
-                "runs one full conversation per image, each with that image attached, and writes " +
-                "the result.\n");
+                "  Both of those can take a while for a large dataset; say so before you start.\n");
+
+            if (canWalk)
+            {
+                // 逐张走：一轮里可以反复 select_image + propose，每张当场落盘。
+                sb.Append(
+                    "  · **To go through the images one by one and LOOK at each one** " +
+                    "(\"逐张检查一遍\", \"check every image\", \"该补的补该删的删\"), do it " +
+                    "YOURSELF in this conversation: call `" + SelectImageToolName + "` to open " +
+                    "the next image, look at it, then call `" + ProposeToolName + "`. Its result " +
+                    "is applied and written to disk immediately and your turn CONTINUES, so you " +
+                    "can keep going to the next image. Because it is all one conversation you " +
+                    "remember the earlier images, which keeps the tagging consistent across " +
+                    "them. You may handle at most " + TagAgent.MaxWalkImages + " images in one " +
+                    "request. Prefer this whenever the user wants the images inspected rather " +
+                    "than every caption rewritten. (`" + LabelImagesToolName + "` runs a " +
+                    "SEPARATE conversation per image and has no memory across them.)\n");
+            }
+            else
+            {
+                sb.Append(
+                    "  **If the user asks you to go through the dataset image by image** " +
+                    "(\"逐张检查一遍\", \"check every image\", \"该补的补该删的删\"), call " +
+                    LabelImagesToolName + " ONCE with scope=\"all\" and an `instruction` saying what " +
+                    "to do with each image — do NOT try to walk the images yourself with " +
+                    SelectImageToolName + ": one turn can only change one image (the proposal ends " +
+                    "your turn), so a 17-image pass would need 17 separate messages. The bulk call " +
+                    "runs one full conversation per image, each with that image attached, and writes " +
+                    "the result.\n");
+            }
+        }
 
         return sb.ToString();
     }

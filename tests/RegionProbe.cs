@@ -223,6 +223,14 @@ public static class RegionProbe
         public (bool Changed, string Message) SortTags() => (false, "sorting is off in this probe");
         public bool CanBatchLabel => false;
 
+        // 这个探针验的正是"切图之后模型看不看得见新图"，所以切图必须可用。
+        // 但它不逐张走：逐张走要"当场落盘"，这个探针没有那套界面状态。
+        public bool CanSwitchImages => true;
+        public bool CanApplyNow => false;
+
+        public (string Message, bool Ok) ApplyProposalNow(AgentProposal proposal) =>
+            ("applying immediately is off in this probe", false);
+
         public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments, CancellationToken ct) =>
             Task.FromResult(("bulk labelling is off in this probe", false));
 
@@ -260,8 +268,10 @@ public static class RegionProbe
         public Task<string> SearchWebAsync(string query, CancellationToken ct) =>
             Task.FromResult("web search is off in this probe");
         /// <summary>切图：探针里返回"成功但没有图"。</summary>
-        public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name) =>
-            (true, $"Switched to \"{name}\".", null);
+        public Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> SelectImageAsync(
+            string name, CancellationToken ct) =>
+            Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                (true, $"Switched to \"{name}\".", null));
 
         public Task<string> ImageInfo() => Task.FromResult(
             "Current image: probe (1 of 1). File: image/jpeg, 12 KB, stored 1200x800 " +

@@ -205,6 +205,14 @@ public static class OverwriteProbe
         public (bool Changed, string Message) SortTags() => (false, "sorting is off in this probe");
         public bool CanBatchLabel => false;
 
+        // 保留老行为（有数据集就能切），但不逐张走——它验的是"覆盖"那条语义，
+        // 没有"当场落盘"所需的界面状态。
+        public bool CanSwitchImages => true;
+        public bool CanApplyNow => false;
+
+        public (string Message, bool Ok) ApplyProposalNow(AgentProposal proposal) =>
+            ("applying immediately is off in this probe", false);
+
         public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments, CancellationToken ct) =>
             Task.FromResult(("bulk labelling is off in this probe", false));
 
@@ -246,8 +254,10 @@ public static class OverwriteProbe
         public Task<string> SearchWebAsync(string query, CancellationToken ct) =>
             Task.FromResult("web search is off in this probe");
         /// <summary>切图：探针里返回"成功但没有图"。</summary>
-        public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name) =>
-            (true, $"Switched to \"{name}\".", null);
+        public Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> SelectImageAsync(
+            string name, CancellationToken ct) =>
+            Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                (true, $"Switched to \"{name}\".", null));
 
         public Task<string> ImageInfo() => Task.FromResult(
             "Current image: 优酱-智慧 (1 of 1). File: image/png, 280 KB, stored 571x571 " +

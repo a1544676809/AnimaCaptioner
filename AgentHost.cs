@@ -24,7 +24,8 @@ internal sealed class AgentHost : TagAgent.IHost
     /// 不该有窗体的内部状态。接上这三个具体实现的是 MainWindow。
     /// </summary>
     private readonly Func<IReadOnlyList<AgentImage>> _images;
-    private readonly Func<string, (bool Ok, string Message, LlmClient.ChatImage? Image)> _selectImage;
+    private readonly Func<string, CancellationToken,
+                           Task<(bool Ok, string Message, LlmClient.ChatImage? Image)>> _selectImage;
     private readonly Func<Task<string>> _imageInfo;
     private readonly Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>> _viewRegion;
 
@@ -32,6 +33,13 @@ internal sealed class AgentHost : TagAgent.IHost
     private readonly Func<bool>? _canBatchLabel;
     private readonly Func<string, CancellationToken, Task<(string Message, bool Cancelled)>>? _labelImages;
     private readonly Action<string>? _batchProgress;
+
+    /// <summary>
+    /// 切图与"逐张走"也由窗口注入。**这两件事分开**：切图本身不带写盘意图
+    /// （"切到下一张看看"），而逐张走的每一步都要当场落盘，所以它另有一个开关。
+    /// </summary>
+    private readonly Func<bool>? _canSwitchImages;
+    private readonly Func<AgentProposal, (string Message, bool Ok)>? _applyProposalNow;
 
     /// <summary>标签清单 / 类型 / 排序三件事也由窗口注入（边界上只该有形状）。</summary>
     private readonly Func<string>? _describeTags;
@@ -41,7 +49,8 @@ internal sealed class AgentHost : TagAgent.IHost
 
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
-                     Func<string, (bool Ok, string Message, LlmClient.ChatImage? Image)>? selectImage = null,
+                     Func<string, CancellationToken,
+                          Task<(bool Ok, string Message, LlmClient.ChatImage? Image)>>? selectImage = null,
                      Func<Task<string>>? imageInfo = null,
                      Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null,
                      Func<bool>? canBatchLabel = null,
@@ -50,14 +59,18 @@ internal sealed class AgentHost : TagAgent.IHost
                      Func<string>? describeTags = null,
                      Func<IReadOnlyList<string>, string?, (int Changed, string Message)>? setTagSections = null,
                      Func<(bool Changed, string Message)>? sortTags = null,
-                     Func<IReadOnlyList<string>, bool, int, (int Changed, string Message)>? addTagsToImages = null)
+                     Func<IReadOnlyList<string>, bool, int, (int Changed, string Message)>? addTagsToImages = null,
+                     Func<bool>? canSwitchImages = null,
+                     Func<AgentProposal, (string Message, bool Ok)>? applyProposalNow = null)
     {
         _cfg = cfg;
         _llm = llm;
         _search = search;
         _vocab = vocab;
         _images = images ?? (() => Array.Empty<AgentImage>());
-        _selectImage = selectImage ?? (_ => (false, "Switching images is not available here.", null));
+        _selectImage = selectImage ?? ((_, _) =>
+            Task.FromResult<(bool, string, LlmClient.ChatImage?)>(
+                (false, "Switching images is not available here.", null)));
         _canBatchLabel = canBatchLabel;
         _labelImages = labelImages;
         _batchProgress = batchProgress;
@@ -65,6 +78,8 @@ internal sealed class AgentHost : TagAgent.IHost
         _setTagSections = setTagSections;
         _sortTags = sortTags;
         _addTagsToImages = addTagsToImages;
+        _canSwitchImages = canSwitchImages;
+        _applyProposalNow = applyProposalNow;
 
         // 两个图像工具的兜底都是"如实说没有"：没接上实现时不抛异常、也不假装成功，
         // 免得出现"工具调了、回了句看不懂的话、模型照着编"。
@@ -102,6 +117,24 @@ internal sealed class AgentHost : TagAgent.IHost
             ? Task.FromResult(("Bulk labelling is not available here.", false))
             : _labelImages(arguments, ct);
 
+    /// <summary>
+    /// 这里能不能切图。**没注入时默认 true**（沿用"有数据集就能切"的老行为）；
+    /// 批量内层那一轮由窗口显式传 false——外层循环已经替它选好了这一张，
+    /// 模型再切走就会把提案落到别的图上，而外层记账还以为在改这一张。
+    /// </summary>
+    public bool CanSwitchImages => _canSwitchImages?.Invoke() ?? true;
+
+    /// <summary>
+    /// 能不能逐张走：每一步都要**当场落盘**，所以只有接上"立即应用"才成立。
+    /// 窗口只在「完全权限」那条路上接它（逐张走本身还要求 canSave，见 TagAgent）。
+    /// </summary>
+    public bool CanApplyNow => _applyProposalNow is not null;
+
+    public (string Message, bool Ok) ApplyProposalNow(AgentProposal proposal) =>
+        _applyProposalNow is null
+            ? ("Applying a proposal immediately is not available here.", false)
+            : _applyProposalNow(proposal);
+
     /// <summary>给 TagAgent 过滤"设置里关掉的工具"用。</summary>
     public AppSettings? Settings => _cfg;
 
@@ -137,7 +170,8 @@ internal sealed class AgentHost : TagAgent.IHost
     /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
     public IReadOnlyList<AgentImage> Images => _images();
 
-    public (bool Ok, string Message, LlmClient.ChatImage? Image) SelectImage(string name) => _selectImage(name);
+    public Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> SelectImageAsync(
+        string name, CancellationToken ct) => _selectImage(name, ct);
 
     public Task<string> ImageInfo() => _imageInfo();
 

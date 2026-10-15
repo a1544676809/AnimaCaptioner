@@ -521,3 +521,71 @@ solo(count) → you chan(character) → smile(general)。**盘上的 .txt 不会
 
 回归新增 20 条断言（`corecheck sections`）：覆盖优先于词库、压过官方控制词、
 大小写/空白不敏感、规整后落位、清除、拒绝非法段名与 `prose`、快照与整体替换。
+
+## 逐张走（`select_image` + 每张 `propose`）
+
+要求是用户提的：「如果模型不能逐张走，那我下'检查一遍所有图片'的命令时它永远执行不了。
+这和批量打标是两个使用场景。」——批量打标每张各起一次对话、互不知情，而"看着图逐张修"
+需要它记得前面几张、边看边改。
+
+### 以前为什么走不了：两层，缺一不可
+
+1. **提示词主动禁止。** 原先那一段写的是「do NOT try to walk the images yourself with
+   `select_image`：一轮只能改一张」。这是根因 2 的"处理方式"——不是把路修通，是把模型劝走。
+2. **结构上确实走不了。** `propose` 一到手就 `return Done(...)`，**整轮结束**。所以一次用户
+   请求最多改一张图，17 张要发 17 条消息。
+
+### 现在的做法
+
+- `IHost.CanApplyNow` + `ApplyProposalNow`：给 `propose` 一条"当场应用并落盘"的路。
+- `TagAgent` 里 `canWalk`（= 能切图 + 完全权限 + host 能立即应用）为真时，`propose` 不再
+  结束整轮，而是应用完回一句"这是第 N 张、还剩几张"再 `continue`，模型才能接着
+  `select_image`。上限 `MaxWalkImages = 20`，到顶回 `WalkLimitNotice` 让它收尾。
+- **必须当场落盘，不能攒着**：编辑器只有一份文档，模型切下一张时那张的改动会被覆盖。
+- 完全权限是硬前提：关着时 `propose` 仍旧结束整轮（老行为原样保留，回归第 38 节两种都钉了）。
+
+### 顺带堵掉的一个洞
+
+批量**内层**那一轮原先挂着 `select_image`，而"别自己走"那句因为 `canBatchLabel=false`
+恰好不在提示词里——两个条件凑一起，内层模型可以切走、把提案落到别的图上，外层记账
+还以为在改这一张。现在 `IHost.CanSwitchImages` 在内层传 false，工具与提示词一起收走。
+
+### 实测：一个 sync-over-async 死锁（这次才暴露）
+
+真机上第一次跑通"逐张走"就**整个程序冻死**：CPU 归零、窗口点不动、日志停在某一轮。
+托管栈（`dotnet-stack report`）只有一条线程带应用帧：
+
+```
+Monitor.Wait → TaskAwaiter.GetResult()
+  MainWindow.TryEncodeCurrentForAgent()
+  MainWindow.AgentSelectImageCore()      ← 跑在 UI 线程上
+  OnUiThread → DispatcherQueueHandler.Do_Abi_Invoke
+```
+
+`TryEncodeCurrentForAgent` 里是 `ImagePayload.LoadAsync(path).GetAwaiter().GetResult()`，
+而那个 Task 需要回到 UI 线程才能完成——**自己等自己**。
+
+两个因素让它一直没被发现：
+
+- 这条路径以前**没人走到**（模型不会主动切图，见上面第一层原因），所以它是随"切图能
+  看见新图"那次一起进来的；
+- `OnUiThread` 有 15 秒超时兜底，超时后返回 fallback 继续跑。于是表现是**双重的**：
+  日志里 `agent: select_image -> aa (was aa)` 看着成功（那行打在死锁**之前**），
+  模型实际收到的是"Switching images is not available right now"，而 UI 线程已经**永久**
+  卡死——循环还能跑完，但收尾回调永远排不上队。日志里那 15 秒的空档正是这个超时。
+
+修法是把读图挪出 UI 线程：`IHost.SelectImage` 改成 `SelectImageAsync`，
+UI 那段只做"校验 + 保存当前 + 换文档"（`AgentSelectImageCore` 返回路径），
+读盘解码回后台 await；新增非阻塞的 `OnUiThreadAsync`（`TaskCompletionSource`）给需要
+await 的场合用——阻塞版 `OnUiThread` 只适合纯同步的一小段。
+
+> 教训：**在 UI 线程上 `Task.GetAwaiter().GetResult()` 等于自锁**，而"有个超时兜底"
+> 不但不救，还会把硬死锁变成'日志看着成功'的假象。这条路径上另有一个正确写法可对照：
+> `AgentImageInfoAsync` 是 `async` + `await`，一直没事。
+
+### 回归（`corecheck agent` 第 37/38 节）
+
+工具下发（`canSwitchImages=false` 时 `select_image` 收走、默认仍旧下发）、提示词两种写法
+（有/无逐张能力）、一张对话里连改两张（第二次 `propose` 不再被第一次结束掉）、
+老行为保留（`CanApplyNow=false` 时提案照旧带回去）、上限 20 张后转为收尾。
+

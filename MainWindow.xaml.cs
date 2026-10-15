@@ -2711,6 +2711,44 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// **逐张走**时把一张图的提案当场应用并落盘（见 IHost.ApplyProposalNow）。
+    ///
+    /// 为什么必须"当场"：编辑器只有一份文档，模型接下来会 `select_image` 切到下一张，
+    /// 那一步会先静默保存当前 caption——**如果这里攒着不应用，那张图的改动就没了**。
+    /// 攒到最后统一应用也不行：从第二张起，应用的是"现在编辑器里这份"，而它早已被
+    /// 后续的切图换掉了。
+    ///
+    /// 回执必须分清三件事，否则模型会照着编："写了盘"、"盘上本来就一样"、
+    /// "读不到正文所以一个字都没写"（`refused`，见 <see cref="SaveCurrent(bool, out bool)"/>）。
+    /// 最后那种要是报成成功，用户就会得到"它说改了其实没改"——这条教训在别处已经吃过一次。
+    /// </summary>
+    private (string Message, bool Ok) AgentApplyProposalNow(AgentProposal p)
+    {
+        // 双保险：「完全权限」关着时**绝不**写盘。TagAgent 那边已经用 canSave 挡了一层
+        // （canWalk 的前提里有它），但这一层是直接落到训练集上的最后一关，宁可多问一次。
+        if (!_cfg.AgentFullAccess)
+            return ("Writing to disk is not allowed: the user has not turned on full access.", false);
+
+        return OnUiThread(() =>
+        {
+            var name = _index >= 0 && _index < _items.Count ? _items[_index].Name : "?";
+            ApplyAgentProposal(p, single: false);
+            var wrote = SaveCurrent(showDialog: false, out var refused);
+            Log.Write($"agent walk: applied to {name} wrote={wrote} refused={refused}");
+
+            if (refused)
+                return ($"Applying to \"{name}\" FAILED: the caption text could not be read, " +
+                        "so nothing was written to disk. Do not tell the user this image was " +
+                        "changed.", false);
+
+            return wrote
+                ? ($"Applied to \"{name}\" and written to disk.", true)
+                : ($"Applied to \"{name}\"; the file on disk already matched, so nothing was " +
+                   "written.", true);
+        }, ("Applying a proposal is not available right now.", false));
+    }
+
+    /// <summary>
     /// 往过程区插一行**标题**（批量里"正在打哪张图"）。与思考块分开是有意的：
     /// 标题是"这一段的归属"，用正常前景色；思考是灰的。
     /// </summary>
@@ -2790,9 +2828,14 @@ public sealed partial class MainWindow : Window
             // 会一直套下去，而用户只会看到界面永远不停。
             var host = new AgentHost(_cfg, _llm, _search, _vocab,
                                      images: AgentImageList,
-                                     selectImage: AgentSelectImage,
+                                     selectImage: AgentSelectImageAsync,
                                      imageInfo: () => AgentImageInfoAsync(image is not null),
-                                     viewRegion: args => AgentViewRegionAsync(args, image is not null));
+                                     viewRegion: args => AgentViewRegionAsync(args, image is not null),
+                                     // **内层不许切图**：外层循环已经替它选好了这一张，
+                                     // 模型再切走就会把提案落到别的图上，而外层记账还以为
+                                     // 在改这一张。这一条与"不传批量委托"是两件不同的事，
+                                     // 原先只堵了批量、没堵切图。
+                                     canSwitchImages: () => false);
 
             // **流式回调接上**（对话入口才传）：思考与工具调用实时贴进过程区，
             // 就像用户自己问一句时那样。菜单入口传 null，它的进度在对话框里。
@@ -5462,7 +5505,7 @@ private void EndEdit(bool commit, bool lostFocus = false)
             // 永远是发第一句时的那张图。
             var host = new AgentHost(_cfg, _llm, _search, _vocab,
                                      images: AgentImageList,
-                                     selectImage: AgentSelectImage,
+                                     selectImage: AgentSelectImageAsync,
                                      imageInfo: () => AgentImageInfoAsync(image is not null),
                                      viewRegion: args => AgentViewRegionAsync(args, image is not null),
                                      // 批量：用户一句话下令，模型调 label_images，这里执行。
@@ -5476,7 +5519,11 @@ private void EndEdit(bool commit, bool lostFocus = false)
                                      describeTags: AgentDescribeTags,
                                      setTagSections: AgentSetTagSections,
                                      sortTags: AgentSortTags,
-                                     addTagsToImages: AgentAddTagsToImages);
+                                     addTagsToImages: AgentAddTagsToImages,
+                                     // 面板这条路上模型可以自己切图，也可以在逐张走时
+                                     // 把每一张当场落盘（后者还要求「完全权限」，见 canWalk）。
+                                     canSwitchImages: () => true,
+                                     applyProposalNow: AgentApplyProposalNow);
 
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,
@@ -5587,6 +5634,36 @@ private void EndEdit(bool commit, bool lostFocus = false)
     }
 
     /// <summary>
+    /// 与 <see cref="OnUiThread{T}"/> 同义，但**不阻塞调用方**：返回 Task 由调用方 await。
+    ///
+    /// 用它而不是阻塞版的场合是"这一段里还要 await 别的东西"。阻塞版会直接踩上
+    /// sync-over-async：调用方（多半是线程池线程）等 UI 线程，而 UI 线程里那个 work
+    /// 又在等一个需要回到调用方上下文才能完成的任务。
+    ///
+    /// 实测那次更糟：UI 线程**永久**卡在里面，而阻塞版 15 秒超时后照常往下走，
+    /// 于是症状变成"日志看着成功、程序整体冻死"——两件都不容易联想到一起。
+    /// </summary>
+    private Task<T> OnUiThreadAsync<T>(Func<T> work)
+    {
+        if (DispatcherQueue.HasThreadAccess) return Task.FromResult(work());
+
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!DispatcherQueue.TryEnqueue(() =>
+            {
+                try { tcs.TrySetResult(work()); }
+                catch (Exception ex)
+                {
+                    Log.Write("agent ui work failed: " + ex.Message);
+                    tcs.TrySetException(ex);
+                }
+            }))
+        {
+            tcs.TrySetException(new InvalidOperationException("cannot marshal work to the UI thread"));
+        }
+        return tcs.Task;
+    }
+
+    /// <summary>
     /// 给 agent 看的图片清单。写标签模式返回空——那里没有数据集，
     /// 两个图片工具随之不下发（让模型调必然失败的工具是白烧一轮预算）。
     /// </summary>
@@ -5626,12 +5703,43 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// <summary>
     /// 切图。**返回新那张图的字节**——不返回的话模型切了也看不见（图片只挂在最后
     /// 一条用户消息上），于是它干脆不切。这是"让它逐张检查、它只检查当前这张"的根因。
+    ///
+    /// **分两段，读图绝不在 UI 线程上做。** 原先这里整段都在 UI 线程上，
+    /// 而读图那一步是 <c>LoadAsync(...).GetAwaiter().GetResult()</c>——同步等一个
+    /// 需要回到 UI 线程才能完成的 Task。自己等自己，UI 线程从此不再泵消息：
+    /// 托管栈实测停在 <c>TaskAwaiter.GetResult()</c>，CPU 归零，窗口点不动。
+    /// 这条路径以前没人走到（模型不会主动切图），所以一直没暴露。
     /// </summary>
-    private (bool Ok, string Message, LlmClient.ChatImage? Image) AgentSelectImage(string name) =>
-        OnUiThread(() => AgentSelectImageCore(name),
-                   (false, "Switching images is not available right now.", null));
+    private async Task<(bool Ok, string Message, LlmClient.ChatImage? Image)> AgentSelectImageAsync(
+        string name, CancellationToken ct)
+    {
+        // 第一段（UI 线程）：校验 + 保存当前 + 换文档。不读图，所以很快。
+        var (ok, msg, path) = await OnUiThreadAsync(() => AgentSelectImageCore(name))
+                                   .ConfigureAwait(false);
+        if (!ok || path is null) return (ok, msg, null);
 
-    private (bool Ok, string Message, LlmClient.ChatImage? Image) AgentSelectImageCore(string name)
+        // 第二段（后台）：读盘 + 解码新那张。读不出来不算失败——切图本身成功了，
+        // 只是这一轮看不到图，如实说清即可。
+        LlmClient.ChatImage? bytes = null;
+        try
+        {
+            var payload = await ImagePayload.LoadAsync(path).ConfigureAwait(false);
+            if (payload is not null) bytes = new LlmClient.ChatImage(ImagePayload.Mime, payload.Jpeg);
+        }
+        catch (Exception ex)
+        {
+            Log.Write("select_image: could not read the new image: " + ex.Message);
+        }
+
+        if (bytes is null)
+            msg += " Its bytes could not be read, so you cannot see it this round.";
+        return (true, msg, bytes);
+    }
+
+    /// <summary>
+    /// 换图里"必须动界面"的那一小段，返回新那张图的路径（由调用方到后台去读）。
+    /// </summary>
+    private (bool Ok, string Message, string? Path) AgentSelectImageCore(string name)
     {
         if (_mode != PromptMode.Label || _items.Count == 0)
             return (false, "Switching images is not available: the editor has no dataset open.", null);
@@ -5666,33 +5774,10 @@ private void EndEdit(bool commit, bool lostFocus = false)
         SaveCurrent(showDialog: false);   // 与用户手动翻图一致：先保存当前那张
         Select(hit);
 
-        // 新那张的字节要在**切完之后**读（读的就是新的 CurrentImagePath）。
-        // 读不出来不算失败：切图本身成功了，只是这一轮看不到图——如实说清。
-        var bytes = TryEncodeCurrentForAgent();
-        var msg = $"Switched to \"{_items[hit].Name}\" (saved the previous image first).";
-        if (bytes is null)
-            msg += " Its bytes could not be read, so you cannot see it this round.";
-        return (true, msg, bytes);
-    }
-
-    /// <summary>
-    /// 把当前图编码成给模型看的那一份（与"带当前图片"同一个尺寸与格式）。
-    /// 失败返回 null、不抛——读图失败不该让一次成功的切图变成错误。
-    /// </summary>
-    private LlmClient.ChatImage? TryEncodeCurrentForAgent()
-    {
-        try
-        {
-            var path = CurrentImagePath();
-            if (path is null) return null;
-            var payload = ImagePayload.LoadAsync(path).GetAwaiter().GetResult();
-            return payload is null ? null : new LlmClient.ChatImage(ImagePayload.Mime, payload.Jpeg);
-        }
-        catch (Exception ex)
-        {
-            Log.Write("select_image: could not read the new image: " + ex.Message);
-            return null;
-        }
+        // 新那张的字节**不在这里读**：读盘 + 解码要 await，而这一段跑在 UI 线程上，
+        // 同步等它就会自己等自己（见 AgentSelectImageAsync 的注释）。只把路径交出去。
+        return (true, $"Switched to \"{_items[hit].Name}\" (saved the previous image first).",
+                CurrentImagePath());
     }
 
     /// <summary>
