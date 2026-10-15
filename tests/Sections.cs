@@ -313,6 +313,93 @@ internal static class Sections
         Console.WriteLine($"    quality -> score -> year -> safety -> count: {(prefOk ? "ok" : "BAD")}");
         if (!prefOk) ord++;
 
-        return notIdempotent.Count == 0 && bad == 0 && badColor == 0 && ord == 0 ? 0 : 1;
+        // ---------- 手改归类：词库里没有的标签也能指定类型 ----------
+        // 用户报的问题：自定义触发词（`you chan` 这类）在词库里查不到，
+        // Classify 只能兜底成 general，想把它归进"角色/画师"没有任何途径。
+        Console.WriteLine();
+        Console.WriteLine("=== 手改归类（覆盖词库推断）===");
+        var ov = 0;
+
+        void OvCheck(string label, bool ok, string got)
+        {
+            Console.WriteLine($"  {(ok ? "ok  " : "BAD ")} {label,-42} {got}");
+            if (!ok) ov++;
+        }
+
+        var custom = "you chan";   // 词库里没有的自定义标签
+        var beforeSec = TagSections.Classify(custom, v);
+        OvCheck("词库里没有时兜底成 general", beforeSec == TagSections.General, beforeSec);
+
+        // 指定成"角色"：立刻生效，且**优先于词库推断**
+        var changed = TagSections.SetOverride(custom, TagSections.Character);
+        OvCheck("SetOverride 报告改变", changed, changed.ToString());
+        OvCheck("Classify 采纳手改", TagSections.Classify(custom, v) == TagSections.Character,
+                TagSections.Classify(custom, v));
+        OvCheck("OverrideOf 查得到", TagSections.OverrideOf(custom) == TagSections.Character,
+                TagSections.OverrideOf(custom) ?? "(null)");
+
+        // 大小写与空白不敏感：同一个标签
+        OvCheck("忽略大小写与空白", TagSections.Classify("  YOU CHAN ", v) == TagSections.Character,
+                TagSections.Classify("  YOU CHAN ", v));
+
+        // **手改压过官方控制词**：用户明确指定的答案优先于硬编码清单
+        TagSections.SetOverride("safe", TagSections.General);
+        OvCheck("手改压过官方控制词（safe -> general）",
+                TagSections.Classify("safe", v) == TagSections.General,
+                TagSections.Classify("safe", v));
+        TagSections.SetOverride("safe", null);   // 清掉，别影响后面的用例
+
+        // 排序：手改之后规整应当把它挪进角色段
+        var unsorted = new[] { "1girl", "smile", custom, "hatsune miku" };
+        var reSorted = TagSections.Canonicalize(unsorted, v);
+        OvCheck("规整后排到 count 之后、general 之前",
+                reSorted.IndexOf(custom) > reSorted.IndexOf("1girl") &&
+                reSorted.IndexOf(custom) < reSorted.IndexOf("smile"),
+                string.Join(" | ", reSorted));
+
+        // 清除手改：回到词库推断
+        var cleared = TagSections.SetOverride(custom, null);
+        OvCheck("清除报告改变", cleared, cleared.ToString());
+        OvCheck("清除后回到 general", TagSections.Classify(custom, v) == TagSections.General,
+                TagSections.Classify(custom, v));
+        OvCheck("OverrideOf 变回 null", TagSections.OverrideOf(custom) is null,
+                TagSections.OverrideOf(custom) ?? "(null)");
+        OvCheck("重复清除不报告改变", !TagSections.SetOverride(custom, null), "false");
+
+        // 认不出的段名一律拒收（文件被手改坏时不能让垃圾进到排序键里）
+        OvCheck("拒绝不存在的段名", !TagSections.SetOverride(custom, "nonsense"), "false");
+        OvCheck("拒绝散文（它不是大类）",
+                !TagSections.SetOverride(custom, TagSections.Prose), "false");
+        OvCheck("拒收后没有留下记录", TagSections.OverrideOf(custom) is null,
+                TagSections.OverrideOf(custom) ?? "(null)");
+
+        // 空标签不参与
+        OvCheck("空标签拒收", !TagSections.SetOverride("   ", TagSections.Artist), "false");
+
+        // 批量设定 + 快照（界面一次改一批，落盘用快照）
+        TagSections.SetOverride("you chan", TagSections.Artist);
+        TagSections.SetOverride("@syrstyle", TagSections.Artist);
+        var snap = TagSections.OverridesSnapshot();
+        OvCheck("快照带上两条", snap.Count == 2, snap.Count.ToString());
+        OvCheck("快照内容正确",
+                snap.TryGetValue("you chan", out var s1) && s1 == TagSections.Artist &&
+                snap.TryGetValue("@syrstyle", out var s2) && s2 == TagSections.Artist,
+                string.Join(", ", snap.Select(kv => kv.Key + "=" + kv.Value)));
+
+        // 整体替换：读盘那条路（SetOverrides 是 Load 用的入口）
+        TagSections.SetOverrides(new Dictionary<string, string> { ["x tag"] = TagSections.Series });
+        OvCheck("整体替换后只剩一条", TagSections.OverrideCount == 1,
+                TagSections.OverrideCount.ToString());
+        OvCheck("替换后的映射生效",
+                TagSections.Classify("x tag", v) == TagSections.Series,
+                TagSections.Classify("x tag", v));
+        // 传 null = 清空
+        TagSections.SetOverrides(null);
+        OvCheck("传 null 清空", TagSections.OverrideCount == 0, TagSections.OverrideCount.ToString());
+        OvCheck("清空后回到推断",
+                TagSections.Classify(custom, v) == TagSections.General,
+                TagSections.Classify(custom, v));
+
+        return notIdempotent.Count == 0 && bad == 0 && badColor == 0 && ord == 0 && ov == 0 ? 0 : 1;
     }
 }

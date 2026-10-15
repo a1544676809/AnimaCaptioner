@@ -42,6 +42,7 @@
     <Compile Include="..\Core\DpapiSecret.cs" />
     <Compile Include="..\Core\Parity.cs" />
     <Compile Include="..\Core\TagSections.cs" />
+    <Compile Include="..\Core\TagSectionStore.cs" />
     <Compile Include="..\Core\TagOrder.cs" />
     <Compile Include="..\Core\PromptText.cs" />
     <Compile Include="..\Core\TagEscape.cs" />

@@ -201,6 +201,90 @@ public static class TagSections
     private static readonly HashSet<string> SafetyTags = new(SafetyWords, StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> CountTags = new(CountWords, StringComparer.OrdinalIgnoreCase);
 
+    // ---- 用户手改的归类（覆盖词库的判断）----
+
+    /*
+     * 为什么需要它：**词库里没有的标签没法指定类型**。用户自己写的触发词
+     * （`you chan`、`@syrstyle` 这类）在词库里查不到，于是 <see cref="Classify"/>
+     * 只能兜底到 general——想把它归进"角色"或"画师"没有任何途径，而它恰好
+     * 是排序与着色都要用到的信息。
+     *
+     * 存放用**静态注册表**而不是给 Classify 加参数：分类的调用点有二十多处
+     * （着色、分组、规整、词库对拍…），加参数等于要求每一处都记得传——漏一处
+     * 就出现"列表按手改分了组、着色还按词库"，而那正是最难查的一类不一致。
+     * 注册表只有一份，所有调用点自动一致。
+     *
+     * 它是**纯逻辑**：读写文件在 <see cref="TagSectionStore"/>，这里只存映射，
+     * 所以 net10 回归能直接钉住"覆盖优先于词库"这条语义。
+     */
+
+    private static Dictionary<string, string> _overrides = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>当前生效的手改归类条数。</summary>
+    public static int OverrideCount => _overrides.Count;
+
+    /// <summary>整体替换手改表（启动时从磁盘读进来）。传 null = 清空。</summary>
+    public static void SetOverrides(IReadOnlyDictionary<string, string>? map)
+    {
+        var next = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (map is not null)
+            foreach (var kv in map)
+            {
+                var tag = (kv.Key ?? "").Trim();
+                var sec = (kv.Value ?? "").Trim();
+                // 只收认得出的大类：文件被手改坏时宁可丢掉那一条，
+                // 也不要让一个不存在的段名进到排序键里（Index 会兜底成 general，
+                // 表面上没事，但"用户设过"这件事会永远留着、再也清不掉）。
+                if (tag.Length > 0 && IsSectionKey(sec)) next[tag] = sec;
+            }
+        _overrides = next;
+    }
+
+    /// <summary>这个标签有没有被手改过；返回段名，没有则 null。</summary>
+    public static string? OverrideOf(string tag)
+    {
+        if (_overrides.Count == 0 || string.IsNullOrWhiteSpace(tag)) return null;
+        return _overrides.TryGetValue(tag.Trim(), out var sec) ? sec : null;
+    }
+
+    /// <summary>段名是不是九个真大类之一（<see cref="Prose"/> 不算：散文不是标签）。</summary>
+    public static bool IsSectionKey(string? key) =>
+        !string.IsNullOrWhiteSpace(key) && All.Any(s => s.Key == key);
+
+    /// <summary>
+    /// 给一个标签指定大类（<paramref name="section"/> 为 null 或空 = 清除手改，
+    /// 回到"由控制词/词库推断"）。返回是否真的改变了什么。
+    ///
+    /// 只改内存，不落盘——存盘由调用方走 <see cref="TagSectionStore.Save"/>，
+    /// 因为"改一个标签"和"什么时候写文件"是两件事（界面可能一次改一批）。
+    /// </summary>
+    public static bool SetOverride(string tag, string? section)
+    {
+        var t = (tag ?? "").Trim();
+        if (t.Length == 0) return false;
+
+        var want = (section ?? "").Trim();
+        var had = _overrides.TryGetValue(t, out var cur);
+
+        if (want.Length == 0)
+        {
+            if (!had) return false;
+            _overrides.Remove(t);
+            return true;
+        }
+
+        if (!IsSectionKey(want)) return false;
+        if (had && cur == want) return false;
+
+        // 字典本身忽略大小写，所以 `You Chan` 与 `you chan` 是同一条
+        _overrides[t] = want;
+        return true;
+    }
+
+    /// <summary>当前手改表的快照（存盘用）。</summary>
+    public static Dictionary<string, string> OverridesSnapshot() =>
+        new(_overrides, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// 这个字符串是否是一个"能认出来的标签"。
     ///
@@ -310,16 +394,22 @@ public static class TagSections
     /// <summary>
     /// 把标签归到官方九个大类之一。
     ///
-    /// 判断顺序有讲究：先认官方在模型卡里逐条列出的控制词。这些词在 Danbooru
-    /// 上要么没有条目、要么归类与 Anima 的用法不一致（`sensitive` 在 Danbooru
-    /// 是 general，但官方把它列在 safety 段），所以硬编码的清单优先。
-    /// 之后才查词库，且 Anima 自带索引优先——它才是 Anima 认的标签集。
+    /// **顺序：手改覆盖 → 官方控制词 → 词库 → general。**
+    ///
+    /// 手改排在最前面是刻意的：它是用户明确指定过的答案，而这条链上其余每一条都是
+    /// **推断**（控制词是硬编码清单、词库是别人的归类）。用户之所以要手改，正是
+    /// 因为推断错了——把它排在推断后面等于这个功能没有意义。
+    ///
+    /// 控制词之后才查词库，且 Anima 自带索引优先——它才是 Anima 认的标签集。
     /// </summary>
     public static string Classify(string tag, VocabDb? vocab)
     {
         if (string.IsNullOrWhiteSpace(tag)) return General;
         var t = tag.Trim();
         var low = t.ToLowerInvariant();
+
+        // 用户手改的归类（词库里没有的自定义标签只能靠这一条指定类型）
+        if (OverrideOf(t) is { } forced) return forced;
 
         // 官方第一段的四类，按官方 Tag order 那一行的次序判定
         if (QualityTags.Contains(low) || IsScore(low)) return Quality;

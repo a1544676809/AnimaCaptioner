@@ -305,6 +305,23 @@ public sealed partial class MainWindow : Window
         // 词库加载前读出来，列表首次构建时就能带上。
         _gloss = ModelGlossStore.Load();
 
+        // 用户手改的标签归类（词库里没有的自定义标签靠它指定类型）。
+        // **必须在任何一次 Classify 之前**：列表分组、着色、规整都用它。
+        TagSectionStore.Load();
+
+        // 菜单栏那个「标签类型」跟着**当前选中**走：打勾的是"现在生效的那一类"，
+        // 而选中会变，填一次留着复用就会报错误的当前状态。
+        //
+        // 挂在 SelectionChanged 而不是菜单的 Opening 上：`MenuFlyoutSubItem` 没有
+        // Opening 事件（WinUI 里只有 MenuFlyout 有），而选中变化是这件事的唯一来源
+        // ——RefreshTagRows 重建行时也会触发它，所以一处订阅就够了。
+        TagList.SelectionChanged += (_, _) =>
+            FillSectionMenu(TagSectionMenu, SelectedTagRows());
+
+        // 起手先填一次：刚启动时没有选中变化事件，不填的话那个子菜单是空的
+        // （用户点开看到"什么都没有"，会以为功能没做）。
+        FillSectionMenu(TagSectionMenu, SelectedTagRows());
+
         // 提示词库同理：独立 sidecar，且**必须在 ApplyColumnRatios 之前**载入，
         // 因为分栏比例要按模式取不同的一组值。
         _lib = PromptLibraryStore.Load();
@@ -3452,6 +3469,126 @@ public sealed partial class MainWindow : Window
                   $"selected={TagList.SelectedItems.Count} at={pt.X:F0},{pt.Y:F0}");
     }
 
+    /// <summary>
+    /// 标签列表里当前选中的行（散文那一段不算标签，所以按 PendingIndex 过滤掉）。
+    /// 右键菜单与菜单栏两处都用它，口径只有一处。
+    /// </summary>
+    private List<TagItem> SelectedTagRows() =>
+        TagList.SelectedItems.Cast<TagItem>().Where(r => r.PendingIndex >= 0).ToList();
+
+    /// <summary>
+    /// 「标签类型」子菜单：把选中的标签指定到某个大类。
+    ///
+    /// 解决的是"**词库里没有的标签没法指定类型**"：自己写的触发词
+    /// （`you chan` 这类）在词库里查不到，<see cref="TagSections.Classify"/> 只能
+    /// 兜底到「一般标签」——想把它归进「角色」「画师」原本没有任何途径。
+    ///
+    /// 两处刻意的设计：
+    /// 1. **打勾的是当前生效的那一项**（手改优先于词库推断），所以能一眼看出
+    ///    "这个标签现在算哪一类、是不是我手动定的"；
+    /// 2. 末尾给一条**「跟随词库」**用来撤销手改——没有它的话，一旦指定错就再也
+    ///    回不到推断结果（文件里那条记录清不掉）。
+    /// </summary>
+    private MenuFlyoutSubItem BuildSectionMenu(IReadOnlyList<TagItem> sel)
+    {
+        var sub = new MenuFlyoutSubItem
+        {
+            Text = sel.Count > 1 ? $"标签类型（{sel.Count} 个）" : "标签类型",
+            IsEnabled = sel.Count > 0,
+        };
+        FillSectionMenu(sub, sel);
+        return sub;
+    }
+
+    /// <summary>
+    /// 把九个大类填进一个已有的子菜单（右键菜单与菜单栏共用同一份填充逻辑——
+    /// 两份实现迟早漂移，而漂移的表现是"两个入口打勾的位置不一样"）。
+    /// </summary>
+    private void FillSectionMenu(MenuFlyoutSubItem sub, IReadOnlyList<TagItem> sel)
+    {
+        sub.Items.Clear();
+        sub.IsEnabled = sel.Count > 0;
+        if (sel.Count == 0)
+        {
+            sub.Items.Add(new MenuFlyoutItem { Text = "（先选中标签）", IsEnabled = false });
+            return;
+        }
+
+        // 多选时若各标签类型不同就不打勾（避免谎报"它们都是这一类"）
+        var current = sel.Select(r => TagSections.Classify(r.Tag, _vocab))
+                         .Distinct(StringComparer.Ordinal).ToList();
+        var forced = sel.Count > 0 && sel.All(r => TagSections.OverrideOf(r.Tag) is not null);
+        var common = current.Count == 1 ? current[0] : null;
+
+        foreach (var s in TagSections.All)
+        {
+            var item = new MenuFlyoutItem
+            {
+                Text = (common == s.Key ? "✓ " : "   ") + s.Title,
+                // 顺带把该大类的配色带上：用户是靠颜色认大类的，菜单里同色更好认
+                Icon = new FontIcon
+                {
+                    Glyph = "\uE73E",
+                    FontSize = 10,
+                    Foreground = TagColors.BrushOf(s.Key, _cfg),
+                },
+            };
+            var key = s.Key;
+            item.Click += (_, _) => ApplySectionOverride(sel, key);
+            sub.Items.Add(item);
+        }
+
+        sub.Items.Add(new MenuFlyoutSeparator());
+        var follow = new MenuFlyoutItem
+        {
+            Text = (forced ? "   " : "✓ ") + "跟随词库（清除手改）",
+            IsEnabled = forced,
+        };
+        follow.Click += (_, _) => ApplySectionOverride(sel, null);
+        sub.Items.Add(follow);
+    }
+
+    /// <summary>
+    /// 把选中的标签指定成 <paramref name="section"/>（null = 清除手改）。
+    ///
+    /// 做完三件事，缺一件都会让用户以为没生效：
+    /// 1. 改内存里的手改表并**落盘**（下次开程序还在）；
+    /// 2. **规整大类顺序**——类型决定它排在哪一段，不重排的话列表上它会留在原处、
+    ///    顶着错误的段头条带；
+    /// 3. 重建列表与重新着色（走 CommitPrompt，两样都覆盖）。
+    ///
+    /// 记一个撤销点：这一下会改提示词的**顺序**，与"规整大类顺序"同类。
+    /// </summary>
+    private void ApplySectionOverride(IReadOnlyList<TagItem> sel, string? section)
+    {
+        var tags = sel.Where(r => r.PendingIndex >= 0).Select(r => r.Tag).ToList();
+        if (tags.Count == 0) return;
+
+        var changed = 0;
+        foreach (var t in tags)
+            if (TagSections.SetOverride(t, section)) changed++;
+
+        if (changed == 0)
+        {
+            // 没有实际变化也照样重画一次：用户可能只是想确认"现在算哪一类"
+            RefreshTagRows();
+            TranslateInfoText.Text = $"「{string.Join("、", tags.Take(3))}」的类型没有变化。";
+            return;
+        }
+
+        PushUndo(section is null ? "标签类型（跟随词库）" : "标签类型");
+        _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
+        CommitPrompt();
+
+        TagSectionStore.Save();
+        var shown = string.Join("、", tags.Take(3)) + (tags.Count > 3 ? "…" : "");
+        TranslateInfoText.Text = section is null
+            ? $"已清除手改类型，回到词库判断：{shown}"
+            : $"已指定为「{TagSections.Get(section).Title}」：{shown}";
+        Log.Write($"tag section override: {changed} 个 -> {(section ?? "(跟随词库)")} " +
+                  $"tags=[{string.Join(", ", tags)}] total={TagSections.OverrideCount}");
+    }
+
     private MenuFlyout BuildTagMenu(TagItem? row)
     {
         var menu = new MenuFlyout();
@@ -3554,6 +3691,12 @@ public sealed partial class MainWindow : Window
         menu.Items.Add(new MenuFlyoutSeparator());
 
         // 组 4：查看。对散文也有意义（它是自由文本，只能整段看/改）。
+        // 组 3：指定大类。**词库里没有的自定义标签只能靠这一条定类型**——
+        // 否则它们一律兜底成「一般标签」，既排不到该在的段里，颜色也不对。
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(BuildSectionMenu(sel));
+        menu.Items.Add(new MenuFlyoutSeparator());
+
         var audit = new MenuFlyoutItem
         {
             Text = "校验整行",

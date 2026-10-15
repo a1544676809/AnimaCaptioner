@@ -169,6 +169,13 @@
             </MenuBarItem>
 
             <MenuBarItem Title="标签">
+                <!-- 标签类型：**右键菜单里也有同一条**（BuildSectionMenu 两处共用）。
+                     放进菜单栏是为了"不改选中的标签也能看/改类型"，
+                     顺带让它可被键盘与自动化驱动——右键菜单只能靠合成右键打开。 -->
+                <MenuFlyoutSubItem x:Name="TagSectionMenu" Text="标签类型">
+                    <MenuFlyoutSubItem.Icon><FontIcon Glyph="&#xE8EC;" /></MenuFlyoutSubItem.Icon>
+                </MenuFlyoutSubItem>
+                <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="上移" Click="TagUp_Click"
                                 KeyboardAcceleratorTextOverride="Ctrl+↑">
                     <MenuFlyoutItem.KeyboardAccelerators>
