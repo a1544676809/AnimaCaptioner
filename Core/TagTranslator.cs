@@ -34,14 +34,18 @@ public sealed class TagTranslator
     private const int MaxRounds = 3;
 
     /// <summary>
-    /// 带思考的翻译要留足预算：实测思考链单独就能写几百 token，
-    /// 给 300 时第二轮直接 length 截断（既没正文也没 tool_calls）。
+    /// 工具轮的预算。**0 = 自动**，与其它带工具的路一致（见 <see cref="LlmClient.ResolveBudget"/>）。
     ///
-    /// **这一路刻意不跟着"自动预算"走**：它是"一句进、一句出"的短任务
-    /// （要的是一句中文释义），放大预算没有收益，只是把上下文里可用于输出的
-    /// 额度占掉。真正需要大额度的是助手那条路（见 AgentMaxTokens）。
+    /// 原来这里写死 1600，而那个数字其实是 `cfg.MaxTokens(默认 400) + 思考余量(1200)`
+    /// 手工算出来的——用户一旦把翻译那档调大（比如 8192），**只有不走工具的翻译变了
+    /// （9392），带工具的那一轮还停在 1600**。同一个功能两条路两个额度，而设置页上
+    /// 看不出这回事。
+    ///
+    /// 现在：**纯翻译那条路**（<c>ChatAsync</c>）仍按 `cfg.MaxTokens + 思考余量`，
+    /// 也就是"翻译维持 400"；**带工具的那一轮**走自动——它要"先思考、再发 tool_calls、
+    /// 再写答案"，额度该由服务端声明的能力决定，而不是猜一个数。
     /// </summary>
-    private const int ToolBudget = 1600;
+    private const int ToolBudget = 0;
 
     /// <summary>
     /// 这一路的工具集。说明直接复用 <see cref="AgentKit.WebSearchTool"/>——
@@ -50,6 +54,10 @@ public sealed class TagTranslator
     /// 必须逐字一致，不能让它们各自漂移。
     /// </summary>
     private static readonly AgentTool[] Tools = { AgentKit.WebSearchTool };
+
+    /// <summary>这一轮实际要发的 max_tokens。0 = 自动，解析不出来时按工具路兜底。</summary>
+    private int Budget(AppSettings cfg) =>
+        _llm.BudgetFor(cfg, ToolBudget, LlmClient.ToolAutoFallback);
 
     public async Task<Outcome> TranslateAsync(AppSettings cfg, string tag, CancellationToken ct = default)
     {
@@ -71,7 +79,7 @@ public sealed class TagTranslator
             if (useSearch)
             {
                 var turn = await _llm.ChatWithToolsAsync(
-                    cfg, LlmClient.TagGlossSystemPrompt, messages, Tools, ToolBudget, ct)
+                    cfg, LlmClient.TagGlossSystemPrompt, messages, Tools, Budget(cfg), ct)
                     .ConfigureAwait(false);
 
                 if (!turn.Ok)
@@ -109,7 +117,7 @@ public sealed class TagTranslator
                         });
                         var final = await _llm.ChatWithToolsAsync(
                             cfg, LlmClient.TagGlossSystemPrompt, messages, Tools,
-                            ToolBudget, ct).ConfigureAwait(false);
+                            Budget(cfg), ct).ConfigureAwait(false);
                         content = final.Ok ? final.Content : "";
                         if (!final.Ok && final.Error.Length > 0) notes.Add(final.Error);
                     }

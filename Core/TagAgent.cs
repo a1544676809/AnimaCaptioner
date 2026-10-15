@@ -63,7 +63,34 @@ public sealed class TagAgent
         /// </summary>
         bool CanSave { get; }
 
-        /// <summary>带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。</summary>
+        /// <summary>
+        /// 能不能用 `label_images` 批量给数据集打标。
+        ///
+        /// 只有标注模式、有数据集、**且当前不在批量循环里**时为真。最后一条防的是
+        /// 自我递归：批量循环内部对每张图各跑一轮助手，那一轮里若再有批量工具，
+        /// 模型完全可能再发起一次批量——而它会一直套下去。
+        /// </summary>
+        bool CanBatchLabel { get; }
+
+        /// <summary>
+        /// 跑一次批量打标。<paramref name="arguments"/> 是工具的原始参数。
+        ///
+        /// 返回：进度文字（界面显示用）、一段给模型看的结果说明、以及一句"用户有没有
+        /// 中途叫停"。**实现必须自己把整批跑完**（界面只负责显示进度），
+        /// 因为模型在等这一次工具调用的结果。
+        /// </summary>
+        Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments,
+                                                                 CancellationToken ct);
+
+        /// <summary>
+        /// 把进度贴到界面上（"第 3/20 张，写入 2"）。批量要跑几分钟，
+        /// 没有这个用户只会看到界面卡住。可以为 null（探针里不需要）。
+        /// </summary>
+        void ReportBatchProgress(string text);
+
+        /// <summary>
+        /// 带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。
+        /// </summary>
         /// <param name="onProgress">
         /// 给了就要求实现走**流式**，把生成中的（已累积思考, 已累积正文）回调出来，
         /// 界面据此实时显示思考链。为 null 时行为同以前（非流式）。
@@ -180,9 +207,13 @@ public sealed class TagAgent
         // 而这条这次对话里必须已经有图（否则等于绕过用户关掉的「带当前图片」开关）。
         var canViewRegion = hasImage;
         var canSave = host.CanSave;
-        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave);
+        // 批量只在"有数据集、且当前不在批量循环里"时下发（防自我递归，见 CanBatchLabel）。
+        var canBatchLabel = host.CanBatchLabel && dataset.Count > 0;
+        var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave,
+                                           canBatchLabel);
         var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
-                                   canViewRegion: canViewRegion, canSave: canSave);
+                                   canViewRegion: canViewRegion, canSave: canSave,
+                                   canBatchLabel: canBatchLabel);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -389,6 +420,42 @@ public sealed class TagAgent
                         imageBudget -= imgs.Count;
                         pendingImages.AddRange(imgs);
                     }
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.LabelImagesToolName, StringComparison.Ordinal))
+                {
+                    if (!canBatchLabel)
+                    {
+                        const string denied =
+                            "Bulk labelling is not available in this conversation (it needs a " +
+                            "dataset open in label mode).";
+                        log.Add("批量打标（不可用）→ 已回绝");
+                        Report(new ToolCallLog(call.Name, call.Arguments, denied));
+                        messages.Add(LlmClient.ToolMessage(call.Id, denied));
+                        continue;
+                    }
+
+                    var req = AgentKit.ParseLabelRequest(call.Arguments);
+                    // **进度先贴出来**：这一跑可能几分钟，界面不能只是转圈。
+                    host.ReportBatchProgress(req.RedoAll
+                        ? "批量打标：重做全部图片…"
+                        : "批量打标：只处理还没有标注的图片…");
+
+                    // 这一路是"长工具"：它会自己把整批跑完（每张图各跑一轮完整助手）。
+                    // 期间界面靠 ReportBatchProgress 更新；模型在这里等结果。
+                    var (text, cancelled) = await host.LabelImagesAsync(call.Arguments, ct)
+                                                      .ConfigureAwait(false);
+                    log.Add("批量打标 → " + text.Replace("\n", "；"));
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+
+                    // 用户叫停了：**这一轮就到这里**。继续问下去只会又发起一次批量，
+                    // 而用户刚刚明确说不要了。
+                    if (cancelled)
+                        return Done(true,
+                            "批量打标已按你的要求停下。已完成的那几张已经写进各自的 .txt。",
+                            null, rounds, "");
                     continue;
                 }
 

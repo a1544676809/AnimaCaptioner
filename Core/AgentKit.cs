@@ -102,6 +102,92 @@ public static class AgentKit
     public const string ImageInfoToolName = "image_info";
     public const string ViewRegionToolName = "view_region";
     public const string SaveToolName = "save_caption";
+    public const string LabelImagesToolName = "label_images";
+
+    /// <summary>
+    /// 批量给数据集里的图打标。**用户用一句话下令，这个循环由模型发起的工具调用驱动**
+    /// ——不是让用户去菜单里点。
+    ///
+    /// 它是个"长工具"：一次调用可能要跑几分钟、处理几十张图，期间界面显示进度。
+    /// 实现上它会**为每张图各跑一轮完整的助手循环**（同样的提示词、工具、预算），
+    /// 所以批量结果与手动一张张打是同一种东西。
+    ///
+    /// 只在标注模式、有数据集、且当前不在批量循环里时下发——否则就是必然失败的工具，
+    /// 或者自我递归（内层循环不该再有批量能力）。
+    /// </summary>
+    public static AgentTool LabelImagesTool => new(
+        LabelImagesToolName,
+        "Label images of the dataset in bulk, unattended: each selected image is read, tagged " +
+        "and written to its .txt, one after another. Use this when the user asks you to label " +
+        "the whole dataset or the remaining unlabeled images (\"把剩下的都标了\" / \"批量打标\" / " +
+        "\"auto-caption everything\"). Do NOT call it to label a single image — for that, look at " +
+        "the image and use " + ProposeToolName + " as usual.\n" +
+        "scope=\"unlabeled\" (default) only touches images that have no caption yet; " +
+        "scope=\"all\" REDOES every image, overwriting existing captions (irreversible — only " +
+        "use it when the user explicitly asks to redo everything).\n" +
+        "limit is how many images to process at most (0 = no limit). It takes minutes when the " +
+        "dataset is large; the user can stop it.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["scope"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["enum"] = new JsonArray { "unlabeled", "all" },
+                    ["description"] = "\"unlabeled\" (default) skips images that already have a " +
+                                      "caption; \"all\" redoes every image and overwrites.",
+                },
+                ["limit"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "Maximum number of images to process (0 or omitted = all).",
+                },
+            },
+            ["required"] = new JsonArray(),
+        });
+
+    /// <summary>`label_images` 解析出来的范围。<see cref="Problem"/> 为空 = 可以用。</summary>
+    public sealed record LabelRequest(string Scope, int Limit, string Problem)
+    {
+        public bool Ok => Problem.Length == 0;
+
+        /// <summary>是否重做全部（会覆盖已有标注）。</summary>
+        public bool RedoAll => Scope == "all";
+    }
+
+    /// <summary>
+    /// 解析 `label_images` 的参数。宽容两处模型的手抖：
+    /// 不写 scope（当 unlabeled——**保守的一侧**，绝不默认覆盖用户的标注）、
+    /// 认不出的 scope 值（同样退回 unlabeled，而不是猜成 all）。
+    /// </summary>
+    public static LabelRequest ParseLabelRequest(string arguments)
+    {
+        var scope = "";
+        var limit = 0;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return new LabelRequest("unlabeled", 0, "The arguments were not a JSON object.");
+
+            var root = doc.RootElement;
+            scope = Str(root, "scope").Trim().ToLowerInvariant();
+            limit = (int)Num(root, "limit");
+        }
+        catch (JsonException)
+        {
+            return new LabelRequest("unlabeled", 0, "The arguments were not valid JSON.");
+        }
+
+        if (scope.Length == 0) scope = "unlabeled";
+        if (scope is not ("unlabeled" or "all"))
+            scope = "unlabeled";   // 认不出就选保守那一侧，不猜成覆盖
+
+        return new LabelRequest(scope, Math.Max(0, limit), "");
+    }
 
     /// <summary>
     /// 把改动**写进磁盘**。
@@ -380,7 +466,8 @@ public static class AgentKit
     /// 那个开关的意义就是"不许它自己动手"，下发一个必然被拒的工具只是白烧一轮。
     /// </summary>
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
-                                        bool canViewRegion = false, bool canSave = false)
+                                        bool canViewRegion = false, bool canSave = false,
+                                        bool canBatchLabel = false)
     {
         var tools = new List<AgentTool>();
         if (withImages)
@@ -392,6 +479,8 @@ public static class AgentKit
         if (webSearch) tools.Add(WebSearchTool);
         if (withImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
+        // 批量放在 save 之前：它是"一次做完一大批"，语义上更接近主动作。
+        if (canBatchLabel) tools.Add(LabelImagesTool);
         if (canSave) tools.Add(SaveTool);
         tools.Add(ProposeTool);
         return tools;
@@ -415,7 +504,7 @@ public static class AgentKit
     ///    所以这里同样把长度交给输入决定。
     /// </summary>
     public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false,
-                                      bool canSave = false)
+                                      bool canSave = false, bool canBatchLabel = false)
     {
         var sb = new System.Text.StringBuilder();
         sb.Append(
@@ -523,6 +612,19 @@ public static class AgentKit
                 "- You may NOT write files: everything you propose stays in the editor until the " +
                 "user applies and saves it themselves. Never say you saved, wrote or changed a " +
                 "file.\n");
+
+        // 批量。仅在标注模式、有数据集、且不在批量循环里时才有这个工具。
+        if (canBatchLabel)
+            sb.Append(
+                "- Bulk labelling: when the user asks you to caption the dataset as a whole " +
+                "(\"把剩下的都标了\", \"批量打标\", \"auto-caption everything\"), call " +
+                LabelImagesToolName + " ONCE with the right scope. It does the whole job by " +
+                "itself — each image is read, tagged and written to disk — and it can take " +
+                "minutes, so tell the user it has started and do not also try to label images " +
+                "one by one. Default scope is \"unlabeled\" (only images with no caption yet); " +
+                "use \"all\" ONLY when the user explicitly asks to redo every image, because " +
+                "that overwrites captions that already exist. If the user actually means one " +
+                "specific image, do not use it: just look at that image and propose.\n");
 
         return sb.ToString();
     }

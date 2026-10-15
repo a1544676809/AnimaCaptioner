@@ -188,6 +188,13 @@ public static class OverwriteProbe
         public int MaxTokensPerTurn => 2400;
 
         /// <summary>探针不开写盘能力。</summary>
+        /// <summary>探针里不提供批量打标。</summary>
+        public bool CanBatchLabel => false;
+
+        public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments, CancellationToken ct) =>
+            Task.FromResult(("bulk labelling is off in this probe", false));
+
+        public void ReportBatchProgress(string text) { }
         public bool CanSave => false;
 
         public (bool Ok, string Message) Save() => (false, "saving is off in this probe");

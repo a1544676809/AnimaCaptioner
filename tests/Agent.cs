@@ -1165,6 +1165,102 @@ public static class Agent
             True("没提案也留一句（它不算错误）", rep.Notes.Any(n => n.Contains("没有提出任何改动")));
         }
 
+        Console.WriteLine("\n=== 33. label_images：一句话下令，模型自己发起批量 ===");
+        {
+            // 用户的原话："我想的是直接给ai助手发条命令，ai自己就可以完成批量打标。"
+            // 所以入口是个**工具**，不是菜单。这一节钉住：什么时候下发、参数怎么解析、
+            // 以及两个必须防住的坑（自我递归、用户叫停后还继续）。
+            var withBatch = string.Join("|", AgentKit.Tools(true, withImages: true,
+                                                            canViewRegion: true, canSave: true,
+                                                            canBatchLabel: true)
+                                                    .Select(t => t.Name));
+            True("开了批量就下发 label_images", withBatch.Contains(AgentKit.LabelImagesToolName));
+            Eq("顺序：批量在 save 与 propose 之前", withBatch,
+               "current_image|image_info|search_tags|web_search|select_image|view_region|" +
+               "label_images|save_caption|propose");
+
+            var noBatch = string.Join("|", AgentKit.Tools(true, withImages: true, canSave: true)
+                                                .Select(t => t.Name));
+            True("没开时不下发（没数据集 / 正在批量里）",
+                 !noBatch.Contains(AgentKit.LabelImagesToolName));
+
+            True("系统提示说清了什么时候用它、以及默认范围",
+                 AgentKit.SystemPrompt(true, false, canBatchLabel: true)
+                     .Contains(AgentKit.LabelImagesToolName) &&
+                 AgentKit.SystemPrompt(true, false, canBatchLabel: true).Contains("unlabeled"));
+            True("没开时不提这个工具",
+                 !AgentKit.SystemPrompt(true, false).Contains(AgentKit.LabelImagesToolName));
+
+            // ---- 参数解析：**默认必须是保守的那一侧** ----
+            var d1 = AgentKit.ParseLabelRequest("{}");
+            True("不写参数 = 只处理未标注", d1.Ok && d1.Scope == "unlabeled" && !d1.RedoAll);
+            Eq("limit 默认 0（不限）", d1.Limit, 0);
+
+            var d2 = AgentKit.ParseLabelRequest("""{"scope":"all","limit":5}""");
+            True("显式 all 才重做全部", d2.Ok && d2.RedoAll);
+            Eq("limit 读得到", d2.Limit, 5);
+
+            var d3 = AgentKit.ParseLabelRequest("""{"scope":"everything"}""");
+            True("认不出的 scope 退回保守侧（绝不猜成覆盖）",
+                 d3.Ok && d3.Scope == "unlabeled" && !d3.RedoAll);
+            True("大小写与空白容错",
+                 AgentKit.ParseLabelRequest("""{"scope":" ALL "}""").RedoAll);
+            Eq("负数 limit 夹成 0", AgentKit.ParseLabelRequest("""{"limit":-3}""").Limit, 0);
+            True("坏 JSON 如实报错", !AgentKit.ParseLabelRequest("不是 json").Ok);
+
+            // ---- 工具真被调用时：跑一次、把结果回给模型、进度贴出去 ----
+            // 注意**要给它一个数据集**：批量工具只在"有数据集"时下发（没有数据集
+            // 就没有可标的东西），所以空数据集的 FakeHost 会走"回绝"那条路。
+            var h = new FakeHost { CanBatchLabel = true };
+            h.Dataset.Add(new AgentImage("a", 0, false, 0, IsCurrent: true));
+            h.BatchResult = "处理 2 张：写入 2";
+            h.Turn(Tool("b1", AgentKit.LabelImagesToolName, """{"scope":"unlabeled"}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "把剩下的都标了");
+            Eq("只发起一次批量（不会一张张来）", h.BatchCalls, 1);
+            True("参数原样交给 host", h.BatchArguments.Contains("unlabeled"));
+            True("进度贴到界面上（几分钟不能只转圈）", h.BatchProgress.Count > 0);
+            True("日志里记了结果", o.Log.Any(l => l.Contains("批量打标")));
+            var back = h.SeenMessages[1]
+                .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
+            True("结果如实回给模型", back.Contains("写入 2"));
+
+            // ---- 自我递归：防在"内层那一轮不许再有批量"这个 host 决定上 ----
+            // 真实的闸门有两道，都在 MainWindow 那边：
+            //   1. 批量循环期间 `_batchRunning = true`，面板 host 的 CanBatchLabel 读到它 → false；
+            //   2. 内层每一张图现建的 host **根本不传**批量那两个委托（见 LabelOneAsync），
+            //      所以它连"能不能"都是 false。
+            // 这里验的是 Core 这一侧的契约：host 说不能 → 不下发 + 调用被回绝。
+            var h2 = new FakeHost { CanBatchLabel = false };
+            h2.Dataset.Add(new AgentImage("a", 0, false, 0, IsCurrent: true));
+            h2.Turn(Tool("b2", AgentKit.LabelImagesToolName, "{}"))
+             .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o2b = Run(h2, "标吧");
+            True("host 说不能时，请求里就没有 label_images",
+                 !h2.SeenTools[0].Contains(AgentKit.LabelImagesToolName));
+            True("但别的工具照旧都在", h2.SeenTools[0].Contains(AgentKit.ProposeToolName) &&
+                                        h2.SeenTools[0].Contains(AgentKit.SearchToolName));
+            Eq("真调了也不执行（防递归的兜底）", h2.BatchCalls, 0);
+            True("如实回绝", o2b.Log.Any(l => l.Contains("不可用")));
+
+            // ---- 用户叫停：这一轮到此为止，不许再发起一次 ----
+            var h3 = new FakeHost { CanBatchLabel = true, BatchCancelled = true };
+            h3.Dataset.Add(new AgentImage("a", 0, false, 0, IsCurrent: true));
+            h3.Turn(Tool("b3", AgentKit.LabelImagesToolName, "{}"));
+            var batchStopOutcome = Run(h3, "标吧");
+            Eq("叫停后不再继续（只跑了一次）", h3.BatchCalls, 1);
+            True("如实告诉用户停了、已写的保留",
+                 batchStopOutcome.Ok && batchStopOutcome.Reply.Contains("停下"));
+
+            // ---- 没有批量能力却被调用：回绝，不碰 host ----
+            var h4 = new FakeHost { CanBatchLabel = false };
+            h4.Turn(Tool("b4", AgentKit.LabelImagesToolName, "{}"))
+              .Turn(Tool("p4", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var batchDenied = Run(h4, "标吧");
+            Eq("没能力时一次都没调 host", h4.BatchCalls, 0);
+            True("如实记成回绝", batchDenied.Log.Any(l => l.Contains("不可用")));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1226,6 +1322,30 @@ public static class Agent
 
         /// <summary>是否允许 save_caption（对应「完全权限」）。</summary>
         public bool CanSave { get; set; }
+
+        /// <summary>是否允许 label_images 批量打标。</summary>
+        public bool CanBatchLabel { get; set; }
+
+        /// <summary>批量被调用的次数与上次收到的参数（供断言"跑了几次、范围是什么"）。</summary>
+        public int BatchCalls { get; private set; }
+        public string BatchArguments { get; private set; } = "";
+
+        /// <summary>批量返回什么；以及"用户有没有叫停"。</summary>
+        public string BatchResult { get; set; } = "处理 3 张：写入 2 · 无需改动 1";
+        public bool BatchCancelled { get; set; }
+
+        /// <summary>界面收到的进度文字（按顺序）。</summary>
+        public List<string> BatchProgress { get; } = new();
+
+        public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments,
+                                                                       CancellationToken ct)
+        {
+            BatchCalls++;
+            BatchArguments = arguments;
+            return Task.FromResult((BatchResult, BatchCancelled));
+        }
+
+        public void ReportBatchProgress(string text) => BatchProgress.Add(text);
 
         /// <summary>Save() 被调用的次数（**现在不该再有人调它**：写盘由界面在提案应用后做）。</summary>
         public int SaveCalls { get; private set; }

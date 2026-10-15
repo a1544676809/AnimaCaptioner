@@ -2209,8 +2209,12 @@ public sealed partial class MainWindow : Window
     private async Task RunBatchLabelAsync(IReadOnlyList<BatchCandidate> picked, BatchOptions options)
     {
         _batchRunning = true;
-        var report = new BatchReport();
         var stop = new CancellationTokenSource();
+        // **用户按了停止**与"循环正常跑完顺便取消掉 token"必须分开。
+        // 判据只能是这个显式标记：`stop.Cancel()` 在 finally 里无论如何都会调，
+        // 所以读 `IsCancellationRequested` 会**永远为真**——实测第一版就是这样，
+        // 每次跑完都多一句"中途停止了"，而它明明跑完了。
+        var userStopped = false;
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
         // 停止按钮：用一个可取消的对话框占位，跑的时候点它就能停。
@@ -2225,21 +2229,14 @@ public sealed partial class MainWindow : Window
 
         // 不 await：对话框只是"进度 + 停止"的载体，循环在另一条路上跑。
         var dlgTask = stopDlg.ShowAsync().AsTask();
-        stopDlg.CloseButtonClick += (_, _) => stop.Cancel();
+        stopDlg.CloseButtonClick += (_, _) => { userStopped = true; stop.Cancel(); };
 
+        BatchReport report;
         try
         {
-            for (var n = 0; n < picked.Count; n++)
-            {
-                if (stop.IsCancellationRequested) break;
-
-                var c = picked[n];
-                progress.Text = $"第 {n + 1} / {picked.Count} 张：{c.Name}\n\n" +
-                                $"已完成：{report.Summary()}\n已用 {sw.Elapsed.TotalSeconds:F0} 秒";
-
-                var status = await LabelOneAsync(c.Index, stop.Token, report);
-                report.Add(c.Name, status.Status, status.Note);
-            }
+            // 与 `label_images` 工具**同一个核心循环**，只是进度贴到对话框上。
+            report = await RunBatchCoreAsync(picked, stop.Token,
+                t => { try { progress.Text = t; } catch { } });
         }
         finally
         {
@@ -2255,7 +2252,7 @@ public sealed partial class MainWindow : Window
         {
             TextWrapping = TextWrapping.Wrap,
             Text = report.Summary() + $"\n用时 {sw.Elapsed.TotalSeconds:F0} 秒。" +
-                   (stop.IsCancellationRequested ? "\n\n（中途停止了，已完成的那几张保留。）" : ""),
+                   (userStopped ? "\n\n（中途停止了，已完成的那几张保留。）" : ""),
         });
         if (report.Notes.Count > 0)
         {
@@ -2272,6 +2269,162 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 批量的**核心循环**。菜单入口和 `label_images` 工具都走这里——两份实现
+    /// 迟早漂移，而漂移的后果是"助手批量打的和菜单打的不是同一种东西"。
+    ///
+    /// <paramref name="progress"/> 每张开始时回调一次（界面显示进度）。
+    /// <paramref name="onProgress"/>/<paramref name="onToolCall"/> 透传给**内层每一轮**
+    /// （对话入口用它把思考与工具调用实时贴出来；菜单入口传 null，进度在对话框里）。
+    /// </summary>
+    private async Task<BatchReport> RunBatchCoreAsync(
+        IReadOnlyList<BatchCandidate> picked,
+        CancellationToken stop,
+        Action<string>? progress = null,
+        Action<string, string>? onProgress = null,
+        Action<string, string, string?>? onToolCall = null)
+    {
+        var report = new BatchReport();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        for (var n = 0; n < picked.Count; n++)
+        {
+            if (stop.IsCancellationRequested) break;
+
+            var c = picked[n];
+            progress?.Invoke($"第 {n + 1} / {picked.Count} 张：{c.Name}\n\n" +
+                             $"已完成：{report.Summary()}\n已用 {sw.Elapsed.TotalSeconds:F0} 秒");
+
+            var status = await LabelOneAsync(c.Index, stop, onProgress, onToolCall);
+            report.Add(c.Name, status.Status, status.Note);
+        }
+
+        sw.Stop();
+        Log.Write($"batch core done: {report.Summary()} in {sw.Elapsed.TotalSeconds:F0}s");
+        return report;
+    }
+
+    /// <summary>
+    /// `label_images`：**模型一句话下令，批量就跑起来**。
+    ///
+    /// 与菜单入口的区别只有"谁发起"：范围来自工具参数、进度贴在助手状态行上、
+    /// 循环本体是同一个 <see cref="RunBatchCoreAsync"/>。
+    ///
+    /// 三件事必须在这里做完：
+    /// 1. **自己跑完**——模型在等这次工具调用的结果，不能"启动后就返回"；
+    /// 2. **期间不许再下发批量工具**（<c>_batchRunning</c> 被 CanBatchLabel 读到），
+    ///    否则内层那一轮又会发起一次批量，一直套下去；
+    /// 3. 结果如实分类回给模型，包括"中途叫停"。
+    ///
+    /// 另外两件是"看得见"的要求（用户原话：像调用其它工具一样实时输出思考、
+    /// 并且能看到它在打哪张图）：
+    /// - 内层每一轮都把**流式回调接上**（<see cref="AgentLiveProgress"/> /
+    ///   <see cref="AgentToolCallProgress"/>），所以思考与工具调用实时出现在过程区；
+    /// - 每张图开头往过程区插一行标题（图名），于是那一串思考有了归属。
+    ///
+    /// 这里要**存/恢复两个共享状态**（`_agentLastTool`、`_agentRoundText`）：
+    /// 内层的工具调用会把 `_agentLastTool` 指到内层那个块上，而外层
+    /// `label_images` 的结果是**批量跑完之后**才回来的——不恢复的话，批量的
+    /// 总结会填进内层最后一个工具块，而 `label_images` 那一块永远停在"进行中"。
+    /// </summary>
+    private async Task<(string Message, bool Cancelled)> AgentLabelImagesAsync(
+        string arguments, CancellationToken ct)
+    {
+        var req = AgentKit.ParseLabelRequest(arguments);
+        if (!req.Ok) return (ImageTools.Failed(req.Problem), false);
+
+        if (_mode != PromptMode.Label || _items.Count == 0)
+            return ("There is no dataset open, so there is nothing to label. " +
+                    "Switch to label mode / open a training folder first.", false);
+
+        // 选项：与工具参数一致（scope=all 才重做全部）。**不问对话框**——
+        // 用户已经在对话里下了命令，再弹一个确认框等于让他确认两次。
+        var options = new BatchOptions(OnlyUnlabeled: !req.RedoAll,
+                                       SkipEmptyCaptions: true,
+                                       Limit: req.Limit);
+
+        var all = OnUiThread(BuildBatchCandidates, (IReadOnlyList<BatchCandidate>)Array.Empty<BatchCandidate>());
+        var picked = BatchPlan.Choose(all, options);
+        if (picked.Count == 0)
+            return ("Nothing to do: " + BatchPlan.Describe(picked, all.Count), false);
+
+        Log.Write($"agent label_images: scope={req.Scope} limit={req.Limit} -> {picked.Count} 张");
+
+        _batchRunning = true;
+        var stop = new CancellationTokenSource();
+        // 模型那一侧的 ct 被取消（用户关窗口/断开）时也要停。
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token);
+
+        BatchReport report;
+        // 内层的工具调用会把 `_agentLastTool` 指到内层那个块上，而外层
+        // `label_images` 的结果要**批量跑完之后**才回来。不存/恢复的话，批量的总结
+        // 会填进内层最后一个工具块，而 label_images 那一块永远停在"进行中"。
+        var savedLastTool = OnUiThread(() => _agentLastTool, (Expander?)null);
+        var savedRoundText = OnUiThread(() => _agentRoundText, (TextBlock?)null);
+        try
+        {
+            report = await RunBatchCoreAsync(picked, linked.Token,
+                // 进度：状态行 + 过程区一行标题（"正在打哪张"要看得见）
+                t => OnUiThread(() =>
+                     {
+                         var first = t.Split('\n')[0];
+                         SetAgentStatus(t.Replace("\n", " "));
+                         AgentAddProcHeading("▶ " + first);
+                         return true;
+                     }, true),
+                // 内层每一轮的流式思考与工具调用，实时贴进同一个过程区
+                onProgress: AgentLiveProgress,
+                onToolCall: AgentToolCallProgress);
+        }
+        finally
+        {
+            stop.Cancel();
+            _batchRunning = false;
+            OnUiThread(() => { _agentLastTool = savedLastTool; _agentRoundText = savedRoundText; return true; }, true);
+        }
+
+        var cancelled = ct.IsCancellationRequested || stop.IsCancellationRequested;
+        var msg = report.Summary() +
+                  (cancelled ? "\nThe user stopped it part-way; the images already written keep " +
+                               "their captions." : "") +
+                  (report.Notes.Count > 0
+                      ? "\n" + string.Join("\n", report.Notes.Take(20))
+                      : "");
+        return (msg, cancelled);
+    }
+
+    /// <summary>
+    /// 往过程区插一行**标题**（批量里"正在打哪张图"）。与思考块分开是有意的：
+    /// 标题是"这一段的归属"，用正常前景色；思考是灰的。
+    /// </summary>
+    private void AgentAddProcHeading(string text)
+    {
+        void Render()
+        {
+            if (AgentFeed is null) return;
+            EnsureAgentProc(this, expanded: true);
+            // 标题前先断掉当前思考块：否则下一轮思考会追加到标题**上面**，
+            // 顺序就反了（与 AgentToolCallProgress 同一条理由）。
+            _agentRoundText = null;
+            _agentProcBody!.Children.Add(new TextBlock
+            {
+                Text = text,
+                FontSize = 11,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 4, 0, 0),
+            });
+            AgentScrollToEnd();
+        }
+
+        if (DispatcherQueue.HasThreadAccess) Render();
+        else DispatcherQueue.TryEnqueue(Render);
+    }
+
+    /// <summary>批量打标时往助手状态行贴进度（见 IHost.ReportBatchProgress）。</summary>
+    private void AgentReportBatchProgress(string text) =>
+        OnUiThread(() => { SetAgentStatus(text); return true; }, true);
+
+    /// <summary>
     /// 处理一张：切到它 → 读图 → 跑一轮助手 → 落盘。
     ///
     /// 返回给记账用的状态。**"模型没提案"与"失败"分开**：前者是模型觉得这张图
@@ -2279,7 +2432,9 @@ public sealed partial class MainWindow : Window
     /// "跑完了"和"跑挂了"。
     /// </summary>
     private async Task<(BatchStatus Status, string Note)> LabelOneAsync(
-        int index, CancellationToken ct, BatchReport report)
+        int index, CancellationToken ct,
+        Action<string, string>? onProgress = null,
+        Action<string, string, string?>? onToolCall = null)
     {
         try
         {
@@ -2287,6 +2442,8 @@ public sealed partial class MainWindow : Window
 
             // 切图必须回 UI 线程（会动列表选中与当前文档）。这会顺带把上一张
             // 静默保存——与用户自己翻图完全一致。
+            // **这一步就是"看到它在打哪张图"**：列表选中跟着走、编辑器载入那张，
+            // 预览窗口也一并跟过去（LoadCurrent 里会调 _preview.GoTo）。
             OnUiThread(() =>
             {
                 if (index != _index) { SaveCurrent(showDialog: false); Select(index); }
@@ -2304,15 +2461,22 @@ public sealed partial class MainWindow : Window
                 "请为这张图写标注：按你的规则先查词库，然后提出该加的标签和一段英文散文。" +
                 "只要画面里真实存在的内容，不要编。";
 
+            // **内层这一轮刻意不传批量的那两个委托**（canBatchLabel / labelImages）：
+            // 于是它的 CanBatchLabel 恒为 false，模型看不到也调不动 label_images。
+            // 这是防自我递归的第二道闸（第一道是 _batchRunning）——批量里再发起批量
+            // 会一直套下去，而用户只会看到界面永远不停。
             var host = new AgentHost(_cfg, _llm, _search, _vocab,
                                      images: AgentImageList,
                                      selectImage: AgentSelectImage,
                                      imageInfo: () => AgentImageInfoAsync(image is not null),
                                      viewRegion: args => AgentViewRegionAsync(args, image is not null));
 
+            // **流式回调接上**（对话入口才传）：思考与工具调用实时贴进过程区，
+            // 就像用户自己问一句时那样。菜单入口传 null，它的进度在对话框里。
             var outcome = await _agent.RunAsync(
                 host, new[] { new AgentTurn(true, ask) },
                 new LlmClient.ChatImage(ImagePayload.Mime, image.Jpeg), ct,
+                onProgress: onProgress, onToolCall: onToolCall,
                 maxRounds: _cfg.AgentMaxRounds);
 
             if (!outcome.Ok) return (BatchStatus.Failed, outcome.Error);
@@ -4851,7 +5015,15 @@ private void EndEdit(bool commit, bool lostFocus = false)
                                      images: AgentImageList,
                                      selectImage: AgentSelectImage,
                                      imageInfo: () => AgentImageInfoAsync(image is not null),
-                                     viewRegion: args => AgentViewRegionAsync(args, image is not null));
+                                     viewRegion: args => AgentViewRegionAsync(args, image is not null),
+                                     // 批量：用户一句话下令，模型调 label_images，这里执行。
+                                     // `_batchRunning` 是防自我递归的闸门——内层那几轮
+                                     // 读到的 CanBatchLabel 会是 false。
+                                     canBatchLabel: () => !_batchRunning && _mode == PromptMode.Label
+                                                        && _items.Count > 0,
+                                     labelImages: AgentLabelImagesAsync,
+                                     batchProgress: AgentReportBatchProgress);
+
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,
                                                 onProgress: AgentLiveProgress,

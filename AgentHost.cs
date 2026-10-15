@@ -28,11 +28,19 @@ internal sealed class AgentHost : TagAgent.IHost
     private readonly Func<Task<string>> _imageInfo;
     private readonly Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>> _viewRegion;
 
+    /// <summary>批量三件事也由窗口注入：边界上只该有形状（能不能、跑一次、报进度）。</summary>
+    private readonly Func<bool>? _canBatchLabel;
+    private readonly Func<string, CancellationToken, Task<(string Message, bool Cancelled)>>? _labelImages;
+    private readonly Action<string>? _batchProgress;
+
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
                      Func<string, (bool Ok, string Message)>? selectImage = null,
                      Func<Task<string>>? imageInfo = null,
-                     Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null)
+                     Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null,
+                     Func<bool>? canBatchLabel = null,
+                     Func<string, CancellationToken, Task<(string Message, bool Cancelled)>>? labelImages = null,
+                     Action<string>? batchProgress = null)
     {
         _cfg = cfg;
         _llm = llm;
@@ -40,6 +48,9 @@ internal sealed class AgentHost : TagAgent.IHost
         _vocab = vocab;
         _images = images ?? (() => Array.Empty<AgentImage>());
         _selectImage = selectImage ?? (_ => (false, "Switching images is not available here."));
+        _canBatchLabel = canBatchLabel;
+        _labelImages = labelImages;
+        _batchProgress = batchProgress;
 
         // 两个图像工具的兜底都是"如实说没有"：没接上实现时不抛异常、也不假装成功，
         // 免得出现"工具调了、回了句看不懂的话、模型照着编"。
@@ -63,6 +74,25 @@ internal sealed class AgentHost : TagAgent.IHost
     /// 真正的写在界面那边、在提案应用之后执行——见 <see cref="TagAgent.IHost.CanSave"/>。
     /// </summary>
     public bool CanSave => _cfg.AgentFullAccess;
+
+    /// <summary>
+    /// 能不能用 `label_images`。**由窗口注入**：只有它知道"现在有没有数据集、
+    /// 是不是正在批量循环里"（后者防自我递归，见 <see cref="TagAgent.IHost.CanBatchLabel"/>）。
+    /// 没接上时一律 false——不下发一个必然失败的工具。
+    /// </summary>
+    public bool CanBatchLabel => _canBatchLabel?.Invoke() == true;
+
+    public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments,
+                                                                   CancellationToken ct) =>
+        _labelImages is null
+            ? Task.FromResult(("Bulk labelling is not available here.", false))
+            : _labelImages(arguments, ct);
+
+    public void ReportBatchProgress(string text)
+    {
+        try { _batchProgress?.Invoke(text); }
+        catch (Exception ex) { Log.Write("batch progress failed: " + ex.Message); }
+    }
 
     /// <summary>写标签模式没有数据集 → 返回空 → 两个图片工具都不会下发。</summary>
     public IReadOnlyList<AgentImage> Images => _images();
