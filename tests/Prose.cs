@@ -246,6 +246,46 @@ public static class Prose
         }
 
         Console.WriteLine();
+        Console.WriteLine("=== 9b. prose-first captions must not glue onto added tags ===");
+        // 官方 model card（Prompting → Natural language prompting tips）写明：
+        //   "You can mix tags and natural language in arbitrary order."
+        // 也就是说散文**可以**在最前面。那时 ProseStart 返回 0，尾巴是整段正文、
+        // 前面一个分隔符都没有，而 Rebuild 原来是直接 head + tail ——
+        // 于是加一个标签会拼成 "masterpieceAn anime girl…"，静默毁掉正文。
+        {
+            const string proseFirst =
+                "An anime girl with blonde twintails stands in a white room. 1girl, solo, smile";
+            var pf = PromptText.Parse(proseFirst, vocab);
+            Console.WriteLine($"  parsed: {pf.Tags.Count} tags, prose starts with " +
+                              $"'{Trunc(pf.ProseTail)}'");
+
+            var one = PromptText.Rebuild(new[] { "masterpiece" }, pf.ProseTail);
+            var okOne = one.StartsWith("masterpiece, ", StringComparison.Ordinal) ||
+                        one.StartsWith("masterpiece ", StringComparison.Ordinal) ||
+                        one.StartsWith("masterpiece.", StringComparison.Ordinal);
+            Console.WriteLine($"  {(okOne ? "ok  " : "FAIL")} add 1 tag  -> \"{Trunc(one)}\"");
+            if (!okOne) fail++;
+
+            var many = PromptText.Rebuild(new[] { "1girl", "solo" }, pf.ProseTail);
+            var okMany = many.StartsWith("1girl, solo, ", StringComparison.Ordinal) ||
+                         many.StartsWith("1girl, solo ", StringComparison.Ordinal);
+            Console.WriteLine($"  {(okMany ? "ok  " : "FAIL")} add 2 tags -> \"{Trunc(many)}\"");
+            if (!okMany) fail++;
+
+            // 正常尾巴（自带 ". "）必须**逐字节**不变 —— 补分隔符不能把既有写法改掉
+            var normal = PromptText.Rebuild(new[] { "1girl" }, ". She is smiling.");
+            var okNormal = normal == "1girl. She is smiling.";
+            Console.WriteLine($"  {(okNormal ? "ok  " : "FAIL")} normal tail byte-exact -> \"{normal}\"");
+            if (!okNormal) fail++;
+
+            // 尾巴本身就是逗号开头时也不许补成两个
+            var commaTail = PromptText.Rebuild(new[] { "1girl" }, ", she smiles");
+            var okComma = commaTail == "1girl, she smiles";
+            Console.WriteLine($"  {(okComma ? "ok  " : "FAIL")} comma-led tail -> \"{commaTail}\"");
+            if (!okComma) fail++;
+        }
+
+        Console.WriteLine();
         Console.WriteLine("=== 9. edge cases ===");
         var cases = new (string Input, int Tags, bool Prose)[]
         {

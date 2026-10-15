@@ -82,6 +82,7 @@
     <Compile Include="LlmLive.cs" />
     <Compile Include="RegionProbe.cs" />
     <Compile Include="OverwriteProbe.cs" />
+    <Compile Include="SeparatorProbe.cs" />
     <Compile Include="Harness.cs" />
   </ItemGroup>
 </Project>

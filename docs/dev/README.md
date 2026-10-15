@@ -13,6 +13,7 @@
 | `editing-docs.md` | 帮助文档系统的格式约定、支持的 Markdown、图片与链接规则 |
 | `dataset-audit.md` | 针对本训练集（`sayori-style-v1`，53 张）的审计结果与建议 |
 | `region-tool-plan.md` | 图像区域工具（`image_info` / `view_region`）：报文形状、两条实测的解码器事实、怎么复现 |
+| `prompt-format.md` | 标签与自然语言之间是逗号还是句号：官方 model card 原文、程序实际怎么判、一个粘词缺陷 |
 
 另外两处开发资料不在这个目录：
 

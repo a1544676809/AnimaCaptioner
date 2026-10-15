@@ -225,6 +225,20 @@ public static class PromptText
     /// <summary>
     /// 用新的标签序列重建提示词，散文尾巴原样接回。
     /// 这是所有标签操作（上移/下移/删除/规整/添加）的落盘路径。
+    ///
+    /// **尾巴与标签之间一定要有分隔符。** 正常情况尾巴自带（`. ` 或 ` `，见
+    /// <see cref="Parse"/>），直接接上即可；但尾巴**不带**前导分隔符时有两种来源，
+    /// 两种都会把词粘在一起：
+    ///   - 官方允许"标签与自然语言任意顺序"，于是散文可能在**最前面**
+    ///     （`An anime girl … . 1girl, solo`）。那时 <see cref="ProseStart"/> 返回 0、
+    ///     尾巴就是整段正文，前面一个分隔符都没有。
+    ///   - 手改的 caption 里标签区后面直接顶着散文、中间只有逗号。
+    /// 实测（tests/SeparatorProbe.cs）：不补的话 `masterpiece` + `An anime girl…`
+    /// 会拼成 `masterpieceAn anime girl…`，而这是**静默**的——标签列表看不出异常，
+    /// 训练时读到的是一个不存在的词加上一段被毁掉的散文。
+    ///
+    /// 补什么：尾巴已经以标点或空白开头就不动；否则按标签区习惯补 `", "`——
+    /// 尾巴当时是被逗号分出来的（或者它本来就是第一段），逗号是它原本的邻居。
     /// </summary>
     public static string Rebuild(IReadOnlyList<string> tags, string? proseTail,
                                  string separator = ", ")
@@ -233,8 +247,17 @@ public static class PromptText
         var tail = proseTail ?? "";
         if (tail.Length == 0) return head;
         if (head.Length == 0) return tail.TrimStart();
+        if (NeedsSeparator(tail)) return head + separator + tail;
         return head + tail;
     }
+
+    /// <summary>
+    /// 尾巴前面要不要替它补一个分隔符。**判据只看第一个字符**：是标点或空白
+    /// 就说明它自带边界（正常尾巴 `. ` / ` `），不需要补。
+    /// </summary>
+    private static bool NeedsSeparator(string tail) =>
+        tail.Length > 0 && !char.IsWhiteSpace(tail[0]) &&
+        !SentenceEnd.Contains(tail[0]) && tail[0] != ',';
 
     /// <summary>
     /// 把一段英文散文并进已有提示词。

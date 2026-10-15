@@ -74,6 +74,12 @@ internal static class Harness
                 // 临时探针：真实网络。用户说"把标签覆盖成 X"时，这条路到底做了什么。
                 return CoreCheck.OverwriteProbe.Run();
 
+            case "separator":
+                // 探针：标签与自然语言之间是逗号还是句号（要官方 model card 作依据）。
+                // 参数：model card 路径（默认 %TEMP%\anima-card.md）、词库路径。
+                // **词库不可省**：交界判据要求"句号前那截是已知标签"。
+                return CoreCheck.SeparatorProbe.Run(Arg(1) ?? null, Arg(2) ?? vocabDb, seed);
+
             case "sections":
                 if (!Need(dataset, "AC_DATASET", "训练集目录")) return 2;
                 return Sections.Run(dataset!);
