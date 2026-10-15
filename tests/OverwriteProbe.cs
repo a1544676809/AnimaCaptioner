@@ -189,6 +189,15 @@ public static class OverwriteProbe
 
         /// <summary>探针不开写盘能力。</summary>
         /// <summary>探针里不提供批量打标。</summary>
+        /// <summary>探针里不开标签编辑能力。</summary>
+        public bool CanEditTags => false;
+
+        public string DescribeTags() => "tags are off in this probe";
+
+        public (int Changed, string Message) SetTagSections(IReadOnlyList<string> tags, string? section) =>
+            (0, "setting sections is off in this probe");
+
+        public (bool Changed, string Message) SortTags() => (false, "sorting is off in this probe");
         public bool CanBatchLabel => false;
 
         public Task<(string Message, bool Cancelled)> LabelImagesAsync(string arguments, CancellationToken ct) =>

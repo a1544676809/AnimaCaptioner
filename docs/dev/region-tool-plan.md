@@ -360,6 +360,47 @@ TagAgent **立刻结束这一轮**而不是继续问模型。不这么做的话�
 范围选择与记账是纯函数（`Core/BatchPlan.cs`），所以"会动哪几张、结果怎么数"
 能在回归里直接断言——这正是最该钉住的部分：选错范围会改写用户的训练集。
 
+## 助手读标签 / 改类型 / 排顺序（`list_tags` / `set_tag_section` / `sort_tags`）
+
+用户要求："agent 的工具应该能读取 tag 及其种类，以及对数据库内没有的 tag 进行种类
+标注。也可以执行 tag 排序等功能。"
+
+三个工具与「完全权限」同一个开关（改类型会**持久化**偏好、排顺序会改提示词，
+都属于"它自己动手"）。`set_tag_section` 与菜单里的「标签类型」走**同一条实现**，
+所以"它改的"和"你改的"结果一致。
+
+两处刻意的设计：
+
+- **段名认不出时如实报错，绝不猜成 general**。猜错会把一个错误的大类持久化下来，
+  而用户下次开程序才发现——报错则把合法取值列出来，模型下一轮就能改对。
+  `NormalizeSection` 用"空串 vs null"区分"认不出"与"明确要求清除"。
+- **标签名对不上时逐条说出来**。悄悄跳过会让模型以为设成功了，然后对用户说
+  "已经标好了"——正是这个项目里反复出现过的那类谎。
+
+### 踩到的坑：工具在后台线程上碰界面状态 → RPC_E_WRONG_THREAD
+
+第一版直接实现这三个方法，真机一跑就炸：
+
+```
+agent exception: System.Runtime.InteropServices.COMException (0x8001010E)
+```
+
+`0x8001010E` = RPC_E_WRONG_THREAD。原因是助手的工具循环跑在**后台线程**上
+（TagAgent 一路 `ConfigureAwait(false)`），而这三个方法要碰 `_pendingTags`、
+`_tagRows`、`CommitPrompt`、状态栏——那些都是界面状态。**必须先包一层 OnUiThread**：
+
+```csharp
+private string AgentDescribeTags() =>
+    OnUiThread(AgentDescribeTagsCore, "The tag list could not be read.");
+```
+
+（早先那四个工具 —— `current_image`/`image_info`/`select_image`/`view_region` ——
+本来就marshal过，所以没暴露这个问题。）
+
+**这一条只能靠真机跑发现**：单元测试里 host 是假的、没有线程亲和性，
+编译期更看不出。日志里也只有孤零零一行 COMException，不看日志根本不知道是这个原因
+——所以"加完工具跑一次真机"不是可选项。
+
 ## 手改标签归类（词库里没有的标签没法指定类型）
 
 用户报的问题：自定义触发词（`you chan` 这类）在词库里查不到，`Classify` 只能兜底到

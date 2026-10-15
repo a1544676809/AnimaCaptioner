@@ -1261,6 +1261,113 @@ public static class Agent
             True("如实记成回绝", batchDenied.Log.Any(l => l.Contains("不可用")));
         }
 
+        Console.WriteLine("\n=== 34. 读标签/改类型/规整顺序三个工具 ===");
+        {
+            // 用户要求："agent的工具应该能读取tag及其种类，以及对数据库内没有的tag
+            // 进行种类标注。也可以执行tag排序等功能。"
+            var on = string.Join("|", AgentKit.Tools(true, withImages: true, canViewRegion: true,
+                                                     canSave: true, canBatchLabel: true,
+                                                     canEditTags: true)
+                                             .Select(t => t.Name));
+            True("开了标签编辑就下发三个工具",
+                 on.Contains(AgentKit.ListTagsToolName) &&
+                 on.Contains(AgentKit.SetTagSectionToolName) &&
+                 on.Contains(AgentKit.SortTagsToolName));
+            Eq("顺序：读/改/排序在批量与 save 之前", on,
+               "current_image|image_info|search_tags|web_search|select_image|view_region|" +
+               "list_tags|set_tag_section|sort_tags|label_images|save_caption|propose");
+
+            var off = string.Join("|", AgentKit.Tools(true, canSave: true).Select(t => t.Name));
+            True("没开时一个都不下发",
+                 !off.Contains(AgentKit.ListTagsToolName) &&
+                 !off.Contains(AgentKit.SetTagSectionToolName) &&
+                 !off.Contains(AgentKit.SortTagsToolName));
+
+            True("系统提示列出九个大类的 key 与标题",
+                 AgentKit.SystemPrompt(true, false, canEditTags: true).Contains("角色") &&
+                 AgentKit.SystemPrompt(true, false, canEditTags: true).Contains("character"));
+            True("工具描述里也带着大类清单",
+                 AgentKit.SetTagSectionTool.Description.Contains("character(角色)"));
+
+            // ---- 段名归一：key / 中文标题 / 清除 ----
+            Eq("key 认", AgentKit.NormalizeSection("character"), "character");
+            Eq("中文标题也认", AgentKit.NormalizeSection("角色"), "character");
+            Eq("大小写与空白容错", AgentKit.NormalizeSection("  CHARACTER "), "character");
+            Eq("auto = 清除", AgentKit.NormalizeSection("auto"), null);
+            Eq("跟随词库 = 清除", AgentKit.NormalizeSection("跟随词库"), null);
+            Eq("空 = 清除", AgentKit.NormalizeSection("  "), null);
+            Eq("认不出的返回空串（不是 null）", AgentKit.NormalizeSection("nonsense"), "");
+
+            // ---- 解析 ----
+            var r1 = AgentKit.ParseSectionRequest("""{"tags":["you chan"],"section":"角色"}""");
+            True("正常解析", r1.Ok && r1.Tags.Count == 1 && r1.Section == "character");
+            var r2 = AgentKit.ParseSectionRequest("""{"tags":"solo","section":"count"}""");
+            True("tags 写成单个字符串也认", r2.Ok && r2.Tags.Count == 1);
+            var r3 = AgentKit.ParseSectionRequest("""{"tags":["a"],"section":"nonsense"}""");
+            True("认不出的段名如实报错，**不猜成 general**",
+                 !r3.Ok && r3.Problem.Contains("Unknown section"));
+            var r4 = AgentKit.ParseSectionRequest("""{"section":"count"}""");
+            True("没给 tags 报错", !r4.Ok && r4.Problem.Contains("No tags"));
+            True("坏 JSON 报错", !AgentKit.ParseSectionRequest("nope").Ok);
+
+            // ---- 三个工具真被调用 ----
+            var h = new FakeHost { CanEditTags = true };
+            h.Dataset.Add(new AgentImage("a", 0, true, 2, IsCurrent: true));
+            h.Turn(Tool("t1", AgentKit.ListTagsToolName, "{}"))
+             .Turn(Tool("t2", AgentKit.SetTagSectionToolName,
+                        """{"tags":["you chan"],"section":"character"}"""))
+             .Turn(Tool("t3", AgentKit.SortTagsToolName, "{}"))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "把 you chan 标成角色，然后排一下序");
+
+            Eq("清单读了一次", h.DescribeTagsCalls, 1);
+            Eq("类型设了一次", h.SetSectionCalls, 1);
+            Eq("排序跑了一次", h.SortCalls, 1);
+            Eq("标签名原样传下去", string.Join(",", h.LastSectionTags), "you chan");
+            Eq("段名归一成 key 再传下去", h.LastSectionValue, "character");
+
+            // 结果都要如实回给模型（它要靠这个向用户汇报）。
+            // **不能按 SeenMessages[i] 取第 i 条工具结果**：每次请求都带着前面所有轮的
+            // 工具结果，`First(tool)` 拿到的是最早那条（这里踩过一次）。
+            bool AnyToolMsg(FakeHost host, string needle) =>
+                host.SeenMessages.SelectMany(req => req)
+                    .Where(m => m["role"]?.GetValue<string>() == "tool")
+                    .Any(m => (m["content"]?.GetValue<string>() ?? "").Contains(needle));
+
+            True("清单内容回给了模型", AnyToolMsg(h, "you chan"));
+            True("改类型的结果回给了模型", AnyToolMsg(h, "角色"));
+            True("排序的结果回给了模型", AnyToolMsg(h, "section order"));
+            True("日志三样都记了", o.Log.Any(l => l.Contains("查标签清单")) &&
+                                   o.Log.Any(l => l.Contains("改标签类型")) &&
+                                   o.Log.Any(l => l.Contains("规整顺序")));
+
+            // ---- 没有权限：三个都回绝，且不碰 host ----
+            var h2 = new FakeHost { CanEditTags = false };
+            h2.Dataset.Add(new AgentImage("a", 0, true, 2, IsCurrent: true));
+            h2.Turn(Tool("t4", AgentKit.ListTagsToolName, "{}"))
+              .Turn(Tool("t5", AgentKit.SetTagSectionToolName, """{"tags":["x"],"section":"count"}"""))
+              .Turn(Tool("t6", AgentKit.SortTagsToolName, "{}"))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var deniedOutcome = Run(h2, "标一下");
+            Eq("清单没读", h2.DescribeTagsCalls, 0);
+            Eq("类型没设", h2.SetSectionCalls, 0);
+            Eq("排序没跑", h2.SortCalls, 0);
+            True("三样都如实记成回绝",
+                 deniedOutcome.Log.Count(l => l.Contains("未开完全权限")) >= 2);
+            True("回绝时告诉用户自己怎么改", AnyToolMsg(h2, "标签类型"));
+
+            // ---- 认不出的段名：不碰 host，把可选值回给模型 ----
+            var h3 = new FakeHost { CanEditTags = true };
+            h3.Dataset.Add(new AgentImage("a", 0, true, 2, IsCurrent: true));
+            h3.Turn(Tool("t7", AgentKit.SetTagSectionToolName,
+                         """{"tags":["x"],"section":"nonsense"}"""))
+             .Turn(Tool("p3", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h3, "标一下");
+            Eq("参数不合法时不碰 host", h3.SetSectionCalls, 0);
+            True("把合法取值回给模型（它下次就能改对）",
+                 AnyToolMsg(h3, "Unknown section") && AnyToolMsg(h3, "character(角色)"));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1346,6 +1453,43 @@ public static class Agent
         }
 
         public void ReportBatchProgress(string text) => BatchProgress.Add(text);
+
+        // ---- 标签清单 / 类型 / 排序 ----
+        public bool CanEditTags { get; set; }
+
+        /// <summary>DescribeTags 返回什么（默认给一条带类型的清单）。</summary>
+        public string TagsText { get; set; } = "1. solo  [人物数量 / count]\n2. you chan  [一般标签 / general] (not in the vocabulary)";
+
+        public int DescribeTagsCalls { get; private set; }
+        public List<string> LastSectionTags { get; private set; } = new();
+        public string? LastSectionValue { get; private set; }
+        public int SetSectionCalls { get; private set; }
+        public int SortCalls { get; private set; }
+        public bool SortChanges { get; set; } = true;
+
+        public string DescribeTags()
+        {
+            DescribeTagsCalls++;
+            return TagsText;
+        }
+
+        public (int Changed, string Message) SetTagSections(IReadOnlyList<string> tags, string? section)
+        {
+            SetSectionCalls++;
+            LastSectionTags = tags.ToList();
+            LastSectionValue = section;
+            return (tags.Count, section is null
+                ? $"Cleared the hand-set section for {tags.Count} tag(s)."
+                : $"Set {tags.Count} tag(s) to \"{TagSections.Get(section).Title}\".");
+        }
+
+        public (bool Changed, string Message) SortTags()
+        {
+            SortCalls++;
+            return SortChanges
+                ? (true, "Reordered into the official section order.")
+                : (false, "Already in order.");
+        }
 
         /// <summary>Save() 被调用的次数（**现在不该再有人调它**：写盘由界面在提案应用后做）。</summary>
         public int SaveCalls { get; private set; }

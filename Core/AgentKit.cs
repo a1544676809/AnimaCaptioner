@@ -103,6 +103,155 @@ public static class AgentKit
     public const string ViewRegionToolName = "view_region";
     public const string SaveToolName = "save_caption";
     public const string LabelImagesToolName = "label_images";
+    public const string ListTagsToolName = "list_tags";
+    public const string SetTagSectionToolName = "set_tag_section";
+    public const string SortTagsToolName = "sort_tags";
+
+    /// <summary>九个大类的 `key(中文标题)` 清单，塞进工具描述里让模型知道有哪些可选值。</summary>
+    public static string SectionCatalog() =>
+        string.Join(", ", TagSections.All.Select(s => $"{s.Key}({s.Title})"));
+
+    /// <summary>
+    /// 读：当前提示词的标签清单，**带每一个的大类**。
+    ///
+    /// 与 `current_image` 的分工：那个回答"这是哪张图、数据集里还有什么"，
+    /// 这个回答"现在这行提示词由哪些标签组成、各自属于哪一类"。
+    /// 后者是模型要动顺序或改类型时的前提——不知道类型就没法判断该排到哪。
+    /// </summary>
+    public static AgentTool ListTagsTool => new(
+        ListTagsToolName,
+        "List the tags of the caption currently open in the editor, in order, each with the " +
+        "section (category) it belongs to, whether the vocabulary knows it, and whether its " +
+        "section was set by hand. Use this before reordering or re-typing tags. " +
+        "Sections are: " + SectionCatalog() + ".",
+        new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(),
+                         ["required"] = new JsonArray() });
+
+    /// <summary>
+    /// 写：给标签指定大类。**这是"词库里没有的自定义标签"唯一的定类型途径**——
+    /// 词库查不到时程序只能兜底成 general，模型再聪明也改不了，除非有这个工具。
+    /// </summary>
+    public static AgentTool SetTagSectionTool => new(
+        SetTagSectionToolName,
+        "Set which section (category) one or more tags belong to. Use this for tags the " +
+        "vocabulary does not know (custom trigger words, made-up character names) — those " +
+        "default to 'general' and there is no other way to type them. " +
+        "Sections: " + SectionCatalog() + ". Pass section=\"auto\" to clear a hand-set " +
+        "section and go back to the automatic guess. " +
+        "This is a persistent preference (it is remembered across sessions), not a change to " +
+        "the caption text, but it DOES reorder the caption so the tag lands in its section.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["tags"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "The exact tag strings, as they appear in the caption.",
+                },
+                ["section"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "A section key or its Chinese title (e.g. \"character\" " +
+                                      "or \"角色\"), or \"auto\" to clear a hand-set section.",
+                },
+            },
+            ["required"] = new JsonArray { "tags", "section" },
+        });
+
+    /// <summary>
+    /// 写：规整大类顺序（把标签按官方大类顺序重排）。段内顺序不动。
+    /// </summary>
+    public static AgentTool SortTagsTool => new(
+        SortTagsToolName,
+        "Reorder the caption's tags into the official section order " +
+        "(quality → meta → year → safety → count → character → series → artist → general), " +
+        "keeping the order inside each section unchanged. The natural-language tail is not " +
+        "touched. Use this after adding tags, or when the user asks to tidy/sort the tags.",
+        new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(),
+                         ["required"] = new JsonArray() });
+
+    /// <summary>`set_tag_section` 解析出来的请求。</summary>
+    /// <param name="Section">要设的段名（已归一成 key）；null = 清除手改。</param>
+    public sealed record SectionRequest(IReadOnlyList<string> Tags, string? Section, string Problem)
+    {
+        public bool Ok => Problem.Length == 0 && Tags.Count > 0;
+    }
+
+    /// <summary>
+    /// 把模型给的段名归一成大类的 key。接受三种写法：key（`character`）、
+    /// 中文标题（`角色`）、以及"清除"的几种说法（`auto`/`none`/空）。
+    ///
+    /// 认不出时返回 <c>""</c>（空串）——与 null（= 明确要求清除）区分开，
+    /// 这样调用方能如实告诉模型"这个名字我不认识"而不是悄悄当成清除。
+    /// </summary>
+    public static string? NormalizeSection(string? raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.Length == 0) return null;
+        if (s.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("none", StringComparison.OrdinalIgnoreCase) ||
+            s.Equals("clear", StringComparison.OrdinalIgnoreCase) ||
+            s == "跟随词库" || s == "自动") return null;
+
+        foreach (var sec in TagSections.All)
+        {
+            if (s.Equals(sec.Key, StringComparison.OrdinalIgnoreCase)) return sec.Key;
+            if (s.Equals(sec.Title, StringComparison.OrdinalIgnoreCase)) return sec.Key;
+        }
+        return "";
+    }
+
+    /// <summary>
+    /// 解析 `set_tag_section`。**段名认不出时如实报错**，不猜成 general
+    /// ——猜错会把一个错误的大类**持久化**下来，而用户下次开程序才发现。
+    /// </summary>
+    public static SectionRequest ParseSectionRequest(string arguments)
+    {
+        var tags = new List<string>();
+        string? section = null;
+        var rawSection = "";
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(arguments) ? "{}" : arguments);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return new SectionRequest(tags, null, "The arguments were not a JSON object.");
+
+            var root = doc.RootElement;
+            if (root.TryGetProperty("tags", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                foreach (var e in arr.EnumerateArray())
+                {
+                    var t = (e.ValueKind == JsonValueKind.String ? e.GetString() : null)?.Trim() ?? "";
+                    if (t.Length > 0) tags.Add(t);
+                }
+            else if (root.TryGetProperty("tags", out var one) && one.ValueKind == JsonValueKind.String)
+            {
+                // 单个标签写成字符串也认（模型常这么写）
+                var t = (one.GetString() ?? "").Trim();
+                if (t.Length > 0) tags.Add(t);
+            }
+
+            rawSection = Str(root, "section");
+        }
+        catch (JsonException)
+        {
+            return new SectionRequest(tags, null, "The arguments were not valid JSON.");
+        }
+
+        if (tags.Count == 0)
+            return new SectionRequest(tags, null, "No tags were given.");
+
+        section = NormalizeSection(rawSection);
+        if (section is { Length: 0 })
+            return new SectionRequest(tags, null,
+                $"Unknown section \"{rawSection}\". Valid sections: {SectionCatalog()}, " +
+                "or \"auto\" to clear.");
+
+        return new SectionRequest(tags, section, "");
+    }
 
     /// <summary>
     /// 批量给数据集里的图打标。**用户用一句话下令，这个循环由模型发起的工具调用驱动**
@@ -467,7 +616,7 @@ public static class AgentKit
     /// </summary>
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
-                                        bool canBatchLabel = false)
+                                        bool canBatchLabel = false, bool canEditTags = false)
     {
         var tools = new List<AgentTool>();
         if (withImages)
@@ -479,6 +628,15 @@ public static class AgentKit
         if (webSearch) tools.Add(WebSearchTool);
         if (withImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
+
+        // 读标签清单：只要有一个可以改的文档就该给（它也是"该不该改"的前提）。
+        if (canEditTags)
+        {
+            tools.Add(ListTagsTool);
+            tools.Add(SetTagSectionTool);
+            tools.Add(SortTagsTool);
+        }
+
         // 批量放在 save 之前：它是"一次做完一大批"，语义上更接近主动作。
         if (canBatchLabel) tools.Add(LabelImagesTool);
         if (canSave) tools.Add(SaveTool);
@@ -504,7 +662,8 @@ public static class AgentKit
     ///    所以这里同样把长度交给输入决定。
     /// </summary>
     public static string SystemPrompt(bool hasImage, bool canWebSearch, bool canViewRegion = false,
-                                      bool canSave = false, bool canBatchLabel = false)
+                                      bool canSave = false, bool canBatchLabel = false,
+                                      bool canEditTags = false)
     {
         var sb = new System.Text.StringBuilder();
         sb.Append(
@@ -598,6 +757,21 @@ public static class AgentKit
                 "something new: do not answer it as a message, just look at it.\n" +
                 "- Every image you ask for costs tokens of its own. Prefer one crop over a grid, " +
                 "and never ask for the same region twice.\n");
+
+        // 标签清单 / 类型 / 排序。仅在允许改标签时下发。
+        if (canEditTags)
+            sb.Append(
+                "- Reading and re-typing tags: `" + ListTagsToolName + "` lists the caption's " +
+                "tags with the section each one is in. Use `" + SetTagSectionToolName + "` when a " +
+                "tag sits in the wrong section — especially tags the vocabulary does not know " +
+                "(custom trigger words, made-up names), which default to \"general\" and cannot " +
+                "be typed any other way. Use `" + SortTagsToolName + "` to tidy the order " +
+                "(quality → meta → year → safety → count → character → series → artist → " +
+                "general; order inside a section is preserved).\n" +
+                "  Sections: " + SectionCatalog() + ".\n" +
+                "  Setting a section is a persistent preference, so only do it when you are " +
+                "sure: read the tags first, and never guess a section for a tag you have not " +
+                "seen. The user can undo it, but they should not have to.\n");
 
         if (canSave)
             sb.Append(

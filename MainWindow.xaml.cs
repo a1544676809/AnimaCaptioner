@@ -2286,6 +2286,149 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// `list_tags`：把当前提示词的标签连同**大类**报给模型。
+    ///
+    /// 为什么要带类型：模型要动顺序或改类型，前提就是知道每个标签现在算哪一类
+    /// ——不给它类型，它只能凭标签名猜（`you chan` 猜不出是角色还是画师）。
+    ///
+    /// 三件事都要说清，否则它会做出错误的判断：
+    /// - 词库**认不认得**（认不得的多半是自定义触发词，正是需要它留意的那批）；
+    /// - 类型是**手改的**还是推断的（手改的是用户的明确意图，不该被它再改回去）；
+    /// - 词库查不到中文的，附上模型译的释义（只是注释，不写进提示词）。
+    /// </summary>
+    /// <summary>
+    /// `list_tags` 的**线程入口**。
+    ///
+    /// 必须包一层 OnUiThread：这些工具是在助手的工具循环里被调用的，而那一段跑在
+    /// **后台线程**上（TagAgent 一路 ConfigureAwait(false)），碰 _pendingTags/_tagRows
+    /// 这类界面状态会直接抛 RPC_E_WRONG_THREAD（0x8001010E）——实测就是这么炸的，
+    /// 而且日志里只有一行 COMException，不看日志根本不知道是这个原因。
+    /// </summary>
+    private string AgentDescribeTags() =>
+        OnUiThread(AgentDescribeTagsCore, "The tag list could not be read.");
+
+    /// <summary>同上，改类型也要回 UI 线程（它会重建列表、写状态栏）。</summary>
+    private (int Changed, string Message) AgentSetTagSections(IReadOnlyList<string> tags,
+                                                              string? section) =>
+        OnUiThread(() => AgentSetTagSectionsCore(tags, section),
+                   (0, "Setting tag sections failed."));
+
+    /// <summary>同上。</summary>
+    private (bool Changed, string Message) AgentSortTags() =>
+        OnUiThread(AgentSortTagsCore, (false, "Reordering failed."));
+
+    private string AgentDescribeTagsCore()
+    {
+        if (_pendingTags.Count == 0 && _proseTail.Length == 0)
+            return "The caption is empty — there are no tags yet.";
+
+        var sb = new StringBuilder();
+        sb.Append("Tags of the caption currently open in the editor, in order " +
+                  $"({_pendingTags.Count} tag(s)):");
+
+        for (var i = 0; i < _pendingTags.Count; i++)
+        {
+            var t = _pendingTags[i];
+            var sec = TagSections.Classify(t, _vocab);
+            var known = IsKnownTag(t);
+            var forced = TagSections.OverrideOf(t);
+
+            sb.Append("\n").Append(i + 1).Append(". ").Append(t)
+              .Append("  [").Append(TagSections.Get(sec).Title).Append(" / ").Append(sec).Append(']');
+
+            if (!known) sb.Append(" (not in the vocabulary)");
+            if (forced is not null) sb.Append(" (section set by hand)");
+
+            var cn = _vocab?.LookupCn(t) ?? "";
+            if (cn.Length == 0 && _gloss.TryGet(t, out var g)) cn = g.Cn;
+            if (cn.Length > 0) sb.Append(" — ").Append(cn);
+        }
+
+        if (_proseTail.Length > 0)
+            sb.Append("\n\nThen a natural-language tail: \"").Append(_proseTail).Append('"');
+
+        sb.Append("\n\nSections in official order: ").Append(AgentKit.SectionCatalog())
+          .Append(". Use ").Append(AgentKit.SetTagSectionToolName)
+          .Append(" to fix a wrong section (especially for tags the vocabulary does not know), ")
+          .Append("and ").Append(AgentKit.SortTagsToolName).Append(" to tidy the order.");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// `set_tag_section`：给标签指定大类。走的是与菜单**同一条路**
+    /// （<see cref="ApplySectionOverride"/>），所以"模型改的"和"你手改的"结果完全一致。
+    ///
+    /// 与菜单的区别只有两处：不弹 UI、以及**逐条如实回报**（哪个改了、哪个不认识）。
+    /// 认不出的标签必须说出来——悄悄跳过会让模型以为设成功了，
+    /// 然后在回复里对用户说"已经标好了"。
+    /// </summary>
+    private (int Changed, string Message) AgentSetTagSectionsCore(IReadOnlyList<string> tags,
+                                                                  string? section)
+    {
+        var rows = new List<TagItem>();
+        var missing = new List<string>();
+
+        foreach (var t in tags)
+        {
+            var row = _tagRows.FirstOrDefault(r =>
+                r.PendingIndex >= 0 && string.Equals(r.Tag, t, StringComparison.OrdinalIgnoreCase));
+            if (row is null) missing.Add(t);
+            else if (!rows.Contains(row)) rows.Add(row);
+        }
+
+        var changed = 0;
+        if (rows.Count > 0)
+        {
+            foreach (var r in rows)
+                if (TagSections.SetOverride(r.Tag, section)) changed++;
+
+            PushUndo(section is null ? "标签类型（跟随词库）" : "标签类型");
+            _pendingTags = TagSections.Canonicalize(_pendingTags, _vocab);
+            CommitPrompt();
+            TagSectionStore.Save();
+        }
+
+        var name = section is null ? "自动（跟随词库）" : TagSections.Get(section).Title;
+        var msg = changed > 0
+            ? $"Set {changed} tag(s) to \"{name}\" and reordered the caption so they sit in " +
+              "that section."
+            : rows.Count > 0
+                ? $"Those {rows.Count} tag(s) were already in \"{name}\"; nothing changed."
+                : "No matching tag was found.";
+
+        if (missing.Count > 0)
+            msg += $" These tags are NOT in the caption, so nothing was set for them: " +
+                   $"{string.Join(", ", missing)}. Use {AgentKit.ListTagsToolName} to see the " +
+                   "exact tag strings.";
+        if (section is not null && _proseTail.Length > 0)
+            msg += " The natural-language tail was left untouched.";
+
+        Log.Write($"agent set_tag_section: {changed} changed, {missing.Count} missing -> {name}");
+        return (changed, msg);
+    }
+
+    /// <summary>
+    /// `sort_tags`：规整大类顺序。与「标签 → 规整大类顺序」同一个操作。
+    /// 段内顺序不动（稳定排序），散文尾巴不参与。
+    /// </summary>
+    private (bool Changed, string Message) AgentSortTagsCore()
+    {
+        var before = _pendingTags.ToList();
+        var after = TagSections.Canonicalize(before, _vocab);
+        var changed = !after.SequenceEqual(before, StringComparer.Ordinal);
+
+        if (!changed)
+            return (false, "The tags are already in the official section order; nothing to do.");
+
+        PushUndo("规整大类顺序（助手）");
+        _pendingTags = after;
+        CommitPrompt();
+        Log.Write("agent sort_tags: reordered");
+        return (true, "Reordered into the official section order (order inside each section " +
+                      "was preserved). The natural-language tail was not touched.");
+    }
+
+    /// <summary>
     /// 批量的**核心循环**。菜单入口和 `label_images` 工具都走这里——两份实现
     /// 迟早漂移，而漂移的后果是"助手批量打的和菜单打的不是同一种东西"。
     ///
@@ -5165,7 +5308,11 @@ private void EndEdit(bool commit, bool lostFocus = false)
                                      canBatchLabel: () => !_batchRunning && _mode == PromptMode.Label
                                                         && _items.Count > 0,
                                      labelImages: AgentLabelImagesAsync,
-                                     batchProgress: AgentReportBatchProgress);
+                                     batchProgress: AgentReportBatchProgress,
+                                     // 读标签/改类型/规整顺序（写操作与「完全权限」同一个开关）
+                                     describeTags: AgentDescribeTags,
+                                     setTagSections: AgentSetTagSections,
+                                     sortTags: AgentSortTags);
 
             var outcome = await _agent.RunAsync(host, history, image,
                                                 ct: CancellationToken.None,

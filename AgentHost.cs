@@ -33,6 +33,11 @@ internal sealed class AgentHost : TagAgent.IHost
     private readonly Func<string, CancellationToken, Task<(string Message, bool Cancelled)>>? _labelImages;
     private readonly Action<string>? _batchProgress;
 
+    /// <summary>标签清单 / 类型 / 排序三件事也由窗口注入（边界上只该有形状）。</summary>
+    private readonly Func<string>? _describeTags;
+    private readonly Func<IReadOnlyList<string>, string?, (int Changed, string Message)>? _setTagSections;
+    private readonly Func<(bool Changed, string Message)>? _sortTags;
+
     public AgentHost(AppSettings cfg, LlmClient llm, SearchClient search, VocabDb? vocab,
                      Func<IReadOnlyList<AgentImage>>? images = null,
                      Func<string, (bool Ok, string Message)>? selectImage = null,
@@ -40,7 +45,10 @@ internal sealed class AgentHost : TagAgent.IHost
                      Func<string, Task<(bool Ok, string Message, IReadOnlyList<LlmClient.ChatImage> Images)>>? viewRegion = null,
                      Func<bool>? canBatchLabel = null,
                      Func<string, CancellationToken, Task<(string Message, bool Cancelled)>>? labelImages = null,
-                     Action<string>? batchProgress = null)
+                     Action<string>? batchProgress = null,
+                     Func<string>? describeTags = null,
+                     Func<IReadOnlyList<string>, string?, (int Changed, string Message)>? setTagSections = null,
+                     Func<(bool Changed, string Message)>? sortTags = null)
     {
         _cfg = cfg;
         _llm = llm;
@@ -51,6 +59,9 @@ internal sealed class AgentHost : TagAgent.IHost
         _canBatchLabel = canBatchLabel;
         _labelImages = labelImages;
         _batchProgress = batchProgress;
+        _describeTags = describeTags;
+        _setTagSections = setTagSections;
+        _sortTags = sortTags;
 
         // 两个图像工具的兜底都是"如实说没有"：没接上实现时不抛异常、也不假装成功，
         // 免得出现"工具调了、回了句看不懂的话、模型照着编"。
@@ -87,6 +98,23 @@ internal sealed class AgentHost : TagAgent.IHost
         _labelImages is null
             ? Task.FromResult(("Bulk labelling is not available here.", false))
             : _labelImages(arguments, ct);
+
+    /// <summary>
+    /// 能不能读标签清单、改类型、规整顺序。与「完全权限」同一个开关：
+    /// 改类型会**持久化**一条偏好、规整会改提示词顺序，两者都属于"它自己动手"。
+    /// </summary>
+    public bool CanEditTags => _cfg.AgentFullAccess;
+
+    public string DescribeTags() =>
+        _describeTags?.Invoke() ?? "The tag list is not available here.";
+
+    public (int Changed, string Message) SetTagSections(IReadOnlyList<string> tags, string? section) =>
+        _setTagSections is null
+            ? (0, "Setting tag sections is not available here.")
+            : _setTagSections(tags, section);
+
+    public (bool Changed, string Message) SortTags() =>
+        _sortTags is null ? (false, "Reordering is not available here.") : _sortTags();
 
     public void ReportBatchProgress(string text)
     {

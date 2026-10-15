@@ -89,6 +89,29 @@ public sealed class TagAgent
         void ReportBatchProgress(string text);
 
         /// <summary>
+        /// 能不能读标签清单、改标签类型、规整顺序（`list_tags` / `set_tag_section` /
+        /// `sort_tags`）。与「完全权限」同一个开关。
+        /// </summary>
+        bool CanEditTags { get; }
+
+        /// <summary>
+        /// 当前提示词的标签清单（带每一个的大类、词库认不认得、类型是不是手改的）。
+        /// 只读。
+        /// </summary>
+        string DescribeTags();
+
+        /// <summary>
+        /// 给标签指定大类（<paramref name="section"/> 为 null = 清除手改）。
+        /// 返回：改动条数 + 一句给模型看的结果说明。
+        /// </summary>
+        (int Changed, string Message) SetTagSections(IReadOnlyList<string> tags, string? section);
+
+        /// <summary>
+        /// 规整大类顺序（段内顺序不动）。返回：是否真的变了 + 一句说明。
+        /// </summary>
+        (bool Changed, string Message) SortTags();
+
+        /// <summary>
         /// 带工具的一轮对话。工具列表为空 = 这一轮没有工具可调。
         /// </summary>
         /// <param name="onProgress">
@@ -207,13 +230,14 @@ public sealed class TagAgent
         // 而这条这次对话里必须已经有图（否则等于绕过用户关掉的「带当前图片」开关）。
         var canViewRegion = hasImage;
         var canSave = host.CanSave;
+        var canEditTags = host.CanEditTags;
         // 批量只在"有数据集、且当前不在批量循环里"时下发（防自我递归，见 CanBatchLabel）。
         var canBatchLabel = host.CanBatchLabel && dataset.Count > 0;
         var system = AgentKit.SystemPrompt(hasImage, host.CanWebSearch, canViewRegion, canSave,
-                                           canBatchLabel);
+                                           canBatchLabel, canEditTags);
         var tools = AgentKit.Tools(host.CanWebSearch, withImages: dataset.Count > 0,
                                    canViewRegion: canViewRegion, canSave: canSave,
-                                   canBatchLabel: canBatchLabel);
+                                   canBatchLabel: canBatchLabel, canEditTags: canEditTags);
 
         var messages = new List<JsonObject>(history.Count);
         for (var i = 0; i < history.Count; i++)
@@ -420,6 +444,69 @@ public sealed class TagAgent
                         imageBudget -= imgs.Count;
                         pendingImages.AddRange(imgs);
                     }
+                    continue;
+                }
+
+                // ---- 读标签清单 / 改类型 / 规整顺序 ----
+                if (string.Equals(call.Name, AgentKit.ListTagsToolName, StringComparison.Ordinal))
+                {
+                    var text = canEditTags
+                        ? host.DescribeTags()
+                        : "Reading the caption's tags is not available in this conversation.";
+                    log.Add("查标签清单");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.SetTagSectionToolName, StringComparison.Ordinal))
+                {
+                    string text;
+                    if (!canEditTags)
+                    {
+                        text = "Changing tag sections is not allowed in this conversation: the " +
+                               "user has not given you write access. Tell them they can set it " +
+                               "themselves with 标签 → 标签类型.";
+                        log.Add("改标签类型（未开完全权限）→ 已回绝");
+                    }
+                    else
+                    {
+                        var req = AgentKit.ParseSectionRequest(call.Arguments);
+                        if (!req.Ok)
+                        {
+                            text = req.Problem.Length > 0 ? req.Problem : "No tags were given.";
+                            log.Add("改标签类型 → 参数不合法");
+                        }
+                        else
+                        {
+                            var (changed, msg) = host.SetTagSections(req.Tags, req.Section);
+                            text = msg;
+                            log.Add($"改标签类型 {changed} 个 -> {(req.Section ?? "(跟随词库)")}");
+                        }
+                    }
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.SortTagsToolName, StringComparison.Ordinal))
+                {
+                    string text;
+                    if (!canEditTags)
+                    {
+                        text = "Reordering the caption is not allowed in this conversation: the " +
+                               "user has not given you write access. Tell them they can use " +
+                               "标签 → 规整大类顺序.";
+                        log.Add("规整顺序（未开完全权限）→ 已回绝");
+                    }
+                    else
+                    {
+                        var (changed, msg) = host.SortTags();
+                        text = msg;
+                        log.Add(changed ? "规整顺序 → 已重排" : "规整顺序 → 本来就是有序的");
+                    }
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
                     continue;
                 }
 
