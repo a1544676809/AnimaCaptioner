@@ -9,7 +9,7 @@ namespace AnimaCaptioner.Core;
 
 /// <summary>
 /// High-efficiency batch vocabulary resolution and text scanning engine ported and enhanced
-/// from <c>AnimaAIProxy</c> (<c>vocab_search</c>, <c>vocab_resolve</c>, <c>vocab_scan</c>).
+/// from <c>AnimaAIProxy</c> (<c>vocab_search</c>, <c>danbooru_resolve_tags</c>, <c>danbooru_scan_texts</c>).
 /// Eliminates multi-turn single-tag lookup latency during AI image captioning.
 /// </summary>
 public static partial class VocabBatchEngine
@@ -328,7 +328,7 @@ public static partial class VocabBatchEngine
     }
 
     /// <summary>
-    /// Executes the <c>vocab_resolve</c> agent tool call from JSON arguments.
+    /// Executes the <c>danbooru_resolve_tags</c> agent tool call from JSON arguments.
     /// </summary>
     public static string ExecuteVocabResolveTool(VocabDb? vocab, string jsonArguments)
     {
@@ -350,12 +350,12 @@ public static partial class VocabBatchEngine
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { error = $"vocab_resolve failed: {ex.Message}" });
+            return JsonSerializer.Serialize(new { error = $"danbooru_resolve_tags failed: {ex.Message}" });
         }
     }
 
     /// <summary>
-    /// Executes the <c>vocab_scan</c> agent tool call from JSON arguments.
+    /// Executes the <c>danbooru_scan_texts</c> agent tool call from JSON arguments.
     /// </summary>
     public static string ExecuteVocabScanTool(VocabDb? vocab, string jsonArguments)
     {
@@ -374,7 +374,7 @@ public static partial class VocabBatchEngine
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { error = $"vocab_scan failed: {ex.Message}" });
+            return JsonSerializer.Serialize(new { error = $"danbooru_scan_texts failed: {ex.Message}" });
         }
     }
 

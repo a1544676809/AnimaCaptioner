@@ -85,13 +85,13 @@ public sealed class TagSearchAgent
     public const string SystemPrompt =
         "You help a Chinese-speaking artist find tags in a local Danbooru/Anima tag database.\n" +
         "Rules:\n" +
-        "- ALWAYS call search_tags before answering. Never answer from memory: tag names " +
+        "- ALWAYS call danbooru_search_tags before answering. Never answer from memory: tag names " +
         "are exact strings and a tag you write from memory is probably not the real one.\n" +
         "- Search with SHORT queries of one or two words, one concept at a time. Never " +
         "pass a whole sentence or a compound phrase such as \"white lace dress\": split " +
         "it into \"white dress\" and \"lace\" and search each separately.\n" +
         "- If a query returns nothing, try different or more general words before giving up.\n" +
-        "- Only mention tags that came back from search_tags.\n" +
+        "- Only mention tags that came back from danbooru_search_tags.\n" +
         "- Each result line looks like: 1. tag=<name> | cn=<meaning> | section=<category> " +
         "| posts=<count>. The tag name is ONLY the text between \"tag=\" and the next " +
         "\" | \". Copy exactly that text, never the whole line.\n" +

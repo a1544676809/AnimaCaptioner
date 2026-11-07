@@ -58,10 +58,10 @@ public static class Agent
         // ---------- 3. 工具集 ----------
         Console.WriteLine("\n=== 3. 工具集 ===");
         Eq("不联网时不发 web_search", string.Join("|", AgentKit.Tools(false).Select(t => t.Name)),
-           "search_tags|vocab_resolve|vocab_scan|propose");
+           "danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|propose");
         Eq("联网时三件都在，propose 在最后", string.Join("|", AgentKit.Tools(true).Select(t => t.Name)),
-           "search_tags|vocab_resolve|vocab_scan|web_search|read_page|propose");
-        True("search_tags 与「问模型找标签」共用同一段说明",
+           "danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|propose");
+        True("danbooru_search_tags 与「问模型找标签」共用同一段说明",
              AgentKit.SearchTool.Description == TagSearchAgent.ToolDescription);
         True("每个工具都有 object 参数块",
              AgentKit.Tools(true).All(t => t.Parameters["type"]?.GetValue<string>() == "object"));
@@ -119,7 +119,7 @@ public static class Agent
         Console.WriteLine("\n=== 5. 系统提示：几条承重规则必须在 ===");
         var withImage = AgentKit.SystemPrompt(hasImage: true, canWebSearch: true);
         var noImage = AgentKit.SystemPrompt(hasImage: false, canWebSearch: false);
-        True("要求先查 search_tags", withImage.Contains("search_tags"));
+        True("要求先查 danbooru_search_tags", withImage.Contains("danbooru_search_tags"));
         True("要求收尾调 propose", withImage.Contains(AgentKit.ProposeToolName));
         True("禁止凭记忆写标签名", withImage.Contains("from memory"));
         True("没有对应标签时走散文", withImage.Contains("DO NOT invent a tag"));
@@ -150,7 +150,7 @@ public static class Agent
         Eq("提案标签", string.Join("|", outcome.Proposal!.AddTags), "1girl|white dress");
         Eq("查过一次", string.Join("|", host.Searches), "white dress");
         Eq("两次请求都带上了工具", string.Join(";", host.SeenTools.Select(t => string.Join("+", t))),
-           "search_tags+vocab_resolve+vocab_scan+web_search+read_page+propose;search_tags+vocab_resolve+vocab_scan+web_search+read_page+propose");
+           "danbooru_search_tags+danbooru_resolve_tags+danbooru_scan_texts+web_search+web_fetch+propose;danbooru_search_tags+danbooru_resolve_tags+danbooru_scan_texts+web_search+web_fetch+propose");
         True("回复用模型这句话", outcome.Reply.Length > 0);
 
         Console.WriteLine("\n=== 7. 提案就停：同一轮里后面的调用不再执行 ===");
@@ -183,7 +183,7 @@ public static class Agent
         var unknownReply = host4.SeenMessages[1]
             .First(m => m["role"]?.GetValue<string>() == "tool")["content"]!.GetValue<string>();
         True("回给模型的消息里列出了可用工具",
-             unknownReply.Contains("Unknown tool") && unknownReply.Contains("search_tags") &&
+             unknownReply.Contains("Unknown tool") && unknownReply.Contains("danbooru_search_tags") &&
              unknownReply.Contains("propose"));
 
         Console.WriteLine("\n=== 10. 空查询：不拿用户的整句话去查 ===");
@@ -490,23 +490,23 @@ public static class Agent
             // tool_calls 是碎片化的：名字 1 片、参数多片、id 只在第 1 片
             var t = new ToolStream();
             t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\"," +
-                         "\"function\":{\"name\":\"search_tags\",\"arguments\":\"\"}}]}"));
+                         "\"function\":{\"name\":\"danbooru_search_tags\",\"arguments\":\"\"}}]}"));
             t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"query\\\":\"}}]}"));
             t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"white\"}}]}"));
             t.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\" dress\\\"}\"}}]}"));
             Eq("碎片按 index 拼成 1 次调用", t.Calls().Count, 1);
-            Eq("名字拼回来了", t.Calls()[0].Name, "search_tags");
+            Eq("名字拼回来了", t.Calls()[0].Name, "danbooru_search_tags");
             Eq("参数拼回来了", t.Calls()[0].Arguments, "{\"query\":\"white dress\"}");
             Eq("id 没有后来被空值覆盖", t.Calls()[0].Id, "call_1");
 
             // 两个并发调用：不同 index 必须分开
             var t2 = new ToolStream();
-            t2.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"search_tags\"," +
+            t2.Feed(Chunk("{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"danbooru_search_tags\"," +
                           "\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"propose\"," +
                           "\"arguments\":\"\"}}]}"));
             t2.Feed(Chunk("{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"{\\\"add_tags\\\":[]}\"}}]}"));
             Eq("两次调用分开", t2.Calls().Count, 2);
-            Eq("第 1 次名字", t2.Calls()[0].Name, "search_tags");
+            Eq("第 1 次名字", t2.Calls()[0].Name, "danbooru_search_tags");
             Eq("第 2 次参数补齐", t2.Calls()[1].Arguments, "{\"add_tags\":[]}");
 
             // finish_reason 与 [DONE]
@@ -681,14 +681,14 @@ public static class Agent
             var withRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true, canViewRegion: true).Select(t => t.Name));
             Eq("带图 + 可放大时的工具集", withRegion,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|propose");
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|propose");
 
             var noRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true).Select(t => t.Name));
             True("没带图时不下发 view_region（放大靠插图，没图就没法放大）",
                  !noRegion.Contains(AgentKit.ViewRegionToolName));
             Eq("没带图时其余图片工具照旧", noRegion,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|propose");
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|propose");
 
             var noImages = string.Join("|", AgentKit.Tools(true).Select(t => t.Name));
             True("没有数据集时 image_info / view_region 都不下发",
@@ -1066,7 +1066,7 @@ public static class Agent
                                              .Select(t => t.Name));
             True("开了才下发", on.Contains(AgentKit.SaveToolName));
             Eq("顺序：save 在 propose 之前", on,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|save_caption|propose");
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|save_caption|propose");
 
             // 系统提示必须**明确禁止**它在没有权限时说"我保存了"
             True("开了时说清能写盘、且写盘靠 save_caption",
@@ -1180,7 +1180,7 @@ public static class Agent
                                                     .Select(t => t.Name));
             True("开了批量就下发 label_images", withBatch.Contains(AgentKit.LabelImagesToolName));
             Eq("顺序：批量在 save 与 propose 之前", withBatch,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|" +
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|" +
                "add_tags_to_images|label_images|save_caption|propose");
 
             var noBatch = string.Join("|", AgentKit.Tools(true, withImages: true, canSave: true)
@@ -1278,7 +1278,7 @@ public static class Agent
                  on.Contains(AgentKit.SetTagSectionToolName) &&
                  on.Contains(AgentKit.SortTagsToolName));
             Eq("顺序：读/改/排序在批量与 save 之前", on,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|" +
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|" +
                "list_tags|set_tag_section|sort_tags|add_tags_to_images|label_images|" +
                "save_caption|propose");
 
@@ -1541,7 +1541,7 @@ public static class Agent
             True("有数据集时下发 add_tags_to_images",
                  withBatch.Contains(AgentKit.AddTagsToImagesToolName));
             Eq("顺序：补标签在批量打标之前", withBatch,
-               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|" +
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|" +
                "add_tags_to_images|label_images|propose");
             True("没数据集时不下发",
                  !AgentKit.Tools(true).Any(t => t.Name == AgentKit.AddTagsToImagesToolName));
@@ -1590,7 +1590,7 @@ public static class Agent
         Console.WriteLine("\n=== 37. 逐张检查：切图要能看见 + 批量带指令 ===");
         {
             // 用户报的："我发现我让它逐张检查时，它不会切换到其他图。"
-            // 日志里那一轮：current_image / list_tags / view_region×3 / search_tags×8 /
+            // 日志里那一轮：current_image / list_tags / view_region×3 / danbooru_search_tags×8 /
             // propose——全在当前这张，一次 select_image 都没有。两个根因，各钉一条。
 
             // ---- 根因 1：切图必须把新那张的图**带回对话**，否则模型切了也看不见 ----
@@ -1744,27 +1744,27 @@ public static class Agent
             True("日志里记了到上限", ow3.Log.Any(l => l.Contains("已到张数上限")));
         }
 
-        Console.WriteLine("\n=== 39. Phase 2 工具：vocab_resolve / vocab_scan / read_page ===");
+        Console.WriteLine("\n=== 39. Phase 2 工具：danbooru_resolve_tags / danbooru_scan_texts / web_fetch ===");
         {
             // 这三个来自高级 AI 的升级包（移植自 AnimaAIProxy）。价值在于把"逐个
-            // search_tags 往返几十秒"压成"一次调用几秒"。
+            // danbooru_search_tags 往返几十秒"压成"一次调用几秒"。
             // ---- 工具下发与闸门 ----
             var off = string.Join("|", AgentKit.Tools(false).Select(t => t.Name));
-            True("vocab_resolve/scan 不依赖联网，常驻下发",
+            True("danbooru_resolve_tags/scan 不依赖联网，常驻下发",
                  off.Contains(AgentKit.VocabResolveToolName) && off.Contains(AgentKit.VocabScanToolName));
-            True("read_page 是网络行为，不联网时不下发", !off.Contains(AgentKit.ReadPageToolName));
+            True("web_fetch 是网络行为，不联网时不下发", !off.Contains(AgentKit.ReadPageToolName));
 
             var on = string.Join("|", AgentKit.Tools(true).Select(t => t.Name));
-            True("联网时 read_page 下发", on.Contains(AgentKit.ReadPageToolName));
-            True("read_page 紧跟在 web_search 之后",
-                 on.IndexOf("web_search") < on.IndexOf("read_page"));
+            True("联网时 web_fetch 下发", on.Contains(AgentKit.ReadPageToolName));
+            True("web_fetch 紧跟在 web_search 之后",
+                 on.IndexOf("web_search") < on.IndexOf("web_fetch"));
 
             True("工具清单里有这三项（否则永远关不掉）",
                  AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.VocabResolveToolName) &&
                  AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.VocabScanToolName) &&
                  AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.ReadPageToolName));
             True("系统提示引导「先批量核验，而不是逐个查」",
-                 AgentKit.SystemPrompt(true, false).Contains("vocab_resolve") &&
+                 AgentKit.SystemPrompt(true, false).Contains("danbooru_resolve_tags") &&
                  AgentKit.SystemPrompt(true, false).Contains("ONE call"));
 
             // ---- 调度：三个工具各自把结果如实回灌给模型 ----
@@ -1779,9 +1779,9 @@ public static class Agent
             bool AnyToolMsg38(string needle) => h.SeenMessages.SelectMany(r => r)
                 .Any(m => m["role"]?.GetValue<string>() == "tool" &&
                           (m["content"]?.GetValue<string>() ?? "").Contains(needle));
-            True("vocab_resolve 结果回给模型", AnyToolMsg38("resolved_count"));
-            True("vocab_scan 结果回给模型", AnyToolMsg38("matched_count"));
-            True("read_page 结果回给模型", AnyToolMsg38("body"));
+            True("danbooru_resolve_tags 结果回给模型", AnyToolMsg38("resolved_count"));
+            True("danbooru_scan_texts 结果回给模型", AnyToolMsg38("matched_count"));
+            True("web_fetch 结果回给模型", AnyToolMsg38("body"));
             True("三样都记进日志", o.Log.Any(l => l.Contains("批量核验")) &&
                                    o.Log.Any(l => l.Contains("扫描提取")) &&
                                    o.Log.Any(l => l.Contains("读网页")));
@@ -1817,9 +1817,9 @@ public static class Agent
                   string.Join(",", sc.MatchedTags.Take(6).Select(t => t.Tag)));
 
                 // 工具执行入口返回合法 JSON
-                V("vocab_resolve 工具入口返回 JSON",
+                V("danbooru_resolve_tags 工具入口返回 JSON",
                   VocabBatchEngine.ExecuteVocabResolveTool(db, """{"tags":["1girl"]}""").Contains("known_tags"), "ok");
-                V("vocab_scan 缺参数时如实报错",
+                V("danbooru_scan_texts 缺参数时如实报错",
                   VocabBatchEngine.ExecuteVocabScanTool(db, "{}").Contains("error"), "ok");
 
                 if (v > 0) { Console.WriteLine($"  引擎断言失败 {v} 条"); bad += v; }
@@ -1827,10 +1827,10 @@ public static class Agent
             else { Console.WriteLine("  （跳过引擎断言：没有 AC_VOCABDB）"); }
         }
 
-        Console.WriteLine("\n=== 40. search_tags 改成数组入参（照 AnimaAIProxy 的做法）===");
+        Console.WriteLine("\n=== 40. danbooru_search_tags 改成数组入参（照 AnimaAIProxy 的做法）===");
         {
-            // 关键洞察来自 AnimaAIProxy 的 ToolCatalog：它不是"移除 search_tags、只留批量工具"，
-            // 而是**把 search_tags 的入参从单个 query 改成 queries 数组**——"只查一个"
+            // 关键洞察来自 AnimaAIProxy 的 ToolCatalog：它不是"移除 danbooru_search_tags、只留批量工具"，
+            // 而是**把 danbooru_search_tags 的入参从单个 query 改成 queries 数组**——"只查一个"
             // 不过是数组里有一个元素。这样没有单条形态可退，模型天然一次查完。
             var q1 = AgentKit.ParseQueries("""{"queries":["white dress","lace","蕾丝"]}""");
             Eq("数组形态解析", string.Join("|", q1), "white dress|lace|蕾丝");
@@ -1848,9 +1848,9 @@ public static class Agent
             Eq("空/坏参数返回空列表", AgentKit.ParseQueries("{}").Count, 0);
             Eq("非 JSON 返回空列表", AgentKit.ParseQueries("nope").Count, 0);
 
-            // 助手下发的 search_tags 参数是 queries（数组），不是 query
+            // 助手下发的 danbooru_search_tags 参数是 queries（数组），不是 query
             var props = AgentKit.SearchToolAssistant.Parameters["properties"] as System.Text.Json.Nodes.JsonObject;
-            True("助手 search_tags 的参数是 queries", props!.ContainsKey("queries"));
+            True("助手 danbooru_search_tags 的参数是 queries", props!.ContainsKey("queries"));
             True("不再有单个 query 参数", !props.ContainsKey("query"));
             True("描述里说明「单条也传数组」",
                  AgentKit.SearchToolAssistant.Description.Contains("array with one element"));
@@ -1984,7 +1984,7 @@ public static class Agent
 
         public void ReportBatchProgress(string text) => BatchProgress.Add(text);
 
-        // ---- Phase 2 工具：vocab_resolve / vocab_scan / read_page ----
+        // ---- Phase 2 工具：danbooru_resolve_tags / danbooru_scan_texts / web_fetch ----
         public List<string> VocabCalls { get; } = new();
         public string VocabResolveResult { get; set; } = """{"resolved_count":1}""";
         public string VocabScanResult { get; set; } = """{"matched_count":2}""";

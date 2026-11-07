@@ -102,7 +102,7 @@ public static partial class ArticleExtractor
 }
 
 /// <summary>
-/// Asynchronous web page reader supporting the <c>read_page</c> agent tool.
+/// Asynchronous web page reader supporting the <c>web_fetch</c> agent tool.
 /// </summary>
 public sealed class PageReader : IDisposable
 {

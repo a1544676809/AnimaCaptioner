@@ -194,7 +194,7 @@ internal sealed class AgentHost : TagAgent.IHost
     }
 
     // ---- Phase 2：移植自 AnimaAIProxy 的高效工具实现 ----
-    // read_page 的 HttpClient 由 PageReader 持有；而 AgentHost 是**每轮现建**的
+    // web_fetch 的 HttpClient 由 PageReader 持有；而 AgentHost 是**每轮现建**的
     // （见 MainWindow 里"每轮现建 host"），所以这里必须用**进程级共享**的那一个，
     // 否则每轮 new 一个 HttpClient 会把连接池耗光（经典 socket exhaustion）。
     // 共享实例随进程存活，不 Dispose。

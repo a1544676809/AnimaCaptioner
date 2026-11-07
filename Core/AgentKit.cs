@@ -94,7 +94,7 @@ public sealed record AgentProposal(
 /// </summary>
 public static class AgentKit
 {
-    public const string SearchToolName = "search_tags";
+    public const string SearchToolName = "danbooru_search_tags";
     public const string ProposeToolName = "propose";
     public const string WebSearchToolName = "web_search";
     public const string CurrentImageToolName = "current_image";
@@ -107,9 +107,9 @@ public static class AgentKit
     public const string SetTagSectionToolName = "set_tag_section";
     public const string SortTagsToolName = "sort_tags";
     public const string AddTagsToImagesToolName = "add_tags_to_images";
-    public const string VocabResolveToolName = "vocab_resolve";
-    public const string VocabScanToolName = "vocab_scan";
-    public const string ReadPageToolName = "read_page";
+    public const string VocabResolveToolName = "danbooru_resolve_tags";
+    public const string VocabScanToolName = "danbooru_scan_texts";
+    public const string ReadPageToolName = "web_fetch";
 
     /// <summary>九个大类的 `key(中文标题)` 清单，塞进工具描述里让模型知道有哪些可选值。</summary>
     public static string SectionCatalog() =>
@@ -142,14 +142,14 @@ public static class AgentKit
         new(ProposeToolName, "提出改动（propose）",
             "助手唯一的改动途径：把要加的标签、要删的标签、英文散文交出来。" +
             "关掉它，助手就只能回答问题、不能改提示词。", "", Required: true),
-        new(SearchToolName, "查词库（search_tags）",
+        new(SearchToolName, "查词库（danbooru_search_tags）",
             "在本地标签词库里检索，确认标签名拼写正确、拿到中文释义。", ""),
-        new(VocabResolveToolName, "批量核验标签（vocab_resolve）",
+        new(VocabResolveToolName, "批量核验标签（danbooru_resolve_tags）",
             "一次提交最多 60 个候选词，返回命中/别名/中文/分类/帖数与近似词。" +
-            "比逐个 search_tags 快得多。", ""),
-        new(VocabScanToolName, "提取标签（vocab_scan）",
+            "比逐个 danbooru_search_tags 快得多。", ""),
+        new(VocabScanToolName, "提取标签（danbooru_scan_texts）",
             "从一段自然语言描述里扫描出标准标签。", ""),
-        new(ReadPageToolName, "读网页正文（read_page）",
+        new(ReadPageToolName, "读网页正文（web_fetch）",
             "抓取 Wiki / 萌娘百科 / Danbooru wiki 的正文设定。",
             "需要先在「联网搜索」页启用搜索后端"),
         new(WebSearchToolName, "联网搜索（web_search）",
@@ -381,7 +381,7 @@ public static class AgentKit
     /// 这样调用方能如实告诉模型"这个名字我不认识"而不是悄悄当成清除。
     /// </summary>
     /// <summary>
-    /// 从 search_tags 的参数里取查询列表。**同时兼容两种形态**：
+    /// 从 danbooru_search_tags 的参数里取查询列表。**同时兼容两种形态**：
     /// - 助手：`{"queries":["a","b"]}`（数组，AnimaAIProxy 形态）
     /// - TagSearchAgent（共享 SearchTool）：`{"query":"a"}`（单条，旧形态）
     /// 归一成列表；去重、最多 12 条（与 schema 的上限一致）。
@@ -763,17 +763,17 @@ public static class AgentKit
         });
 
     /// <summary>
-    /// 助手用的 search_tags：**入参是"查询数组"**，和 AnimaAIProxy 的
+    /// 助手用的 danbooru_search_tags：**入参是"查询数组"**，和 AnimaAIProxy 的
     /// `danbooru_search_tags` 完全一致。
     ///
-    /// 这是本次的关键修正。我们之前是"search_tags(单个 query) + vocab_resolve(批量)"
-    /// 两个工具并存，结果小模型（qwen3.5-9b）连调 13~16 次 search_tags——因为单条
+    /// 这是本次的关键修正。我们之前是"danbooru_search_tags(单个 query) + danbooru_resolve_tags(批量)"
+    /// 两个工具并存，结果小模型（qwen3.5-9b）连调 13~16 次 danbooru_search_tags——因为单条
     /// 查询更符合它"一个词查一次"的直觉，批量那个成了摆设。AnimaAIProxy 的做法是
     /// **把搜索工具本身改成数组入参**："只查一个"不过是数组里只有一个元素，
     /// 于是没有单条形态可退，天然每次都走批量、一次回合查完。
     ///
     /// 共享的 <see cref="SearchTool"/>（单个 query）保留给 TagSearchAgent 那个功能；
-    /// 助手这边用这个数组版本，两者同名 `search_tags`、参数形状不同。
+    /// 助手这边用这个数组版本，两者同名 `danbooru_search_tags`、参数形状不同。
     /// </summary>
     public static AgentTool SearchToolAssistant => new(
         SearchToolName,
@@ -847,7 +847,7 @@ public static class AgentKit
                     ["type"] = "array",
                     ["items"] = new JsonObject { ["type"] = "string" },
                     ["description"] = "Tag names to ADD to the prompt, copied exactly from " +
-                                      "search_tags results. Omit tags already present in the " +
+                                      "danbooru_search_tags results. Omit tags already present in the " +
                                       "prompt. Empty array if nothing should be added.",
                 },
                 ["remove_tags"] = new JsonObject
@@ -905,18 +905,18 @@ public static class AgentKit
     /// "有数据集就能切"的老行为；**批量内层那一轮必须传 false**——外层循环已经替它
     /// 选好了这一张，模型再切走就会把提案落到别的图上，而外层还以为在改这一张。
     /// </summary>
-    // ---- Phase 2：vocab_resolve / vocab_scan / read_page ----
+    // ---- Phase 2：danbooru_resolve_tags / danbooru_scan_texts / web_fetch ----
     /// <summary>
     /// 批量核验候选标签名：一次提交一批（最多 60 个）候选词，本地词库毫秒级返回
     /// 精确命中 / 别名重定向 / 中文释义 / 分类 / 帖数，未命中的附 Top-3 近似词。
-    /// 移植自 AnimaAIProxy：把"逐个 search_tags 往返几十秒"压成"一次调用几秒"。
+    /// 移植自 AnimaAIProxy：把"逐个 danbooru_search_tags 往返几十秒"压成"一次调用几秒"。
     /// </summary>
     public static AgentTool VocabResolveTool => new(
         VocabResolveToolName,
         "Resolve MANY candidate tag names in ONE call (up to 60). For each input it returns " +
         "whether the vocabulary knows it, the canonical tag (following aliases and _/space), " +
         "its Chinese gloss, category and post count; misses come back with up to 3 close " +
-        "suggestions. Use this INSTEAD of many search_tags calls when you already have a list " +
+        "suggestions. Use this INSTEAD of many danbooru_search_tags calls when you already have a list " +
         "of candidate tags for the image — one call covers the whole picture.",
         new JsonObject
         {
@@ -993,7 +993,7 @@ public static class AgentKit
             tools.Add(ImageInfoTool);
         }
         tools.Add(SearchToolAssistant);
-        // 批量核验/扫描：纯本地词库，便宜，和 search_tags 一起常驻。
+        // 批量核验/扫描：纯本地词库，便宜，和 danbooru_search_tags 一起常驻。
         tools.Add(VocabResolveTool);
         tools.Add(VocabScanTool);
         if (webSearch)
@@ -1031,7 +1031,7 @@ public static class AgentKit
     /// <summary>
     /// 系统提示。几条承重规则都有来历：
     ///
-    /// 1. **标签名只能来自 search_tags。** Danbooru 标签是精确字符串，
+    /// 1. **标签名只能来自 danbooru_search_tags。** Danbooru 标签是精确字符串，
     ///    `blush` 与 `blushing` 是两个不同的东西（后者根本不存在）。这条沿用
     ///    <see cref="TagSearchAgent"/> 的结论。
     /// 2. **没有对应标签的概念写进散文，而不是编一个标签。** 这是"找不到对应
@@ -1070,15 +1070,15 @@ public static class AgentKit
             "A finished prompt is comma-separated English Danbooru tags, optionally " +
             "followed by one paragraph of English natural language.\n" +
             "Rules:\n" +
-            "- Before you use any tag, look it up with search_tags. Tag names are exact " +
+            "- Before you use any tag, look it up with danbooru_search_tags. Tag names are exact " +
             "strings; a name you write from memory is probably not a real tag.\n" +
-            "- **search_tags takes an ARRAY of queries.** Put all your candidate tags into ONE " +
+            "- **danbooru_search_tags takes an ARRAY of queries.** Put all your candidate tags into ONE " +
             "call (up to 12 short entries), do not call it once per tag — checking a single tag " +
-            "is just an array with one element. Use vocab_scan to pull real tags out of a " +
-            "paragraph you wrote, and vocab_resolve to verify a list of exact spellings at once.\n" +
+            "is just an array with one element. Use danbooru_scan_texts to pull real tags out of a " +
+            "paragraph you wrote, and danbooru_resolve_tags to verify a list of exact spellings at once.\n" +
             "- Keep each query SHORT (one or two words, one concept). Never pass a whole " +
             "sentence: split \"white lace dress\" into \"white dress\" and \"lace\" — but put " +
-            "both in the SAME search_tags call.\n" +
+            "both in the SAME danbooru_search_tags call.\n" +
             "- If a concept has no matching tag, DO NOT invent a tag for it. Say it in the " +
             "prose paragraph in plain English instead. Relations between things (\"the cat " +
             "sits on her shoulder\"), actions in a sentence, and made-up names belong in " +
@@ -1143,7 +1143,7 @@ public static class AgentKit
         else
             sb.Append("- After web_search, if a snippet is not enough (a character/artist wiki " +
                       "entry usually has the most reliable hair/eye/outfit details), use " +
-                      "read_page on the best URL to read its body text.\n");
+                      "web_fetch on the best URL to read its body text.\n");
 
         // 放大那条路。三条都必须写，缺一条都会出现"它明明能看却不敢用/乱用"：
         //  1. 它**看不见**整图的细节（整图缩到了长边 1024），所以细处不许猜；

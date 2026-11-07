@@ -429,7 +429,7 @@ Limit）、摘要文案、参数解析（字符串/数组两种写法、去重�
 
 ```
 找到 12 个工具勾选框
-  工具 propose / search_tags / web_search / current_image / image_info /
+  工具 propose / danbooru_search_tags / web_search / current_image / image_info /
       select_image / view_region / list_tags / set_tag_section / sort_tags /
       label_images / save_caption
 取消勾选 web_search：On -> Off，保存后 settings.json 里 DisabledTools = web_search
@@ -605,8 +605,8 @@ apply-upgrade.ps1 自动补丁器。**没有直接跑那个脚本**，原因：
 
 所以这一轮只并入能独立验证、且真的接线了的部分——Phase 2 的高效工具链：
 
-- Core/VocabBatchEngine.cs：vocab_resolve（一次核验≤60 个候选）、vocab_scan（从描述抠标签）
-- Core/PageReader.cs：read_page，抓网页正文，HTML 提纯成 Markdown，带 SSRF 防护（拒绝私网/回环）
+- Core/VocabBatchEngine.cs：danbooru_resolve_tags（一次核验≤60 个候选）、danbooru_scan_texts（从描述抠标签）
+- Core/PageReader.cs：web_fetch，抓网页正文，HTML 提纯成 Markdown，带 SSRF 防护（拒绝私网/回环）
 - VocabDb.FindExact：批量引擎要的精确查找（Anima 优先→别名→下划线/空格→best→Danbooru），
   返回与 TagSearch 同构的命中
 - 接线：AgentKit 三个工具声明 + 工具清单（可被设置页关掉）+ 系统提示引导；
@@ -621,7 +621,7 @@ FastBatchCaptioner 两阶段流水线、Phase 4 SharedCore。要做得对，需�
 1. IHost 用默认接口实现（返回一条错误 JSON，而不是抛异常）：老探针/假 host 为零改动
    即可编译；真 host 覆盖。默认给"看得懂的错误"而不是崩，符合本项目"不发注定失败的
    工具 / 出错要如实说"的一贯做法。
-2. read_page 的 HttpClient 必须是进程级共享：AgentHost 是每轮现建的，若每轮 new 一个
+2. web_fetch 的 HttpClient 必须是进程级共享：AgentHost 是每轮现建的，若每轮 new 一个
    PageReader（内建 HttpClient），连接池会被耗光（经典 socket exhaustion）。用
    static Lazy<PageReader>，随进程存活、不 Dispose。
 
@@ -630,11 +630,11 @@ FastBatchCaptioner 两阶段流水线、Phase 4 SharedCore。要做得对，需�
 真机 E2E 未完成：当前活动站点是用户新加的 tailscale 本地模型（100.68.153.10:8080），
 那一轮在等待窗口内没返回，属环境问题；工具调度已由假 host 单测覆盖。
 
-### 续：search_tags 改成数组入参（照 AnimaAIProxy 的实际做法）
+### 续：danbooru_search_tags 改成数组入参（照 AnimaAIProxy 的实际做法）
 
-上一轮"加 vocab_resolve 并劝模型用它"没解决问题：qwen3.5-9b 仍连调 13~16 次
-search_tags。去读 AnimaAIProxy 源码（E:\source\repos\AnimaAIProxy\Core\ToolCatalog.cs）
-才发现关键——它**没有移除 search_tags**，而是把 \danbooru_search_tags\ 的**入参从
+上一轮"加 danbooru_resolve_tags 并劝模型用它"没解决问题：qwen3.5-9b 仍连调 13~16 次
+danbooru_search_tags。去读 AnimaAIProxy 源码（E:\source\repos\AnimaAIProxy\Core\ToolCatalog.cs）
+才发现关键——它**没有移除 danbooru_search_tags**，而是把 \danbooru_search_tags\ 的**入参从
 单个 query 改成 queries 数组**。原注释："入参从『一个查询』改成了『查询数组』…
 『只查一个』不过是数组里只有一个元素。"
 
@@ -643,10 +643,30 @@ search_tags。去读 AnimaAIProxy 源码（E:\source\repos\AnimaAIProxy\Core\Too
   "单条也传数组、不要一个词一次"。
 - \AgentKit.ParseQueries\：同吃 \queries\ 数组与旧的 \query\ 单条（TagSearchAgent
   的共享 SearchTool 仍是单条，不能动）。
-- \TagAgent\ 的 search_tags 分支：逐条查、拼成一段（每条带"— 查询词"小标题）。
+- \TagAgent\ 的 danbooru_search_tags 分支：逐条查、拼成一段（每条带"— 查询词"小标题）。
 
 实测（同一个本地模型）：改前 16 次单条 → 改后 **2 次、每次带一串 queries**，轮次 10→7。
 这才对上"完全迁移到批量查询、即使只查一个"的实际机制：**工具本身只有数组形态，
 没有单条退路**。名字不是关键。
 
 教训：遇到"模型不用新工具"，先去读那个已知能跑通的参照实现，比在提示词上反复加词更有效。
+
+### 工具命名与 AnimaAIProxy 对齐
+
+用户要求"工具命名也和 AnimaAIProxy 同步"。按 \AnimaAIProxy/Core/ToolCatalog.cs\ 的常量改名：
+
+| 原 | 现（与 AnimaAIProxy 一致） |
+|---|---|
+| search_tags | danbooru_search_tags |
+| vocab_resolve | danbooru_resolve_tags |
+| vocab_scan | danbooru_scan_texts |
+| read_page | web_fetch |
+| web_search | web_search（本来就一致） |
+
+说明：AnimaCaptioner 是独立应用，本不需要 \danbooru_\ 前缀（那是代理为了在宿主
+工具集里避重名）。但用户要两边命名一致，就统一了。改的是**工具名常量**
+（AgentKit 里那 4 个 const），代码其余处引用常量、自动跟随；另外把描述/提示词/
+日志/测试里的字面量一并改了（用了带 \(?<!danbooru_)\ 的负向断言，避免二次加前缀）。
+
+不动的：\iew_region\（AnimaAIProxy 没有对应工具）、以及所有打标专用工具
+（propose/current_image/…）——那些本来就是本应用特有的。

@@ -39,20 +39,20 @@ public sealed class TagAgent
         string Search(string query, out List<TagSearch.Hit> hits, out bool splitMatch);
 
         /// <summary>
-        /// 批量核验候选标签（`vocab_resolve`）。返回给模型的 JSON 文本。
+        /// 批量核验候选标签（`danbooru_resolve_tags`）。返回给模型的 JSON 文本。
         ///
         /// 给了**默认实现**（返回一条错误 JSON）是刻意的：这是个新能力，老的探针/假 host
         /// 不必为了编译去实现它；真 host（AgentHost）会覆盖。默认返回错误而不是抛异常，
         /// 让模型看到一句看得懂的话，而不是把循环打断。
         /// </summary>
-        string VocabResolve(string jsonArgs) => """{"error":"vocab_resolve not bound"}""";
+        string VocabResolve(string jsonArgs) => """{"error":"danbooru_resolve_tags not bound"}""";
 
-        /// <summary>批量扫描提取标签（`vocab_scan`）。同上，有默认实现。</summary>
-        string VocabScan(string jsonArgs) => """{"error":"vocab_scan not bound"}""";
+        /// <summary>批量扫描提取标签（`danbooru_scan_texts`）。同上，有默认实现。</summary>
+        string VocabScan(string jsonArgs) => """{"error":"danbooru_scan_texts not bound"}""";
 
-        /// <summary>抓取网页正文（`read_page`）。同上，有默认实现。</summary>
+        /// <summary>抓取网页正文（`web_fetch`）。同上，有默认实现。</summary>
         Task<string> ReadPageAsync(string jsonArgs, CancellationToken ct = default) =>
-            Task.FromResult("""{"error":"read_page not bound"}""");
+            Task.FromResult("""{"error":"web_fetch not bound"}""");
 
         /// <summary>
         /// 每一轮的 max_tokens 从哪里来。**由 host 在每轮现取**，不在这里写死。
@@ -259,7 +259,7 @@ public sealed class TagAgent
     /// 工具循环轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
     ///
     /// 原来是 4，实测不够：一问"查 A 和 B 两个标签"，模型会一轮里发好几个
-    /// search_tags，几轮下来就用光了，然后被迫走收尾那条路——用户看到的是
+    /// danbooru_search_tags，几轮下来就用光了，然后被迫走收尾那条路——用户看到的是
     /// "由于工具调用已用尽，无法再调用 propose"。改成 8。
     ///
     /// 8 轮不是拍脑袋：每轮十几秒，最坏情况约两分钟；而收尾那一轮现在**仍然允许
@@ -789,7 +789,7 @@ public sealed class TagAgent
                     if (queries.Count == 0)
                     {
                         const string retry =
-                            "No query was given. Call search_tags again with a `queries` array of " +
+                            "No query was given. Call danbooru_search_tags again with a `queries` array of " +
                             "one or two words each (a single tag is a one-element array).";
                         messages.Add(LlmClient.ToolMessage(call.Id, retry));
                         log.Add("查（空查询）→ 已要求重试");
