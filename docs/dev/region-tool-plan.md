@@ -687,3 +687,22 @@ EXIF 转正/缩放/编码全走原来那条已验证的路。省的是"裁一块
 改名后，用户以前关过的旧名（search_tags 等）不能因为改名就"复活"。
 AgentKit.IsDisabled 先过一张旧名→现名映射表（LegacyToolNames），设置页读回时
 旧条目仍然生效；保存时写回的是现名。
+
+### ② Phase 1 多模式（纯标签 / 纯自然语言 / 混合）
+
+采用升级包的 Core/CaptionMode.cs（MultiModePromptText 解析/序列化/互转），但**没有**
+用它的 apply-upgrade 补丁（只加"解析重载"而不改调用点 = 假开关）。真正生效靠把
+编辑器两处接线：
+
+- ParseCaption（读）：MultiModePromptText.Parse(text, _vocab, cfg.GetFormatOptions(), EscapeEnabled)
+- CommitPrompt（写）：MultiModePromptText.Rebuild(tags, _proseTail, cfg.GetFormatOptions())
+- 另外两处加载解析（seed / draft）也改成 MultiMode。
+- UI：菜单「模式」加三个 RadioMenuFlyoutItem；MainWindow.CaptionMode.cs 处理点击，
+  切换后**重新解析当前正文并刷新标签列表**（不重写正文，故不丢内容）。
+
+一处适配：MultiModePromptText.OrderTags 原本用 TagItem（WinUI 类型），会让纯 net10
+的回归工程编不过——改成 TagSections.Classify + 稳定排序的纯逻辑。
+
+验证：agent 新增第 42 节（三模式解析/重建/幂等往返/互转/设置往返）；全 17 套件回归通过；
+真机确认应用启动正常。**"点菜单切换"这一步未做机器验证**（UIA 读 TagList 在非前台时为空，
+不可靠），引擎与接线由单测覆盖。

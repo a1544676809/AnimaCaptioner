@@ -61,6 +61,7 @@
     <Compile Include="..\Core\VocabBatchEngine.cs" />
     <Compile Include="..\Core\PageReader.cs" />
     <Compile Include="..\Core\MultiRegion.cs" />
+    <Compile Include="..\Core\CaptionMode.cs" />
     <Compile Include="..\Core\AgentChatStore.cs" />
     <Compile Include="..\Core\TagAgent.cs" />
     <Compile Include="..\Core\ImageSizing.cs" />

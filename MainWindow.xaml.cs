@@ -322,6 +322,9 @@ public sealed partial class MainWindow : Window
         // （用户点开看到"什么都没有"，会以为功能没做）。
         FillSectionMenu(TagSectionMenu, SelectedTagRows());
 
+        // 打标格式菜单的勾选对齐到配置里的当前模式（Phase 1）。
+        InitCaptionModeMenu();
+
         // 提示词库同理：独立 sidecar，且**必须在 ApplyColumnRatios 之前**载入，
         // 因为分栏比例要按模式取不同的一组值。
         _lib = PromptLibraryStore.Load();
@@ -585,7 +588,13 @@ public sealed partial class MainWindow : Window
     /// 两层（<c>\\(</c>）——那时 ComfyUI 看到的是字面反斜杠。
     /// </summary>
     private PromptText.Parts ParseCaption(string text) =>
-        PromptText.Parse(text, _vocab, EscapeEnabled);
+        MultiModePromptText.Parse(text, _vocab, CaptionOptions, EscapeEnabled);
+
+    /// <summary>
+    /// 当前的打标/解析格式选项（来自设置里的「打标格式」）。
+    /// 解析与重建**都走它**，所以切模式立刻生效，而不是只改个界面显示。
+    /// </summary>
+    private CaptionFormatOptions CaptionOptions => _cfg?.GetFormatOptions() ?? CaptionFormatOptions.DefaultHybrid;
 
     /// <summary>
     /// 把正文规范成"送进模型的线上格式"：给该转义的标签补上括号转义。
@@ -710,7 +719,7 @@ public sealed partial class MainWindow : Window
                 // 依据是官方模型卡的推荐串 `masterpiece, best quality, score_7, safe`
                 // ——它是每一次生图都需要的那一段，空着反而每次都要手打。
                 var seed = "masterpiece, best quality, score_7, safe";
-                var parsed = PromptText.Parse(seed, _vocab);
+                var parsed = MultiModePromptText.Parse(seed, _vocab, CaptionOptions);
                 _pendingTags = new List<string>(parsed.Tags);
                 _proseTail = "";
                 SetCaptionText(seed);
@@ -1050,7 +1059,7 @@ public sealed partial class MainWindow : Window
             // 标签和散文尾巴分开存：散文不是标签，不能进 _pendingTags。
             // 注意不能用 CaptionFile.Tags——那是纯逗号切分，会把散文尾巴
             // 也当成一堆标签。
-            var parsed = PromptText.Parse(raw, _vocab);
+            var parsed = MultiModePromptText.Parse(raw, _vocab, CaptionOptions);
             _pendingTags = new List<string>(parsed.Tags);
             _proseTail = parsed.ProseTail;
 
@@ -1220,7 +1229,7 @@ public sealed partial class MainWindow : Window
         // 于是标签列表显示干净的名字（`210 (reverse:1999)`），而框里是送进模型的
         // 线上格式（`210 \(reverse:1999\)`）——两边各是各的用途，不互相污染。
         var tags = EscapeEnabled ? TagEscape.EscapeAll(_pendingTags, IsKnownTag) : _pendingTags;
-        SetCaptionText(PromptText.Rebuild(tags, _proseTail));
+        SetCaptionText(MultiModePromptText.Rebuild(tags, _proseTail, CaptionOptions));
         RefreshTagRows(keepVisibleIndex: keepVisibleIndex);
     }
 

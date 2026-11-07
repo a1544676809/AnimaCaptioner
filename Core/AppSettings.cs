@@ -86,6 +86,24 @@ public sealed class AppSettings
     /// </summary>
     public List<string> DisabledTools { get; set; } = new();
 
+    // ---- 多模式打标（Phase 1）----
+
+    /// <summary>
+    /// 当前数据集/草稿默认的打标格式：纯标签 / 纯自然语言 / 混合。
+    ///
+    /// 默认 <see cref="CaptionMode.Hybrid"/>——那是本项目一贯的 Anima 范式，换默认值
+    /// 会让老用户一打开就发现行为变了。切换入口在菜单「模式 → 打标格式」。
+    /// </summary>
+    public CaptionMode ActiveCaptionMode { get; set; } = CaptionMode.Hybrid;
+
+    /// <summary>混合模式下标签与散文的分工档位（仅 Hybrid 生效）。</summary>
+    public HybridProfile ActiveHybridProfile { get; set; } = HybridProfile.AnimaStandard;
+
+    /// <summary>把当前模式与档位打包成解析/序列化用的选项。</summary>
+    public CaptionFormatOptions GetFormatOptions() => new(
+        Mode: ActiveCaptionMode,
+        HybridProfile: ActiveHybridProfile);
+
     /// <summary>
     /// 助手工具循环的轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
     ///

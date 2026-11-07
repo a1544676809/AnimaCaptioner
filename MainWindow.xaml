@@ -35,6 +35,18 @@
                     <RadioMenuFlyoutItem.Icon><FontIcon Glyph="&#xE70F;" /></RadioMenuFlyoutItem.Icon>
                 </RadioMenuFlyoutItem>
                 <MenuFlyoutSeparator />
+                <!-- 打标格式（Phase 1）：决定**解析与重建**怎么处理这段文本，
+                     不只是显示。切换立刻重解析当前正文。 -->
+                <RadioMenuFlyoutItem x:Name="CaptionModeHybridItem" Text="打标格式：标签 + 自然语言（Anima）"
+                                     GroupName="captionmode" IsChecked="True"
+                                     Click="CaptionModeHybridClick" />
+                <RadioMenuFlyoutItem x:Name="CaptionModeTagsOnlyItem" Text="打标格式：纯标签（Illustrious / Pony 等）"
+                                     GroupName="captionmode"
+                                     Click="CaptionModeTagsOnlyClick" />
+                <RadioMenuFlyoutItem x:Name="CaptionModeProseOnlyItem" Text="打标格式：纯自然语言（Flux / SD3.5 等）"
+                                     GroupName="captionmode"
+                                     Click="CaptionModeProseOnlyClick" />
+                <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="切换模式" Click="ToggleMode_Click"
                                 KeyboardAcceleratorTextOverride="Ctrl+M">
                     <MenuFlyoutItem.KeyboardAccelerators>

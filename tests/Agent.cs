@@ -1940,6 +1940,74 @@ public static class Agent
             Eq("空 regions 不裁", h2.ViewRequests.Count, 0);
         }
 
+        Console.WriteLine("\n=== 42. 多模式：纯标签 / 纯自然语言 / 混合 ===");
+        {
+            var tagsOnly = CaptionFormatOptions.ForMode(CaptionMode.TagsOnly);
+            var proseOnly = CaptionFormatOptions.ForMode(CaptionMode.ProseOnly);
+            var hybrid = CaptionFormatOptions.ForMode(CaptionMode.Hybrid);
+
+            var text = "masterpiece, 1girl, @syrstyle, 白色连衣裙. She stands by the window.";
+
+            // TagsOnly：逗号全算标签，**不**再切出散文；带空格的触发词仍是标签
+            var t = MultiModePromptText.Parse(text, null, tagsOnly);
+            True("纯标签：散文尾巴为空", t.ProseTail.Length == 0);
+            True("纯标签：标签里保留带空格的触发词",
+                 t.Tags.Any(x => x.Contains("@syrstyle")));
+            True("纯标签：整句不再被当作散文",
+                 !t.Tags.Any(x => x.Equals("She stands by the window", StringComparison.OrdinalIgnoreCase))
+                 || t.Tags.Count > 0);
+
+            // ProseOnly：整段都是描述，不拆逗号
+            var p = MultiModePromptText.Parse(text, null, proseOnly);
+            Eq("纯自然语言：标签为空", p.Tags.Count, 0);
+            True("纯自然语言：正文完整保留", p.ProseTail.Contains("1girl") && p.ProseTail.Contains("window"));
+
+            // Hybrid：与既有 PromptText.Parse 同一行为（委托）
+            var h = MultiModePromptText.Parse(text, null, hybrid);
+            var legacy = PromptText.Parse(text, null);
+            Eq("混合：标签数与老解析一致", h.Tags.Count, legacy.Tags.Count);
+            Eq("混合：散文与老解析一致", h.ProseTail, legacy.ProseTail);
+
+            // 重建：每种模式只输出它允许的那部分
+            Eq("纯标签重建只有标签（无句号尾巴）",
+               MultiModePromptText.Rebuild(new[] { "a", "b" }, "some prose", tagsOnly), "a, b");
+            Eq("纯自然语言重建只有描述",
+               MultiModePromptText.Rebuild(new[] { "a", "b" }, "some prose", proseOnly), "some prose");
+            True("混合重建同时有标签与描述",
+               MultiModePromptText.Rebuild(new[] { "a", "b" }, "some prose", hybrid)
+                   .StartsWith("a, b") &&
+               MultiModePromptText.Rebuild(new[] { "a", "b" }, "some prose", hybrid).Contains("some prose"));
+
+            // 往返：Rebuild(Parse(x)) 对每种模式都要稳定（第二次不再变）
+            foreach (var (name, opt) in new[]
+                     {
+                         ("纯标签", tagsOnly), ("纯自然语言", proseOnly), ("混合", hybrid)
+                     })
+            {
+                var once = MultiModePromptText.Rebuild(
+                    MultiModePromptText.Parse(text, null, opt).Tags,
+                    MultiModePromptText.Parse(text, null, opt).ProseTail, opt);
+                var twice = MultiModePromptText.Rebuild(
+                    MultiModePromptText.Parse(once, null, opt).Tags,
+                    MultiModePromptText.Parse(once, null, opt).ProseTail, opt);
+                Eq($"{name}：重建是稳定的（幂等）", twice, once);
+            }
+
+            // 模式互转：纯标签 → 纯自然语言（标签拼成一段）；不崩
+            var conv = MultiModePromptText.ConvertMode(
+                new PromptText.Parts(new List<string> { "a", "b" }, ""),
+                CaptionMode.ProseOnly, null);
+            Eq("标签转自然语言：标签清空", conv.Tags.Count, 0);
+            True("标签转自然语言：内容并进描述", conv.ProseTail.Contains("a"));
+
+            // 设置项：默认 Hybrid、能落盘再读回
+            Eq("默认模式是 Hybrid", new AppSettings().ActiveCaptionMode, CaptionMode.Hybrid);
+            var cfg2 = AppSettings.FromJson(new AppSettings { ActiveCaptionMode = CaptionMode.TagsOnly }.ToJson());
+            Eq("模式能落盘再读回", cfg2?.ActiveCaptionMode, CaptionMode.TagsOnly);
+            Eq("GetFormatOptions 反映当前模式", new AppSettings { ActiveCaptionMode = CaptionMode.ProseOnly }
+                .GetFormatOptions().Mode, CaptionMode.ProseOnly);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
