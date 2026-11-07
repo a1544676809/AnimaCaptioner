@@ -158,6 +158,9 @@ internal static class Harness
                 Console.WriteLine("golden: " + golden);
                 return Parity.Run(golden, outPath);
 
+            case "golden":
+                // 重新生成 tests/golden.json（用当前实现冻结为回归基线）
+                return AnimaCaptioner.Tests.GoldenGen.Run(Arg(1), Arg(2));
             default:
                 Console.WriteLine("""
                     用法: corecheck <模式> [参数]

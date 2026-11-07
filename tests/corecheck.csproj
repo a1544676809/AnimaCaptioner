@@ -93,5 +93,6 @@
     <Compile Include="OverwriteProbe.cs" />
     <Compile Include="SeparatorProbe.cs" />
     <Compile Include="Harness.cs" />
+    <Compile Include="Golden.cs" />
   </ItemGroup>
 </Project>

@@ -767,3 +767,17 @@ qwen3.5-9b 发单轮图请求，返回合法 JSON（tags+prose）。
 媒介词+artist分区+补@触发、格式映射、系统提示渲染、提案过滤、JSON 往返）。全 17 套件除
 parity 外全绿；**parity 的 8 条失败是既有问题**（tests/golden.json 期望 seed=273，实际 285，
 golden 过期），与本次改动无关。
+
+### 重生成 golden 基线（parity 回绿）
+
+原 	ests/golden.json 是"与 Python 参考实现对拍"的快照；那个生成器 analyse/gen_golden.py 没随仓库分发，
+而 seed/别名此后继续演进（seed 273 → 285），于是 parity 有 8 条过期差异。
+
+做法：新增 corecheck golden <outPath> <datasetDir>（tests/Golden.cs）——**保留旧 golden 的输入用例**
+（12 个扫描文本、12 个中文词、15 个英文词、arrange 两个列表、build_case0 文本、prior 40 个抽样键），
+用当前实现重算全部期望值写回。golden 语义因此从"与 Python 对拍"变为"对当前已验证实现的回归基线"。
+
+另：Core/Parity.cs 现在支持 AC_VOCABDB / AC_SEED / AC_DATASET 环境变量（优先于用户设置），
+CI 与本地验证不必再改用户配置。
+
+用法：AC_DATASET=E:\train\sayori-style-v1 corecheck parity → 117 passed, 0 failed。

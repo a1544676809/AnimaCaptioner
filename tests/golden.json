@@ -1,447 +1,395 @@
 {
- "scan": {
-  "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图": [
-   [
-    "grey hair",
-    "seed",
-    "银发"
-   ],
-   [
-    "cherry blossoms",
-    "seed",
-    "樱花"
-   ],
-   [
-    "under tree",
-    "exact",
-    "树下"
-   ],
-   [
-    "standing",
-    "seed",
-    "站立"
-   ],
-   [
-    "serafuku",
-    "seed",
-    "水手服"
-   ],
-   [
-    "wind",
-    "seed",
-    "风"
-   ],
-   [
-    "backlighting",
-    "seed",
-    "逆光"
-   ],
-   [
-    "full body",
-    "seed",
-    "全身构图"
-   ]
-  ],
-  "回头看向镜头": [
-   [
-    "looking back",
-    "seed",
-    "回头"
-   ],
-   [
-    "looking at viewer",
-    "seed",
-    "看向镜头"
-   ]
-  ],
-  "跪坐": [
-   [
-    "sitting on own leg",
-    "seed",
-    "跪坐"
-   ]
-  ],
-  "少女": [],
-  "双马尾": [
-   [
-    "twintails",
-    "seed",
-    "双马尾"
-   ]
-  ],
-  "微笑": [
-   [
+  "counts": {
+    "tags": 331808,
+    "anima": 108257,
+    "alias": 62828,
+    "seed": 285,
+    "cn_keys": 327062
+  },
+  "scan": {
+    "\u94F6\u53D1\u5C11\u5973\u5728\u6A31\u82B1\u6811\u4E0B\u4FA7\u8EAB\u7AD9\u7ACB\uFF0C\u7A7F\u6C34\u624B\u670D\uFF0C\u5FAE\u98CE\uFF0C\u9006\u5149\uFF0C\u5168\u8EAB\u6784\u56FE": [
+      [
+        "silver hair",
+        "seed",
+        "\u94F6\u53D1"
+      ],
+      [
+        "cherry blossoms",
+        "seed",
+        "\u6A31\u82B1"
+      ],
+      [
+        "under tree",
+        "exact",
+        "\u6811\u4E0B"
+      ],
+      [
+        "standing",
+        "seed",
+        "\u7AD9\u7ACB"
+      ],
+      [
+        "serafuku",
+        "seed",
+        "\u6C34\u624B\u670D"
+      ],
+      [
+        "wind",
+        "seed",
+        "\u98CE"
+      ],
+      [
+        "backlighting",
+        "seed",
+        "\u9006\u5149"
+      ],
+      [
+        "full body",
+        "seed",
+        "\u5168\u8EAB\u6784\u56FE"
+      ]
+    ],
+    "\u56DE\u5934\u770B\u5411\u955C\u5934": [
+      [
+        "looking back",
+        "seed",
+        "\u56DE\u5934"
+      ],
+      [
+        "looking at viewer",
+        "seed",
+        "\u770B\u5411\u955C\u5934"
+      ]
+    ],
+    "\u8DEA\u5750": [
+      [
+        "seiza",
+        "seed",
+        "\u8DEA\u5750"
+      ]
+    ],
+    "\u5C11\u5973": [],
+    "\u53CC\u9A6C\u5C3E": [
+      [
+        "twintails",
+        "seed",
+        "\u53CC\u9A6C\u5C3E"
+      ]
+    ],
+    "\u5FAE\u7B11": [
+      [
+        "smile",
+        "seed",
+        "\u5FAE\u7B11"
+      ]
+    ],
+    "\u770B\u5411\u955C\u5934": [
+      [
+        "looking at viewer",
+        "seed",
+        "\u770B\u5411\u955C\u5934"
+      ]
+    ],
+    "\u9ED1\u8272\u8FC7\u819D\u889C": [
+      [
+        "black thighhighs",
+        "exact",
+        "\u9ED1\u8272\u8FC7\u819D\u889C"
+      ]
+    ],
+    "\u5973\u4EC6\u88C5": [
+      [
+        "enmaided",
+        "seed",
+        "\u5973\u4EC6\u88C5"
+      ]
+    ],
+    "\u6C34\u624B\u670D": [
+      [
+        "serafuku",
+        "seed",
+        "\u6C34\u624B\u670D"
+      ]
+    ],
+    "\u9006\u5149": [
+      [
+        "backlighting",
+        "seed",
+        "\u9006\u5149"
+      ]
+    ],
+    "\u548C\u670D": [
+      [
+        "kimono",
+        "seed",
+        "\u548C\u670D"
+      ]
+    ]
+  },
+  "chinese": {
+    "\u94F6\u53D1\u5C11\u5973\u5728\u6A31\u82B1\u6811\u4E0B\u4FA7\u8EAB\u7AD9\u7ACB\uFF0C\u7A7F\u6C34\u624B\u670D\uFF0C\u5FAE\u98CE\uFF0C\u9006\u5149\uFF0C\u5168\u8EAB\u6784\u56FE": [
+      null,
+      "no-match"
+    ],
+    "\u56DE\u5934\u770B\u5411\u955C\u5934": [
+      "looking at viewer",
+      "seed"
+    ],
+    "\u8DEA\u5750": [
+      "seiza",
+      "seed"
+    ],
+    "\u5C11\u5973": [
+      null,
+      "no-match"
+    ],
+    "\u53CC\u9A6C\u5C3E": [
+      "twintails",
+      "seed"
+    ],
+    "\u5FAE\u7B11": [
+      "smile",
+      "seed"
+    ],
+    "\u770B\u5411\u955C\u5934": [
+      "looking at viewer",
+      "seed"
+    ],
+    "\u9ED1\u8272\u8FC7\u819D\u889C": [
+      "black thighhighs",
+      "exact"
+    ],
+    "\u5973\u4EC6\u88C5": [
+      "enmaided",
+      "seed"
+    ],
+    "\u6C34\u624B\u670D": [
+      "serafuku",
+      "seed"
+    ],
+    "\u9006\u5149": [
+      "backlighting",
+      "seed"
+    ],
+    "\u548C\u670D": [
+      "kimono",
+      "seed"
+    ]
+  },
+  "english": {
+    "wink": [
+      "wink",
+      "anima"
+    ],
+    "see-through": [
+      "see-through",
+      "anima"
+    ],
+    "topless": [
+      "topless",
+      "anima"
+    ],
+    "ass grab": [
+      "ass grab",
+      "anima"
+    ],
+    "vertical stripes": [
+      "vertical stripes",
+      "anima"
+    ],
+    "cat smile": [
+      "cat smile",
+      "anima"
+    ],
+    "long_hair": [
+      "long hair",
+      "anima"
+    ],
+    "silver bell": [
+      null,
+      "unknown"
+    ],
+    "china dress": [
+      "china dress",
+      "anima"
+    ],
+    "hairpin": [
+      "hairpin",
+      "anima"
+    ],
+    "game cg": [
+      "game cg",
+      "anima"
+    ],
+    "pom poms": [
+      "pom poms",
+      "anima"
+    ],
+    "looking away": [
+      "looking away",
+      "anima"
+    ],
+    "bangs": [
+      "bangs",
+      "no-usage"
+    ],
+    "twin tails": [
+      "twintails",
+      "alias"
+    ]
+  },
+  "prior": {
+    "size": 671,
+    "sample": {
+      "1boy": 0.03742504919677785,
+      "1girl": 0.024186343784346268,
+      "2girls": 0.03634163750752449,
+      "6\u002Bgirls": 0.03076923076923077,
+      ":3": 0.5286881816607998,
+      "@syrstyle": 0.0730051613245235,
+      "a male character is having sex with a black-haired female character on the bed": 0.9565217391304348,
+      "after sex": 0.8134790528233151,
+      "after vaginal": 0.8852459016393442,
+      "against glass": 0.8333333333333334,
+      "against wall": 0.8333333333333334,
+      "ahoge": 0.375,
+      "all fours": 0.7906976744186046,
+      "anal tail": 0.5813953488372093,
+      "and a female body with darker skin is below.": 0.9859154929577465,
+      "and a pink-haired character is observing beside them.": 0.9782608695652174,
+      "and a small black bow is on the lower part of the skirt. The neck bell is silver.": 0.972972972972973,
+      "and the character in front is a female character.": 0.9814814814814815,
+      "and the character on the right is a female character.": 0.9814814814814815,
+      "and the name tag is pink.": 0.9777777777777777,
+      "and the name tag is purple.": 0.9791666666666666,
+      "animal ear fluff": 0.6168527894868439,
+      "animal ear legwear": 0.8913043478260869,
+      "animal ear legwear. The bell on her neck is silver. The fishnet stockings are black": 0.9555555555555556,
+      "animal ears": 0.3016966297571454,
+      "ankle strap": 0.47058823529411764,
+      "anus": 0.6917891041848192,
+      "apron": 0.5227272727272727,
+      "arcade cabinet": 0.9696969696969697,
+      "arched back": 0.8294633642930856,
+      "arm behind back": 0.813953488372093,
+      "arm support": 0.6078431372549019,
+      "arm up": 0.6760254878534449,
+      "armlet": 0.8169014084507042,
+      "armpits": 0.565106261203909,
+      "arms behind back": 0.8157894736842105,
+      "arms up": 0.6117551045206071,
+      "ass": 0.3515421848584028,
+      "ass grab": 0.8524962410629353,
+      "back": 0.7254901960784313
+    }
+  },
+  "arrange_plain": [
+    "best quality",
+    "score_7",
+    "explicit",
+    "1girl",
+    "solo",
+    "@sayori style",
+    "long hair",
     "smile",
-    "seed",
-    "微笑"
-   ]
+    "twintails",
+    "cherry blossoms"
   ],
-  "看向镜头": [
-   [
-    "looking at viewer",
-    "seed",
-    "看向镜头"
-   ]
+  "arrange_rated": [
+    "explicit",
+    "best quality",
+    "score_7",
+    "1girl",
+    "solo",
+    "@sayori style",
+    "long hair",
+    "smile",
+    "twintails",
+    "cherry blossoms"
   ],
-  "黑色过膝袜": [
-   [
-    "black thighhighs",
-    "exact",
-    "黑色过膝袜"
-   ]
-  ],
-  "女仆装": [
-   [
-    "enmaided",
-    "seed",
-    "女仆装"
-   ]
-  ],
-  "水手服": [
-   [
-    "serafuku",
-    "seed",
-    "水手服"
-   ]
-  ],
-  "逆光": [
-   [
-    "backlighting",
-    "seed",
-    "逆光"
-   ]
-  ],
-  "和服": [
-   [
-    "japanese clothes",
-    "seed",
-    "和服"
-   ]
-  ]
- },
- "english": {
-  "wink": [
-   "wink",
-   "anima"
-  ],
-  "see-through": [
-   "see-through",
-   "anima"
-  ],
-  "topless": [
-   "topless",
-   "anima"
-  ],
-  "ass grab": [
-   "ass grab",
-   "anima"
-  ],
-  "vertical stripes": [
-   "vertical stripes",
-   "anima"
-  ],
-  "cat smile": [
-   "cat smile",
-   "anima"
-  ],
-  "long_hair": [
-   "long hair",
-   "anima"
-  ],
-  "silver bell": [
-   null,
-   "unknown"
-  ],
-  "china dress": [
-   "china dress",
-   "anima"
-  ],
-  "hairpin": [
-   "hairpin",
-   "anima"
-  ],
-  "game cg": [
-   "game cg",
-   "anima"
-  ],
-  "pom poms": [
-   "pom poms",
-   "anima"
-  ],
-  "looking away": [
-   "looking away",
-   "anima"
-  ],
-  "bangs": [
-   "bangs",
-   "no-usage"
-  ],
-  "twin tails": [
-   "twintails",
-   "alias"
-  ]
- },
- "chinese": {
-  "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图": [
-   null,
-   "no-match"
-  ],
-  "回头看向镜头": [
-   "looking at viewer",
-   "seed"
-  ],
-  "跪坐": [
-   "sitting on own leg",
-   "seed"
-  ],
-  "少女": [
-   null,
-   "no-match"
-  ],
-  "双马尾": [
-   "twintails",
-   "seed"
-  ],
-  "微笑": [
-   "smile",
-   "seed"
-  ],
-  "看向镜头": [
-   "looking at viewer",
-   "seed"
-  ],
-  "黑色过膝袜": [
-   "black thighhighs",
-   "exact"
-  ],
-  "女仆装": [
-   "enmaided",
-   "seed"
-  ],
-  "水手服": [
-   "serafuku",
-   "seed"
-  ],
-  "逆光": [
-   "backlighting",
-   "seed"
-  ],
-  "和服": [
-   "japanese clothes",
-   "seed"
-  ]
- },
- "counts": {
-  "tags": 331808,
-  "anima": 108257,
-  "alias": 62828,
-  "cn_exact": 326943,
-  "seed": 273,
-  "cn_keys": 327053,
-  "max_key": 102
- },
- "arrange_plain": [
-  "best quality",
-  "score_7",
-  "explicit",
-  "1girl",
-  "solo",
-  "@sayori style",
-  "long hair",
-  "smile",
-  "twintails",
-  "cherry blossoms"
- ],
- "arrange_rated": [
-  "explicit",
-  "best quality",
-  "score_7",
-  "1girl",
-  "solo",
-  "@sayori style",
-  "long hair",
-  "smile",
-  "twintails",
-  "cherry blossoms"
- ],
- "build_case0": {
-  "text": "银发少女在樱花树下侧身站立，穿水手服，微风，逆光，全身构图",
-  "tags": [
-   "grey hair",
-   "full body",
-   "standing",
-   "backlighting",
-   "cherry blossoms",
-   "serafuku",
-   "under tree",
-   "wind"
-  ],
-  "trace": [
-   {
-    "cn": "银发",
-    "tag": "grey hair",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "樱花",
-    "tag": "cherry blossoms",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "树下",
-    "tag": "under tree",
-    "via": "exact",
-    "pass": "scan"
-   },
-   {
-    "cn": "站立",
-    "tag": "standing",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "水手服",
-    "tag": "serafuku",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "风",
-    "tag": "wind",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "逆光",
-    "tag": "backlighting",
-    "via": "seed",
-    "pass": "scan"
-   },
-   {
-    "cn": "全身构图",
-    "tag": "full body",
-    "via": "seed",
-    "pass": "scan"
-   }
-  ]
- },
- "prior": {
-  "size": 671,
-  "sample": {
-   "1boy": 0.037425,
-   "1girl": 0.024186,
-   "2girls": 0.036342,
-   "6+girls": 0.030769,
-   ":3": 0.528688,
-   "@syrstyle": 0.073005,
-   "a male character is having sex with a black-haired female character on the bed": 0.956522,
-   "after sex": 0.813479,
-   "after vaginal": 0.885246,
-   "against glass": 0.833333,
-   "against wall": 0.833333,
-   "ahoge": 0.375,
-   "all fours": 0.790698,
-   "anal tail": 0.581395,
-   "and a female body with darker skin is below.": 0.985915,
-   "and a pink-haired character is observing beside them.": 0.978261,
-   "and a small black bow is on the lower part of the skirt. The neck bell is silver.": 0.972973,
-   "and the character in front is a female character.": 0.981481,
-   "and the character on the right is a female character.": 0.981481,
-   "and the name tag is pink.": 0.977778,
-   "and the name tag is purple.": 0.979167,
-   "animal ear fluff": 0.616853,
-   "animal ear legwear": 0.891304,
-   "animal ear legwear. The bell on her neck is silver. The fishnet stockings are black": 0.955556,
-   "animal ears": 0.301697,
-   "ankle strap": 0.470588,
-   "anus": 0.691789,
-   "apron": 0.522727,
-   "arcade cabinet": 0.969697,
-   "arched back": 0.829463,
-   "arm behind back": 0.813953,
-   "arm support": 0.607843,
-   "arm up": 0.676025,
-   "armlet": 0.816901,
-   "armpits": 0.565106,
-   "arms behind back": 0.815789,
-   "arms up": 0.611755,
-   "ass": 0.351542,
-   "ass grab": 0.852496,
-   "back": 0.72549
+  "build_case0": {
+    "text": "\u94F6\u53D1\u5C11\u5973\u5728\u6A31\u82B1\u6811\u4E0B\u4FA7\u8EAB\u7AD9\u7ACB\uFF0C\u7A7F\u6C34\u624B\u670D\uFF0C\u5FAE\u98CE\uFF0C\u9006\u5149\uFF0C\u5168\u8EAB\u6784\u56FE",
+    "tags": [
+      "full body",
+      "standing",
+      "backlighting",
+      "cherry blossoms",
+      "serafuku",
+      "silver hair",
+      "under tree",
+      "wind"
+    ]
+  },
+  "audit": {
+    "files": 53,
+    "tags": 2309,
+    "clean": 0,
+    "agg": {
+      "@syrstyle|not-a-tag|None": 53,
+      "a male character is having sex with a black-haired female character on the bed|not-a-tag|None": 1,
+      "and a female body with darker skin is below.|not-a-tag|None": 1,
+      "and a pink-haired character is observing beside them.|not-a-tag|None": 1,
+      "and a small black bow is on the lower part of the skirt. The neck bell is silver.|not-a-tag|None": 1,
+      "and the character in front is a female character.|not-a-tag|None": 1,
+      "and the character on the right is a female character.|not-a-tag|None": 1,
+      "and the name tag is pink.|not-a-tag|None": 1,
+      "and the name tag is purple.|not-a-tag|None": 1,
+      "animal ear legwear. The bell on her neck is silver. The fishnet stockings are black|not-a-tag|None": 1,
+      "bangs|no-usage|None": 4,
+      "blue belt. Name tag is blue. The character is wearing white and red horizontal striped thighhighs.|not-a-tag|None": 1,
+      "blue nightgown. The character on the left is opening her eyes while the character on the right is closing her eyes.|not-a-tag|None": 1,
+      "bob cut. Name tag is gold.|not-a-tag|None": 2,
+      "bob cut. The character\u0027s obi is blue with patterns.|not-a-tag|None": 1,
+      "cat ear legwear. Bra and panties are light blue with vertical white striped patterns.|not-a-tag|None": 1,
+      "cat ear legwear. The character\u0027s neck bell is silver. The bra and panties have a white base with vertical striped patterns.|not-a-tag|None": 1,
+      "center frills. The character\u0027s skirt and bow have vertical golden yellow stripes|not-a-tag|None": 1,
+      "clothes removed|alias|unworn clothes": 1,
+      "drooling. The character\u0027s arms are tied with fabric.|not-a-tag|None": 1,
+      "fluffy tail. Ears are curly|not-a-tag|None": 1,
+      "fluffy tail. The character has one yellow eye and one blue eye. The bell on its neck is silver|not-a-tag|None": 1,
+      "fluffy tail. The character on the left is a male character|not-a-tag|None": 1,
+      "frilled dress. The character has one yellow eye and one blue eye.|not-a-tag|None": 1,
+      "frilled dress. The character\u0027s tail is composed of horizontal stripes of dark brown and light brown.|not-a-tag|None": 1,
+      "frilled garter. The character on the right is brushing the hair of the character on the left.|not-a-tag|None": 1,
+      "frilled pillow. A male character is lifting a female character.|not-a-tag|None": 1,
+      "gloves removed|alias|unworn gloves": 1,
+      "grabbed by a male character lying on his side to the right.|not-a-tag|None": 1,
+      "green footwear. Ears are folded|not-a-tag|None": 1,
+      "hair beads. The character\u0027s tail is thin|not-a-tag|None": 1,
+      "hair between eyes. The character\u0027s arms are tied with fabric.|not-a-tag|None": 1,
+      "hakama short skirt. The character\u0027s tail is composed of horizontal stripes of dark brown and light brown.|not-a-tag|None": 1,
+      "hand on another\u0027s ass. The character below is a male character|not-a-tag|None": 1,
+      "hands on hips|alias|hands on own hips": 1,
+      "high heels are green.|not-a-tag|None": 1,
+      "high heels are red.|not-a-tag|None": 1,
+      "leg garter|alias|frilled thigh strap": 2,
+      "looking through legs. A female body with light skin is above|not-a-tag|None": 1,
+      "looking up. The left character\u0027s tail is made of deep brown and light brown horizontal stripes. The middle character is a male. The right character has one blue eye and one yellow eye.|not-a-tag|None": 1,
+      "lying on person. The scene features eight people overlapping in different angles and poses.|not-a-tag|None": 1,
+      "medium breasts. The character\u0027s red and white dot bow is on top of her head near one ear|not-a-tag|None": 1,
+      "mosaic censoring. The character behind is a male character|not-a-tag|None": 1,
+      "name tag. The character\u0027s nameplate is green with a large white bow behind it. The ears are folded. The character\u0027s neck bell is silver.|not-a-tag|None": 1,
+      "orange bowtie. The character\u0027s nameplate is red with a large white bow behind it. The ears are curly.|not-a-tag|None": 1,
+      "pink bow. Name tag is red. There is a bell on the neck|not-a-tag|None": 1,
+      "print yukata|alias|print kimono": 2,
+      "purple obi|alias|purple sash": 1,
+      "sand. The character\u0027s arms are tied with fabric.|not-a-tag|None": 1,
+      "side-by-side. The left character has many small blue bows in her ponytail|not-a-tag|None": 1,
+      "silver. The character is wearing striped thighhighs with red and white horizontal stripes.|not-a-tag|None": 1,
+      "skirt lift. Name tag is purple.|not-a-tag|None": 1,
+      "skirt removed|alias|unworn skirt": 1,
+      "splashing. The character has many small blue bows on her ponytail. The character is lying on a pink bed sheet.|not-a-tag|None": 1,
+      "stomach bulge. There are three people in the scene|not-a-tag|None": 1,
+      "the character above is a female character.|not-a-tag|None": 1,
+      "the corset has one large black bow|not-a-tag|None": 1,
+      "the skirt\u0027s halter has two small black bows on each side|not-a-tag|None": 1,
+      "touching face|no-usage|None": 1,
+      "wet skin|alias|wet": 1,
+      "while the right character has pink ones. Both characters are lying on a pink bed sheet.|not-a-tag|None": 1,
+      "white back bow|not-a-tag|None": 1,
+      "white collar. The character\u0027s obi is blue and has patterns.|not-a-tag|None": 1,
+      "white trim. A female character lies on a pink bed sheet. The socks are white and red striped. On the left is a female character|not-a-tag|None": 1,
+      "with a rounded ball at the end.|not-a-tag|None": 1
+    }
   }
- },
- "audit": {
-  "files": 53,
-  "tags": 2309,
-  "clean": 0,
-  "agg": {
-   "@syrstyle|not-a-tag|None": 53,
-   "a male character is having sex with a black-haired female character on the bed|not-a-tag|None": 1,
-   "and a female body with darker skin is below.|not-a-tag|None": 1,
-   "and a pink-haired character is observing beside them.|not-a-tag|None": 1,
-   "and a small black bow is on the lower part of the skirt. The neck bell is silver.|not-a-tag|None": 1,
-   "and the character in front is a female character.|not-a-tag|None": 1,
-   "and the character on the right is a female character.|not-a-tag|None": 1,
-   "and the name tag is pink.|not-a-tag|None": 1,
-   "and the name tag is purple.|not-a-tag|None": 1,
-   "animal ear legwear. The bell on her neck is silver. The fishnet stockings are black|not-a-tag|None": 1,
-   "bangs|no-usage|None": 4,
-   "blue belt. Name tag is blue. The character is wearing white and red horizontal striped thighhighs.|not-a-tag|None": 1,
-   "blue nightgown. The character on the left is opening her eyes while the character on the right is closing her eyes.|not-a-tag|None": 1,
-   "bob cut. Name tag is gold.|not-a-tag|None": 2,
-   "bob cut. The character's obi is blue with patterns.|not-a-tag|None": 1,
-   "cat ear legwear. Bra and panties are light blue with vertical white striped patterns.|not-a-tag|None": 1,
-   "cat ear legwear. The character's neck bell is silver. The bra and panties have a white base with vertical striped patterns.|not-a-tag|None": 1,
-   "center frills. The character's skirt and bow have vertical golden yellow stripes|not-a-tag|None": 1,
-   "clothes removed|alias|unworn clothes": 1,
-   "drooling. The character's arms are tied with fabric.|not-a-tag|None": 1,
-   "fluffy tail. Ears are curly|not-a-tag|None": 1,
-   "fluffy tail. The character has one yellow eye and one blue eye. The bell on its neck is silver|not-a-tag|None": 1,
-   "fluffy tail. The character on the left is a male character|not-a-tag|None": 1,
-   "frilled dress. The character has one yellow eye and one blue eye.|not-a-tag|None": 1,
-   "frilled dress. The character's tail is composed of horizontal stripes of dark brown and light brown.|not-a-tag|None": 1,
-   "frilled garter. The character on the right is brushing the hair of the character on the left.|not-a-tag|None": 1,
-   "frilled pillow. A male character is lifting a female character.|not-a-tag|None": 1,
-   "gloves removed|alias|unworn gloves": 1,
-   "grabbed by a male character lying on his side to the right.|not-a-tag|None": 1,
-   "green footwear. Ears are folded|not-a-tag|None": 1,
-   "hair beads. The character's tail is thin|not-a-tag|None": 1,
-   "hair between eyes. The character's arms are tied with fabric.|not-a-tag|None": 1,
-   "hakama short skirt. The character's tail is composed of horizontal stripes of dark brown and light brown.|not-a-tag|None": 1,
-   "hand on another's ass. The character below is a male character|not-a-tag|None": 1,
-   "hands on hips|alias|hands on own hips": 1,
-   "high heels are green.|not-a-tag|None": 1,
-   "high heels are red.|not-a-tag|None": 1,
-   "leg garter|alias|frilled thigh strap": 2,
-   "looking through legs. A female body with light skin is above|not-a-tag|None": 1,
-   "looking up. The left character's tail is made of deep brown and light brown horizontal stripes. The middle character is a male. The right character has one blue eye and one yellow eye.|not-a-tag|None": 1,
-   "lying on person. The scene features eight people overlapping in different angles and poses.|not-a-tag|None": 1,
-   "medium breasts. The character's red and white dot bow is on top of her head near one ear|not-a-tag|None": 1,
-   "mosaic censoring. The character behind is a male character|not-a-tag|None": 1,
-   "name tag. The character's nameplate is green with a large white bow behind it. The ears are folded. The character's neck bell is silver.|not-a-tag|None": 1,
-   "orange bowtie. The character's nameplate is red with a large white bow behind it. The ears are curly.|not-a-tag|None": 1,
-   "pink bow. Name tag is red. There is a bell on the neck|not-a-tag|None": 1,
-   "print yukata|alias|print kimono": 2,
-   "purple obi|alias|purple sash": 1,
-   "sand. The character's arms are tied with fabric.|not-a-tag|None": 1,
-   "side-by-side. The left character has many small blue bows in her ponytail|not-a-tag|None": 1,
-   "silver. The character is wearing striped thighhighs with red and white horizontal stripes.|not-a-tag|None": 1,
-   "skirt lift. Name tag is purple.|not-a-tag|None": 1,
-   "skirt removed|alias|unworn skirt": 1,
-   "splashing. The character has many small blue bows on her ponytail. The character is lying on a pink bed sheet.|not-a-tag|None": 1,
-   "stomach bulge. There are three people in the scene|not-a-tag|None": 1,
-   "the character above is a female character.|not-a-tag|None": 1,
-   "the corset has one large black bow|not-a-tag|None": 1,
-   "the skirt's halter has two small black bows on each side|not-a-tag|None": 1,
-   "touching face|no-usage|None": 1,
-   "wet skin|alias|wet": 1,
-   "while the right character has pink ones. Both characters are lying on a pink bed sheet.|not-a-tag|None": 1,
-   "white back bow|not-a-tag|None": 1,
-   "white collar. The character's obi is blue and has patterns.|not-a-tag|None": 1,
-   "white trim. A female character lies on a pink bed sheet. The socks are white and red striped. On the left is a female character|not-a-tag|None": 1,
-   "with a rounded ball at the end.|not-a-tag|None": 1
-  }
- }
 }

@@ -42,8 +42,12 @@ public static class Parity
             var root = doc.RootElement;
 
             var cfg = AppSettings.Load();
+            // 允许用环境变量指定词库/数据集：这样 CI 与本地验证都不必动用户设置。
+            var vocabPath = Environment.GetEnvironmentVariable("AC_VOCABDB") ?? cfg.VocabDbPath;
+            var seedPath = Environment.GetEnvironmentVariable("AC_SEED") ?? cfg.SeedPath;
+            var datasetDir = Environment.GetEnvironmentVariable("AC_DATASET") ?? cfg.DatasetDir;
             var v = new VocabDb();
-            v.Load(cfg.VocabDbPath, cfg.SeedPath);
+            v.Load(vocabPath, seedPath);
 
             // ---- 规模 ----
             var counts = root.GetProperty("counts");
@@ -94,7 +98,7 @@ public static class Parity
             // settings.json 里的数据集目录换了——这种失败模式比"跳过"危险得多。
             var auditWant = root.GetProperty("audit");
             var wantFiles = auditWant.GetProperty("files").GetInt32();
-            var haveFiles = Dataset.Scan(cfg.DatasetDir).Count(i => i.HasCaption);
+            var haveFiles = Dataset.Scan(datasetDir).Count(i => i.HasCaption);
             if (haveFiles != wantFiles)
             {
                 Emit($"""
@@ -102,7 +106,7 @@ public static class Parity
                     ! 跳过与数据集有关的那几节：数据集对不上
                       golden.json 是针对 {wantFiles} 个 caption 生成的一份快照，
                       而当前配置的数据集里有 {haveFiles} 个：
-                        {cfg.DatasetDir}
+                        {datasetDir}
                       这几节（prior / arrange / build / audit）比的是"参考实现对同一个
                       数据集的输出"，数据集不同结果必然不同。
                       换回那份数据集，或在设置里把数据集目录改回去，再跑这一项。
@@ -120,7 +124,7 @@ public static class Parity
                 return 2;
             }
 
-            var prior = VocabDb.OrderFromDir(cfg.DatasetDir);
+            var prior = VocabDb.OrderFromDir(datasetDir);
             var priorGolden = root.GetProperty("prior");
             CheckEq("prior.size", priorGolden.GetProperty("size").GetInt32(), prior.Count);
             var priorSample = priorGolden.GetProperty("sample");
@@ -164,7 +168,7 @@ public static class Parity
             var wantTags = audit.GetProperty("tags").GetInt32();
             var wantClean = audit.GetProperty("clean").GetInt32();
 
-            var items = Dataset.Scan(cfg.DatasetDir).Where(i => i.HasCaption).ToList();
+            var items = Dataset.Scan(datasetDir).Where(i => i.HasCaption).ToList();
             var totalTags = 0; var clean = 0;
             var agg = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var it in items)
