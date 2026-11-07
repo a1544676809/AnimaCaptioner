@@ -101,6 +101,7 @@ public static class AgentKit
     public const string SelectImageToolName = "select_image";
     public const string ImageInfoToolName = "image_info";
     public const string ViewRegionToolName = "view_region";
+    public const string ViewRegionsToolName = "view_regions";
     public const string SaveToolName = "save_caption";
     public const string LabelImagesToolName = "label_images";
     public const string ListTagsToolName = "list_tags";
@@ -162,6 +163,8 @@ public static class AgentKit
             "切到数据集里的另一张图。", "需要打开一个数据集（标注模式）"),
         new(ViewRegionToolName, "放大细节（view_region）",
             "把图裁一块、放大后再看，用来确认小配饰之类的细节。", "需要这次对话带了图"),
+        new(ViewRegionsToolName, "多处放大（view_regions）",
+            "一次要最多 4 块放大图，省掉串行往返。", "需要这次对话带了图"),
         new(ListTagsToolName, "读标签清单（list_tags）",
             "按顺序列出提示词里的标签，带每个的大类、词库认不认得、类型是不是手改的。",
             "需要开启「完全权限」"),
@@ -181,8 +184,32 @@ public static class AgentKit
     };
 
     /// <summary>这个工具被用户在设置里关掉了吗。</summary>
-    public static bool IsDisabled(AppSettings cfg, string name) =>
-        cfg.DisabledTools.Any(d => string.Equals(d, name, StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// 旧工具名 → 现名。改名之前用户可能已经在设置里关过旧名（`search_tags` 等），
+    /// 那些记录不该因为改名就失效——否则"我明明关过，它怎么又出现了"。
+    /// </summary>
+    private static readonly Dictionary<string, string> LegacyToolNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["search_tags"] = SearchToolName,
+        ["vocab_resolve"] = VocabResolveToolName,
+        ["vocab_scan"] = VocabScanToolName,
+        ["read_page"] = ReadPageToolName,
+    };
+
+    /// <summary>从旧名归一到现名（不是旧名就原样返回）。</summary>
+    public static string CurrentToolName(string name) =>
+        LegacyToolNames.TryGetValue(name, out var now) ? now : name;
+
+    public static bool IsDisabled(AppSettings cfg, string name)
+    {
+        var now = CurrentToolName(name);
+        foreach (var d in cfg.DisabledTools)
+        {
+            var dn = CurrentToolName(d);
+            if (string.Equals(dn, now, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
 
     /// <summary>按用户的开关过滤一遍（前提条件由调用方的 flag 负责）。</summary>
     private static List<AgentTool> ApplyDisabled(AppSettings? cfg, IEnumerable<AgentTool> tools) =>
@@ -981,6 +1008,46 @@ public static class AgentKit
             ["required"] = new JsonArray { "url" },
         });
 
+    /// <summary>
+    /// 一次要最多 4 块放大图（`view_regions`）。与单块 `view_region` 并存：
+    /// 模型要同时确认"瞳色 / 手部持物 / 服装徽章 / 背景文字"时，一轮就能拿齐，
+    /// 不必串行往返四轮。参数归一化解析在 <see cref="MultiRegion"/>。
+    /// </summary>
+    public static AgentTool ViewRegionsTool => new(
+        ViewRegionsToolName,
+        "Crop and zoom into up to 4 normalized image regions [0.0..1.0] in a SINGLE call " +
+        "(e.g. face/eyes, hands/held object, outfit emblem, background text). Prefer this over " +
+        "several view_region calls when you need several details: one call, one round. Each " +
+        "region: {x, y, w, h, label}; w and h must be > 0.01.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["regions"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["minItems"] = 1,
+                    ["maxItems"] = MultiRegion.MaxRegions,
+                    ["items"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["x"] = new JsonObject { ["type"] = "number" },
+                            ["y"] = new JsonObject { ["type"] = "number" },
+                            ["w"] = new JsonObject { ["type"] = "number" },
+                            ["h"] = new JsonObject { ["type"] = "number" },
+                            ["label"] = new JsonObject { ["type"] = "string" },
+                        },
+                        ["required"] = new JsonArray { "x", "y", "w", "h" },
+                    },
+                    ["description"] = "1-4 normalized regions {x,y,w,h,label?}.",
+                },
+            },
+            ["required"] = new JsonArray { "regions" },
+        });
+
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
                                         bool canBatchLabel = false, bool canEditTags = false,
@@ -1003,7 +1070,7 @@ public static class AgentKit
             tools.Add(ReadPageTool);
         }
         if (withImages && canSwitchImages) tools.Add(SelectImageTool);
-        if (canViewRegion) tools.Add(ViewRegionTool);
+        if (canViewRegion) { tools.Add(ViewRegionTool); tools.Add(ViewRegionsTool); }
 
         if (canEditTags)
         {

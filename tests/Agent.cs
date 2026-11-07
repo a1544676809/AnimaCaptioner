@@ -681,7 +681,7 @@ public static class Agent
             var withRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true, canViewRegion: true).Select(t => t.Name));
             Eq("带图 + 可放大时的工具集", withRegion,
-               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|propose");
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|view_regions|propose");
 
             var noRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true).Select(t => t.Name));
@@ -1066,7 +1066,7 @@ public static class Agent
                                              .Select(t => t.Name));
             True("开了才下发", on.Contains(AgentKit.SaveToolName));
             Eq("顺序：save 在 propose 之前", on,
-               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|save_caption|propose");
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|view_regions|save_caption|propose");
 
             // 系统提示必须**明确禁止**它在没有权限时说"我保存了"
             True("开了时说清能写盘、且写盘靠 save_caption",
@@ -1180,7 +1180,7 @@ public static class Agent
                                                     .Select(t => t.Name));
             True("开了批量就下发 label_images", withBatch.Contains(AgentKit.LabelImagesToolName));
             Eq("顺序：批量在 save 与 propose 之前", withBatch,
-               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|" +
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|view_regions|" +
                "add_tags_to_images|label_images|save_caption|propose");
 
             var noBatch = string.Join("|", AgentKit.Tools(true, withImages: true, canSave: true)
@@ -1278,7 +1278,7 @@ public static class Agent
                  on.Contains(AgentKit.SetTagSectionToolName) &&
                  on.Contains(AgentKit.SortTagsToolName));
             Eq("顺序：读/改/排序在批量与 save 之前", on,
-               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|" +
+               "current_image|image_info|danbooru_search_tags|danbooru_resolve_tags|danbooru_scan_texts|web_search|web_fetch|select_image|view_region|view_regions|" +
                "list_tags|set_tag_section|sort_tags|add_tags_to_images|label_images|" +
                "save_caption|propose");
 
@@ -1875,6 +1875,69 @@ public static class Agent
               .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
             Run(h2, "查一个词");
             Eq("单元素数组也查了", string.Join("|", h2.Searches), "solo");
+        }
+
+        Console.WriteLine("\n=== 41. view_regions（一次多块放大）+ 工具旧名迁移 ===");
+        {
+            // ---- 解析 ----
+            var r1 = MultiRegion.Parse(
+                @"{""regions"":[{""x"":0.1,""y"":0.1,""w"":0.2,""h"":0.2,""label"":""eyes""},{""x"":0.5,""y"":0.5,""w"":0.3,""h"":0.3}]}");
+            True("两块都能解析", r1.Ok && r1.Regions.Count == 2 && r1.Regions[0].Label == "eyes");
+            True("w/h≤0.01 判错（整图无意义）",
+                 !MultiRegion.Parse(@"{""regions"":[{""x"":0,""y"":0,""w"":0,""h"":0.5}]}").Ok);
+            True("空 regions 判错", !MultiRegion.Parse(@"{""regions"":[]}").Ok);
+            True("坏 JSON 判错", !MultiRegion.Parse("nope").Ok);
+            var one = @"{""x"":0.1,""y"":0.1,""w"":0.2,""h"":0.2}";
+            var many = MultiRegion.Parse(@"{""regions"":[" + string.Join(",", Enumerable.Repeat(one, 6)) + "]}");
+            Eq("超过 4 块被截到 4", many.Regions.Count, 4);
+
+            // ---- 工具下发（带图才有）----
+            var on = string.Join("|", AgentKit.Tools(true, withImages: true, canViewRegion: true).Select(t => t.Name));
+            True("带图时 view_regions 与 view_region 并存",
+                 on.Contains("view_region") && on.Contains("view_regions"));
+            True("view_regions 紧跟在 view_region 之后",
+                 on.IndexOf("view_region") < on.IndexOf("view_regions"));
+            var off = string.Join("|", AgentKit.Tools(true, withImages: true).Select(t => t.Name));
+            True("不可放大时两个都不下发", !off.Contains("view_region") && !off.Contains("view_regions"));
+            True("清单里有 view_regions（可关）",
+                 AgentKit.ToolCatalog.Any(t => t.Name == "view_regions"));
+
+            // ---- 旧工具名迁移 ----
+            Eq("search_tags 归一为现名", AgentKit.CurrentToolName("search_tags"), "danbooru_search_tags");
+            Eq("vocab_resolve 归一", AgentKit.CurrentToolName("vocab_resolve"), "danbooru_resolve_tags");
+            Eq("read_page 归一", AgentKit.CurrentToolName("read_page"), "web_fetch");
+            Eq("现名原样返回", AgentKit.CurrentToolName("view_regions"), "view_regions");
+            var legacy = new AppSettings { DisabledTools = { "search_tags" } };
+            True("关过旧名，现在仍算关（不会因改名复活）",
+                 AgentKit.IsDisabled(legacy, AgentKit.SearchToolName));
+            True("关旧名不影响别的工具", !AgentKit.IsDisabled(legacy, AgentKit.VocabResolveToolName));
+
+            // ---- 调度：一次要两块 → host 被调两次 → 图合并成一条带图消息 ----
+            var h = new FakeHost();
+            h.ViewImageCount = 1;
+            h.Turn(Tool("vr", AgentKit.ViewRegionsToolName,
+                        """{"regions":[{"x":0.1,"y":0.1,"w":0.2,"h":0.2,"label":"eyes"},{"x":0.5,"y":0.5,"w":0.3,"h":0.3,"label":"hands"}]}"""))
+             .Turn(Tool("p", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var img = new LlmClient.ChatImage("image/jpeg", new byte[] { 1, 2, 3 });
+            var o = Run(h, "把眼睛和手都放大看看", img);
+            Eq("host 每个区域各裁一次", h.ViewRequests.Count, 2);
+            True("两块的参数都传下去了",
+                 h.ViewRequests[0].Contains("0.1") && h.ViewRequests[1].Contains("0.5"));
+            True("日志记了多处放大", o.Log.Any(l => l.Contains("多处放大")));
+            var attached = h.SeenMessages.SelectMany(r => r)
+                .Where(m => m["role"]?.GetValue<string>() == "user" &&
+                            m["content"] is System.Text.Json.Nodes.JsonArray)
+                .Select(m => (System.Text.Json.Nodes.JsonArray)m["content"]!)
+                .LastOrDefault();
+            True("两块放大图合并进同一条带图消息（1 段文字 + 2 张图）",
+                 attached is not null && attached.Count == 3);
+
+            // 参数不合法：不碰 host
+            var h2 = new FakeHost();
+            h2.Turn(Tool("vr2", AgentKit.ViewRegionsToolName, """{"regions":[]}"""))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "放大", img);
+            Eq("空 regions 不裁", h2.ViewRequests.Count, 0);
         }
 
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");

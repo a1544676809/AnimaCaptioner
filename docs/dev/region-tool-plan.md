@@ -670,3 +670,20 @@ danbooru_search_tags。去读 AnimaAIProxy 源码（E:\source\repos\AnimaAIProxy
 
 不动的：\iew_region\（AnimaAIProxy 没有对应工具）、以及所有打标专用工具
 （propose/current_image/…）——那些本来就是本应用特有的。
+
+### ① view_regions：一次最多 4 块放大
+
+移植自升级包的 ModeCaptioningKit（ParseMultiRegions/CropMultiRegions），但
+**只取解析部分单独成 Core/MultiRegion.cs**，不拖 CaptionMode 进来。真正的裁剪
+没重写——TagAgent 里逐个框翻译成一条 iew_region 参数去调 host.ViewRegion，
+EXIF 转正/缩放/编码全走原来那条已验证的路。省的是"裁一块→等一轮→再裁一块"的串行往返。
+
+- 参数：{"regions":[{x,y,w,h,label?}...]} 最多 4 个；w/h ≤ 0.01 判错（整图无意义）。
+- 预算沿用 MaxRegionImages=12：一次要几张扣几张，超了不真裁。
+- 单块 iew_region 保留（模型按需要选）。
+
+### ① 工具旧名迁移
+
+改名后，用户以前关过的旧名（search_tags 等）不能因为改名就"复活"。
+AgentKit.IsDisabled 先过一张旧名→现名映射表（LegacyToolNames），设置页读回时
+旧条目仍然生效；保存时写回的是现名。

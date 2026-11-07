@@ -557,6 +557,62 @@ public sealed class TagAgent
                     continue;
                 }
 
+                if (string.Equals(call.Name, AgentKit.ViewRegionsToolName, StringComparison.Ordinal))
+                {
+                    var req = MultiRegion.Parse(call.Arguments);
+                    if (!req.Ok)
+                    {
+                        var bad = req.Problem.Length > 0 ? req.Problem : "No regions were given.";
+                        log.Add("多处放大（参数不合法）");
+                        Report(new ToolCallLog(call.Name, call.Arguments, bad));
+                        messages.Add(LlmClient.ToolMessage(call.Id, bad));
+                        continue;
+                    }
+
+                    // 预算：一次要几张就扣几张；超了不真的去裁（解码+编码白干）。
+                    if (req.Regions.Count > imageBudget)
+                    {
+                        var full = $"You have already been given the maximum of {MaxRegionImages} " +
+                                   $"enlarged images for this turn, and this call would need " +
+                                   $"{req.Regions.Count} more. Answer now with what you have seen.";
+                        log.Add("多处放大（已超出图片预算）");
+                        Report(new ToolCallLog(call.Name, call.Arguments, full));
+                        messages.Add(LlmClient.ToolMessage(call.Id, full));
+                        continue;
+                    }
+
+                    ReportStart(call.Name, call.Arguments);
+                    var got = new List<LlmClient.ChatImage>();
+                    var labels = new List<string>();
+                    foreach (var box in req.Regions)
+                    {
+                        // 复用单区域那条路：EXIF 转正、缩放、编码都在 host.ViewRegion 里，
+                        // 这里只把每个框翻译成一条 view_region 参数，绝不自己再裁一遍。
+                        var one = new JsonObject
+                        {
+                            ["mode"] = "crop",
+                            ["x"] = box.X, ["y"] = box.Y, ["w"] = box.W, ["h"] = box.H,
+                        }.ToJsonString();
+                        var (ok, _, imgs) = await host.ViewRegion(one).ConfigureAwait(false);
+                        if (ok && imgs.Count > 0)
+                        {
+                            got.AddRange(imgs);
+                            labels.Add(box.Label.Length > 0 ? box.Label : $"({box.X:0.##},{box.Y:0.##})");
+                        }
+                    }
+
+                    imageBudget -= got.Count;
+                    pendingImages.AddRange(got);
+                    var msg2 = got.Count == 0
+                        ? "None of the requested regions could be cropped."
+                        : $"Cropped {got.Count} region(s): {string.Join(", ", labels)}. " +
+                          "The images are attached below — look at them.";
+                    log.Add(got.Count > 0 ? $"多处放大 → {got.Count} 张图" : "多处放大 → 全部失败");
+                    Report(new ToolCallLog(call.Name, call.Arguments, msg2));
+                    messages.Add(LlmClient.ToolMessage(call.Id, msg2));
+                    continue;
+                }
+
                 if (string.Equals(call.Name, AgentKit.ViewRegionToolName, StringComparison.Ordinal))
                 {
                     // 先按参数估一下这次会要几张图，超预算就**不要真的去裁**——
