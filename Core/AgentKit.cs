@@ -1048,6 +1048,103 @@ public static class AgentKit
             ["required"] = new JsonArray { "regions" },
         });
 
+    /// <summary>
+    /// 按**打标格式**裁剪 `propose` 的 schema（Phase 3）：
+    /// - 纯标签(TagsOnly)：只给 add_tags / remove_tags，**没有 prose 字段**；
+    /// - 纯自然语言(ProseOnly)：只给 prose / replace_prose，**没有标签字段**；
+    /// - 混合(Hybrid)：三者齐全。
+    ///
+    /// 光靠系统提示"请只输出标签"是不够的——模型会照旧塞散文。**schema 里没有这个
+    /// 字段**，它就没法合法地吐出来；再加落地时的强制校验兜底（见 EnforceProposalMode）。
+    /// </summary>
+    public static AgentTool ProposeToolForMode(CaptionMode mode)
+    {
+        var props = new JsonObject();
+        var required = new JsonArray();
+        var desc = "Propose the changes to the user's prompt. Call this EXACTLY ONCE, at the very " +
+                   "end, after you have finished searching. Do not describe the changes in your " +
+                   "reply text instead of calling this. Nothing is written until the user applies.";
+
+        if (mode is CaptionMode.TagsOnly or CaptionMode.Hybrid)
+        {
+            props["add_tags"] = new JsonObject
+            {
+                ["type"] = "array",
+                ["items"] = new JsonObject { ["type"] = "string" },
+                ["description"] = "Tag names to ADD, copied exactly from danbooru_search_tags " +
+                                  "results. Omit ones already present. Empty array if none.",
+            };
+            props["remove_tags"] = new JsonObject
+            {
+                ["type"] = "array",
+                ["items"] = new JsonObject { ["type"] = "string" },
+                ["description"] = "Tag names to REMOVE, copied exactly from current_image's list. " +
+                                  "Use when replacing/clearing tags. Empty array if none.",
+            };
+            if (mode == CaptionMode.TagsOnly) required.Add("add_tags");
+        }
+
+        if (mode is CaptionMode.ProseOnly or CaptionMode.Hybrid)
+        {
+            props["prose"] = new JsonObject
+            {
+                ["type"] = "string",
+                ["description"] = mode == CaptionMode.ProseOnly
+                    ? "The complete English natural-language description of the image. This " +
+                      "format has NO tags, so put everything here."
+                    : "One English paragraph for anything that is not a tag: concepts with no " +
+                      "matching tag, and relations between things. Empty string to leave as is.",
+            };
+            props["replace_prose"] = new JsonObject
+            {
+                ["type"] = "boolean",
+                ["description"] = "true to overwrite the existing prose, false to append.",
+            };
+            if (mode == CaptionMode.ProseOnly) required.Add("prose");
+        }
+
+        props["note"] = new JsonObject
+        {
+            ["type"] = "string",
+            ["description"] = "One short Simplified Chinese sentence saying what you proposed and why.",
+        };
+
+        if (mode == CaptionMode.TagsOnly)
+            desc += " This prompt is in TAGS-ONLY format: there is no prose part, so propose " +
+                    "tags only.";
+        else if (mode == CaptionMode.ProseOnly)
+            desc += " This prompt is in PROSE-ONLY format: there are no tags, so propose the " +
+                    "description only.";
+
+        return new AgentTool(ProposeToolName, desc, new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = props,
+            ["required"] = required,
+        });
+    }
+
+    /// <summary>
+    /// 落地前的**强制**模式校验（Phase 3）。schema 已经拦了一道，但模型仍可能用
+    /// 别的字段名把内容漏进来，或者从历史/工具结果里带回来。这里按模式把不该有的
+    /// 部分清掉，并如实告诉调用方"清掉了什么"（界面据此提示，不装作没发生）。
+    /// </summary>
+    public static (AgentProposal Proposal, string Stripped) EnforceProposalMode(
+        AgentProposal p, CaptionMode mode)
+    {
+        if (mode == CaptionMode.TagsOnly && (p.HasProse || p.Prose.Length > 0))
+            return (p with { Prose = "", ReplaceProse = false }, "一段散文");
+        if (mode == CaptionMode.ProseOnly && (p.HasTags || p.HasRemovals))
+            return (p with
+                    {
+                        AddTags = Array.Empty<string>(),
+                        Known = Array.Empty<string>(),
+                        Unknown = Array.Empty<string>(),
+                        RemoveTags = Array.Empty<string>(),
+                    }, "标签改动");
+        return (p, "");
+    }
+
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
                                         bool canBatchLabel = false, bool canEditTags = false,
@@ -1088,7 +1185,8 @@ public static class AgentKit
             tools.Add(LabelImagesTool);
         }
         if (canSave) tools.Add(SaveTool);
-        tools.Add(ProposeTool);
+        // 按当前打标格式裁剪 propose（纯标签不给散文字段、纯自然语言不给标签字段）
+        tools.Add(ProposeToolForMode(cfg?.ActiveCaptionMode ?? CaptionMode.Hybrid));
 
         // 最后再按用户在设置里的开关过一遍：**前提**（上面那些 flag）与**意愿**
         // （这里）是两件事，两者都满足才真的下发。
@@ -1204,6 +1302,21 @@ public static class AgentKit
             "- A prompt is a comma-separated tag list, optionally followed by ONE " +
             "natural-language paragraph. Never mix prose into the tag list, and never write " +
             "a sentence as a tag.\n");
+
+        // 打标格式（Phase 3）：明确告诉模型这份提示词是什么格式，避免它按默认混合去写。
+        switch (cfg?.ActiveCaptionMode ?? CaptionMode.Hybrid)
+        {
+            case CaptionMode.TagsOnly:
+                sb.Append("- THIS prompt is in TAGS-ONLY format: there is no prose part at all. " +
+                          "Propose tags only (add_tags / remove_tags). Never write a description " +
+                          "and never put a sentence into a tag.\n");
+                break;
+            case CaptionMode.ProseOnly:
+                sb.Append("- THIS prompt is in PROSE-ONLY format: there are no tags. Put everything " +
+                          "into the prose paragraph; do not output Danbooru tags (no '1girl', " +
+                          "'solo', etc.). Avoid subjective praise; describe what is visible.\n");
+                break;
+        }
 
         if (!canWebSearch)
             sb.Append("- The web search tool is not available. Do not look for one.\n");

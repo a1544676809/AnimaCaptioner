@@ -446,7 +446,11 @@ public sealed class TagAgent
             {
                 if (string.Equals(call.Name, AgentKit.ProposeToolName, StringComparison.Ordinal))
                 {
-                    var proposal = AgentKit.ParseProposal(call.Arguments, host.IsKnown);
+                    var proposeMode = host.Settings?.ActiveCaptionMode ?? CaptionMode.Hybrid;
+                    var (proposal, modeStripped) = AgentKit.EnforceProposalMode(
+                        AgentKit.ParseProposal(call.Arguments, host.IsKnown), proposeMode);
+                    if (modeStripped.Length > 0)
+                        log.Add($"按打标格式（{proposeMode}）忽略了{modeStripped}");
                     var reply = (turn.Content ?? "").Trim();
                     if (reply.Length == 0)
                         reply = proposal.Note.Length > 0

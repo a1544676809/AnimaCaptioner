@@ -2008,6 +2008,70 @@ public static class Agent
                 .GetFormatOptions().Mode, CaptionMode.ProseOnly);
         }
 
+        Console.WriteLine("\n=== 43. Phase 3：按打标格式约束 propose ===");
+        {
+            System.Text.Json.Nodes.JsonObject Props(CaptionMode m) =>
+                (System.Text.Json.Nodes.JsonObject)AgentKit.ProposeToolForMode(m).Parameters["properties"]!;
+
+            // ---- schema 裁剪 ----
+            var pt = Props(CaptionMode.TagsOnly);
+            True("纯标签：有 add_tags/remove_tags",
+                 pt.ContainsKey("add_tags") && pt.ContainsKey("remove_tags"));
+            True("纯标签：**没有** prose / replace_prose",
+                 !pt.ContainsKey("prose") && !pt.ContainsKey("replace_prose"));
+
+            var pp = Props(CaptionMode.ProseOnly);
+            True("纯自然语言：有 prose / replace_prose",
+                 pp.ContainsKey("prose") && pp.ContainsKey("replace_prose"));
+            True("纯自然语言：**没有** add_tags / remove_tags",
+                 !pp.ContainsKey("add_tags") && !pp.ContainsKey("remove_tags"));
+
+            var ph = Props(CaptionMode.Hybrid);
+            True("混合：三个都有",
+                 ph.ContainsKey("add_tags") && ph.ContainsKey("remove_tags") && ph.ContainsKey("prose"));
+
+            // Tools() 里那个 propose 是当前模式裁过的
+            var cfgTags = new AppSettings { ActiveCaptionMode = CaptionMode.TagsOnly };
+            var proposeInTools = AgentKit.Tools(true, cfg: cfgTags)
+                .First(t => t.Name == AgentKit.ProposeToolName);
+            var tp = (System.Text.Json.Nodes.JsonObject)proposeInTools.Parameters["properties"]!;
+            True("Tools(纯标签) 下发的 propose 没有 prose", !tp.ContainsKey("prose"));
+
+            // ---- 系统提示 ----
+            True("纯标签提示词明说 TAGS-ONLY",
+                 AgentKit.SystemPrompt(true, false, cfg: cfgTags).Contains("TAGS-ONLY"));
+            True("纯自然语言提示词明说 PROSE-ONLY",
+                 AgentKit.SystemPrompt(true, false, cfg: new AppSettings { ActiveCaptionMode = CaptionMode.ProseOnly })
+                     .Contains("PROSE-ONLY"));
+
+            // ---- 强制校验 ----
+            var m43p1 = AgentKit.ParseProposal(
+                """{"add_tags":["solo"],"prose":"a girl standing","replace_prose":true}""", null);
+            var (e1, s1) = AgentKit.EnforceProposalMode(m43p1, CaptionMode.TagsOnly);
+            True("纯标签：散文被清掉（schema 之外也拦）", e1.Prose.Length == 0 && !e1.ReplaceProse);
+            Eq("纯标签：标签保留", string.Join(",", e1.AddTags), "solo");
+            True("如实报告清掉了散文", s1.Contains("散文"));
+
+            var m43p2 = AgentKit.ParseProposal("""{"add_tags":["solo"],"remove_tags":["old"],"prose":"desc"}""", null);
+            var (e2, s2) = AgentKit.EnforceProposalMode(m43p2, CaptionMode.ProseOnly);
+            Eq("纯自然语言：标签清空", e2.AddTags.Count, 0);
+            Eq("纯自然语言：删除也清空", e2.Remove.Count, 0);
+            Eq("纯自然语言：散文保留", e2.Prose, "desc");
+            True("如实报告清掉了标签", s2.Contains("标签"));
+
+            var (e3, s3) = AgentKit.EnforceProposalMode(m43p2, CaptionMode.Hybrid);
+            True("混合：原样不动", s3.Length == 0 && e3.Prose == "desc" && e3.AddTags.Count == 1);
+
+            // ---- 调度：纯标签模式下模型硬塞散文，落地时被清掉 ----
+            var h = new FakeHost { Settings = new AppSettings { ActiveCaptionMode = CaptionMode.TagsOnly } };
+            h.Dataset.Add(new AgentImage("a", 0, true, 1, IsCurrent: true));
+            h.Turn(Tool("p", AgentKit.ProposeToolName,
+                        """{"add_tags":["solo"],"prose":"should be dropped"}"""));
+            var o = Run(h, "加个 solo，顺便描述一下");
+            True("提案里散文被清掉", o.Proposal is { } rp && rp.Prose.Length == 0 && rp.AddTags.Count == 1);
+            True("日志说明按格式忽略了散文", o.Log.Any(l => l.Contains("忽略了") && l.Contains("散文")));
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -2141,7 +2205,7 @@ public static class Agent
 
         // ---- 标签清单 / 类型 / 排序 ----
         /// <summary>探针不过滤工具开关。</summary>
-        public AppSettings? Settings => null;
+        public AppSettings? Settings { get; set; }
 
         public int AddTagsCalls { get; private set; }
         public List<string> LastAddTags { get; private set; } = new();

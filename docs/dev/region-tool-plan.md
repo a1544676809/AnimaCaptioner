@@ -706,3 +706,15 @@ AgentKit.IsDisabled 先过一张旧名→现名映射表（LegacyToolNames），
 验证：agent 新增第 42 节（三模式解析/重建/幂等往返/互转/设置往返）；全 17 套件回归通过；
 真机确认应用启动正常。**"点菜单切换"这一步未做机器验证**（UIA 读 TagList 在非前台时为空，
 不可靠），引擎与接线由单测覆盖。
+
+### ③ Phase 3：按打标格式约束 AI 输出
+
+三层约束，缺一层就会出现"格式设了但 AI 不遵守"：
+1. AgentKit.ProposeToolForMode(mode) 裁剪 schema——纯标签无 prose 字段，纯自然语言无
+   标签字段；Tools() 用它替换固定的 ProposeTool。
+2. SystemPrompt 按 cfg.ActiveCaptionMode 追加 TAGS-ONLY / PROSE-ONLY 说明。
+3. AgentKit.EnforceProposalMode 在 TagAgent 落地前按模式清掉越界字段并记录。
+   批量打标逐张跑的是同一个 TagAgent，所以自动继承。
+
+实测：直接对本地模型喂裁剪后的 schema——纯标签只回 add_tags、纯自然语言只回 prose，
+无越界字段。单测见 agent 第 43 节（schema 裁剪/提示词/强校验/调度清散文）。
