@@ -589,3 +589,43 @@ await 的场合用——阻塞版 `OnUiThread` 只适合纯同步的一小段。
 （有/无逐张能力）、一张对话里连改两张（第二次 `propose` 不再被第一次结束掉）、
 老行为保留（`CanApplyNow=false` 时提案照旧带回去）、上限 20 张后转为收尾。
 
+
+## 并入高级 AI 的升级包（AnimaCaptioner-MultiMode-Upgrade.zip）
+
+高级 AI 打包了一套 Phase 1~4 的升级（architecture-upgrade-plan.md），并配了
+apply-upgrade.ps1 自动补丁器。**没有直接跑那个脚本**，原因：
+
+- 补丁器靠"往文件最后一个右花括号前插入"和精确锚点做注入。这个仓库在打包后
+  已经往前走了很多（种子词、别名、逐张走、PostCount…），锚点已有一处
+  （BatchOptions 的 record 签名）对不上，注入会静默错位。
+- Phase 4 要改跨仓库的 AnimaAIProxy（本机没有），无从验证。
+- Phase 1/3 的多模式 UI 切换若要真生效，得把模式贯穿编辑器解析/重建、提案落地、
+  批量流水线——只加个菜单开关而解析不跟着变，是假功能；粗暴切换还可能把已有
+  散文尾巴丢掉（数据丢失）。
+
+所以这一轮只并入能独立验证、且真的接线了的部分——Phase 2 的高效工具链：
+
+- Core/VocabBatchEngine.cs：vocab_resolve（一次核验≤60 个候选）、vocab_scan（从描述抠标签）
+- Core/PageReader.cs：read_page，抓网页正文，HTML 提纯成 Markdown，带 SSRF 防护（拒绝私网/回环）
+- VocabDb.FindExact：批量引擎要的精确查找（Anima 优先→别名→下划线/空格→best→Danbooru），
+  返回与 TagSearch 同构的命中
+- 接线：AgentKit 三个工具声明 + 工具清单（可被设置页关掉）+ 系统提示引导；
+  TagAgent.IHost 三个带默认实现的成员（老探针不必改）+ 调度分支；AgentHost 实现
+
+没并、也不半并的：CaptionMode 多模式解析/UI、ModeCaptioningKit 模式裁剪、
+FastBatchCaptioner 两阶段流水线、Phase 4 SharedCore。要做得对，需要贯穿编辑器的
+一次独立重构 + 数据丢失防护 + 专门回归，不该塞进这次合并。
+
+两处刻意的工程决定：
+
+1. IHost 用默认接口实现（返回一条错误 JSON，而不是抛异常）：老探针/假 host 为零改动
+   即可编译；真 host 覆盖。默认给"看得懂的错误"而不是崩，符合本项目"不发注定失败的
+   工具 / 出错要如实说"的一贯做法。
+2. read_page 的 HttpClient 必须是进程级共享：AgentHost 是每轮现建的，若每轮 new 一个
+   PageReader（内建 HttpClient），连接池会被耗光（经典 socket exhaustion）。用
+   static Lazy<PageReader>，随进程存活、不 Dispose。
+
+验证：agent 套件新增第 39 节（工具下发与闸门、清单可关、调度回灌、以及拿真词库
+331,808 tags 验 FindExact/ResolveBatch/ScanText）；全 17 个套件回归通过。
+真机 E2E 未完成：当前活动站点是用户新加的 tailscale 本地模型（100.68.153.10:8080），
+那一轮在等待窗口内没返回，属环境问题；工具调度已由假 host 单测覆盖。

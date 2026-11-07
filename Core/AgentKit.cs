@@ -107,6 +107,9 @@ public static class AgentKit
     public const string SetTagSectionToolName = "set_tag_section";
     public const string SortTagsToolName = "sort_tags";
     public const string AddTagsToImagesToolName = "add_tags_to_images";
+    public const string VocabResolveToolName = "vocab_resolve";
+    public const string VocabScanToolName = "vocab_scan";
+    public const string ReadPageToolName = "read_page";
 
     /// <summary>九个大类的 `key(中文标题)` 清单，塞进工具描述里让模型知道有哪些可选值。</summary>
     public static string SectionCatalog() =>
@@ -141,6 +144,14 @@ public static class AgentKit
             "关掉它，助手就只能回答问题、不能改提示词。", "", Required: true),
         new(SearchToolName, "查词库（search_tags）",
             "在本地标签词库里检索，确认标签名拼写正确、拿到中文释义。", ""),
+        new(VocabResolveToolName, "批量核验标签（vocab_resolve）",
+            "一次提交最多 60 个候选词，返回命中/别名/中文/分类/帖数与近似词。" +
+            "比逐个 search_tags 快得多。", ""),
+        new(VocabScanToolName, "提取标签（vocab_scan）",
+            "从一段自然语言描述里扫描出标准标签。", ""),
+        new(ReadPageToolName, "读网页正文（read_page）",
+            "抓取 Wiki / 萌娘百科 / Danbooru wiki 的正文设定。",
+            "需要先在「联网搜索」页启用搜索后端"),
         new(WebSearchToolName, "联网搜索（web_search）",
             "遇到不认识的标签时上网查一下。", "需要先在「联网搜索」页启用搜索后端"),
         new(CurrentImageToolName, "查当前图片（current_image）",
@@ -816,6 +827,81 @@ public static class AgentKit
     /// "有数据集就能切"的老行为；**批量内层那一轮必须传 false**——外层循环已经替它
     /// 选好了这一张，模型再切走就会把提案落到别的图上，而外层还以为在改这一张。
     /// </summary>
+    /// <summary>
+    /// 批量核验候选标签名：一次提交一批（最多 60 个）候选词，本地词库毫秒级返回
+    /// 精确命中 / 别名重定向 / 中文释义 / 分类 / 帖数，未命中的附 Top-3 近似词。
+    /// 移植自 AnimaAIProxy：把"逐个 search_tags 往返几十秒"压成"一次调用几秒"。
+    /// </summary>
+    public static AgentTool VocabResolveTool => new(
+        VocabResolveToolName,
+        "Resolve MANY candidate tag names in ONE call (up to 60). For each input it returns " +
+        "whether the vocabulary knows it, the canonical tag (following aliases and _/space), " +
+        "its Chinese gloss, category and post count; misses come back with up to 3 close " +
+        "suggestions. Use this INSTEAD of many search_tags calls when you already have a list " +
+        "of candidate tags for the image — one call covers the whole picture.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["tags"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["description"] = "Candidate tag strings or Chinese keywords, e.g. " +
+                                      "[\"1girl\", \"blonde hair\", \"蝙蝠发饰\"]. Max 60.",
+                },
+            },
+            ["required"] = new JsonArray { "tags" },
+        });
+
+    /// <summary>从一段自由文本里提取标准标签（1~4 词滑窗 + 分句扫描，命中词库即返回）。</summary>
+    public static AgentTool VocabScanTool => new(
+        VocabScanToolName,
+        "Extract canonical vocabulary tags from a free-form description (English or Chinese). " +
+        "Use this when you have written a paragraph of observations and want the set of real " +
+        "tags hidden inside it (e.g. before building a hybrid caption), rather than guessing " +
+        "tag names one by one.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["text"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "The description or draft caption to scan.",
+                },
+                ["limit"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "Max tags to return (1..100, default 40).",
+                },
+            },
+            ["required"] = new JsonArray { "text" },
+        });
+
+    /// <summary>抓取网页正文（带 SSRF 防护：拒绝私网/回环地址）。</summary>
+    public static AgentTool ReadPageTool => new(
+        ReadPageToolName,
+        "Fetch a web page and return its clean body text (title + readable text, tags/scripts " +
+        "stripped). Use it after web_search when a snippet is not enough — e.g. a character wiki " +
+        "or Danbooru wiki entry that lists hair ornaments, eye color, outfit details.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["url"] = new JsonObject { ["type"] = "string", ["description"] = "Absolute http(s) URL." },
+                ["max_chars"] = new JsonObject
+                {
+                    ["type"] = "integer",
+                    ["description"] = "Max characters of body text to return (default 4000).",
+                },
+            },
+            ["required"] = new JsonArray { "url" },
+        });
+
     public static List<AgentTool> Tools(bool webSearch, bool withImages = false,
                                         bool canViewRegion = false, bool canSave = false,
                                         bool canBatchLabel = false, bool canEditTags = false,
@@ -828,7 +914,15 @@ public static class AgentKit
             tools.Add(ImageInfoTool);
         }
         tools.Add(SearchTool);
-        if (webSearch) tools.Add(WebSearchTool);
+        // 批量核验/扫描：纯本地词库，便宜，和 search_tags 一起常驻。
+        tools.Add(VocabResolveTool);
+        tools.Add(VocabScanTool);
+        if (webSearch)
+        {
+            tools.Add(WebSearchTool);
+            // 读正文是网络行为，跟着"联网搜索"这个前提出入（与 web_search 同一道闸）。
+            tools.Add(ReadPageTool);
+        }
         if (withImages && canSwitchImages) tools.Add(SelectImageTool);
         if (canViewRegion) tools.Add(ViewRegionTool);
 
@@ -899,6 +993,10 @@ public static class AgentKit
             "Rules:\n" +
             "- Call search_tags for EVERY tag name before you use it. Tag names are exact " +
             "strings; a name you write from memory is probably not a real tag.\n" +
+            "- When you have SEVERAL candidate tags at once (you usually do, right after " +
+            "looking at the image), pass the whole list to vocab_resolve in ONE call instead " +
+            "of one search_tags per tag: it checks up to 60 names and returns the same " +
+            "information. Use vocab_scan to pull real tags out of a paragraph you wrote.\n" +
             "- Search with SHORT queries of one or two words, one concept at a time. Never " +
             "pass a whole sentence: split \"white lace dress\" into \"white dress\" and " +
             "\"lace\" and search both.\n" +
@@ -963,6 +1061,10 @@ public static class AgentKit
 
         if (!canWebSearch)
             sb.Append("- The web search tool is not available. Do not look for one.\n");
+        else
+            sb.Append("- After web_search, if a snippet is not enough (a character/artist wiki " +
+                      "entry usually has the most reliable hair/eye/outfit details), use " +
+                      "read_page on the best URL to read its body text.\n");
 
         // 放大那条路。三条都必须写，缺一条都会出现"它明明能看却不敢用/乱用"：
         //  1. 它**看不见**整图的细节（整图缩到了长边 1024），所以细处不许猜；

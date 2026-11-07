@@ -193,6 +193,22 @@ internal sealed class AgentHost : TagAgent.IHost
         return TagSearch.ToToolContent(res.Hits, query, 2, res.SplitMatch);
     }
 
+    // ---- Phase 2：移植自 AnimaAIProxy 的高效工具实现 ----
+    // read_page 的 HttpClient 由 PageReader 持有；而 AgentHost 是**每轮现建**的
+    // （见 MainWindow 里"每轮现建 host"），所以这里必须用**进程级共享**的那一个，
+    // 否则每轮 new 一个 HttpClient 会把连接池耗光（经典 socket exhaustion）。
+    // 共享实例随进程存活，不 Dispose。
+    private static readonly Lazy<PageReader> _sharedPageReader = new(() => new PageReader());
+
+    public string VocabResolve(string jsonArgs) =>
+        VocabBatchEngine.ExecuteVocabResolveTool(_vocab, jsonArgs);
+
+    public string VocabScan(string jsonArgs) =>
+        VocabBatchEngine.ExecuteVocabScanTool(_vocab, jsonArgs);
+
+    public Task<string> ReadPageAsync(string jsonArgs, CancellationToken ct = default)
+        => _sharedPageReader.Value.ExecuteReadPageToolAsync(jsonArgs, ct);
+
     /// <summary>
     /// 带工具的一轮。把进度回调透传给 <see cref="LlmClient.ChatWithToolsAsync"/>——
     /// 给了它就走流式，界面能实时看到思考链。

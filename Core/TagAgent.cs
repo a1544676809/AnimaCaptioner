@@ -39,6 +39,22 @@ public sealed class TagAgent
         string Search(string query, out List<TagSearch.Hit> hits, out bool splitMatch);
 
         /// <summary>
+        /// 批量核验候选标签（`vocab_resolve`）。返回给模型的 JSON 文本。
+        ///
+        /// 给了**默认实现**（返回一条错误 JSON）是刻意的：这是个新能力，老的探针/假 host
+        /// 不必为了编译去实现它；真 host（AgentHost）会覆盖。默认返回错误而不是抛异常，
+        /// 让模型看到一句看得懂的话，而不是把循环打断。
+        /// </summary>
+        string VocabResolve(string jsonArgs) => """{"error":"vocab_resolve not bound"}""";
+
+        /// <summary>批量扫描提取标签（`vocab_scan`）。同上，有默认实现。</summary>
+        string VocabScan(string jsonArgs) => """{"error":"vocab_scan not bound"}""";
+
+        /// <summary>抓取网页正文（`read_page`）。同上，有默认实现。</summary>
+        Task<string> ReadPageAsync(string jsonArgs, CancellationToken ct = default) =>
+            Task.FromResult("""{"error":"read_page not bound"}""");
+
+        /// <summary>
         /// 每一轮的 max_tokens 从哪里来。**由 host 在每轮现取**，不在这里写死。
         ///
         /// 原先这里是个常量 2400，而它实际是"答案 400 + 思考余量"的合成值——
@@ -734,6 +750,34 @@ public sealed class TagAgent
                     log.Add("保存 → 已排队（提案应用后落盘）");
                     Report(new ToolCallLog(call.Name, call.Arguments, queued));
                     messages.Add(LlmClient.ToolMessage(call.Id, queued));
+                    continue;
+                }
+
+                // ---- 批量核验 / 提取 / 读网页正文（Phase 2，移植自 AnimaAIProxy）----
+                if (string.Equals(call.Name, AgentKit.VocabResolveToolName, StringComparison.Ordinal))
+                {
+                    var text = host.VocabResolve(call.Arguments);
+                    log.Add("批量核验标签");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.VocabScanToolName, StringComparison.Ordinal))
+                {
+                    var text = host.VocabScan(call.Arguments);
+                    log.Add("扫描提取标签");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
+                    continue;
+                }
+
+                if (string.Equals(call.Name, AgentKit.ReadPageToolName, StringComparison.Ordinal))
+                {
+                    var text = await host.ReadPageAsync(call.Arguments, ct).ConfigureAwait(false);
+                    log.Add("读网页正文");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
                     continue;
                 }
 

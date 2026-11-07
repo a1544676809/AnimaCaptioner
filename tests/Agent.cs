@@ -58,9 +58,9 @@ public static class Agent
         // ---------- 3. 工具集 ----------
         Console.WriteLine("\n=== 3. 工具集 ===");
         Eq("不联网时不发 web_search", string.Join("|", AgentKit.Tools(false).Select(t => t.Name)),
-           "search_tags|propose");
+           "search_tags|vocab_resolve|vocab_scan|propose");
         Eq("联网时三件都在，propose 在最后", string.Join("|", AgentKit.Tools(true).Select(t => t.Name)),
-           "search_tags|web_search|propose");
+           "search_tags|vocab_resolve|vocab_scan|web_search|read_page|propose");
         True("search_tags 与「问模型找标签」共用同一段说明",
              AgentKit.SearchTool.Description == TagSearchAgent.ToolDescription);
         True("每个工具都有 object 参数块",
@@ -150,7 +150,7 @@ public static class Agent
         Eq("提案标签", string.Join("|", outcome.Proposal!.AddTags), "1girl|white dress");
         Eq("查过一次", string.Join("|", host.Searches), "white dress");
         Eq("两次请求都带上了工具", string.Join(";", host.SeenTools.Select(t => string.Join("+", t))),
-           "search_tags+web_search+propose;search_tags+web_search+propose");
+           "search_tags+vocab_resolve+vocab_scan+web_search+read_page+propose;search_tags+vocab_resolve+vocab_scan+web_search+read_page+propose");
         True("回复用模型这句话", outcome.Reply.Length > 0);
 
         Console.WriteLine("\n=== 7. 提案就停：同一轮里后面的调用不再执行 ===");
@@ -681,14 +681,14 @@ public static class Agent
             var withRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true, canViewRegion: true).Select(t => t.Name));
             Eq("带图 + 可放大时的工具集", withRegion,
-               "current_image|image_info|search_tags|web_search|select_image|view_region|propose");
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|propose");
 
             var noRegion = string.Join("|",
                 AgentKit.Tools(true, withImages: true).Select(t => t.Name));
             True("没带图时不下发 view_region（放大靠插图，没图就没法放大）",
                  !noRegion.Contains(AgentKit.ViewRegionToolName));
             Eq("没带图时其余图片工具照旧", noRegion,
-               "current_image|image_info|search_tags|web_search|select_image|propose");
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|propose");
 
             var noImages = string.Join("|", AgentKit.Tools(true).Select(t => t.Name));
             True("没有数据集时 image_info / view_region 都不下发",
@@ -1066,7 +1066,7 @@ public static class Agent
                                              .Select(t => t.Name));
             True("开了才下发", on.Contains(AgentKit.SaveToolName));
             Eq("顺序：save 在 propose 之前", on,
-               "current_image|image_info|search_tags|web_search|select_image|view_region|save_caption|propose");
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|save_caption|propose");
 
             // 系统提示必须**明确禁止**它在没有权限时说"我保存了"
             True("开了时说清能写盘、且写盘靠 save_caption",
@@ -1180,7 +1180,7 @@ public static class Agent
                                                     .Select(t => t.Name));
             True("开了批量就下发 label_images", withBatch.Contains(AgentKit.LabelImagesToolName));
             Eq("顺序：批量在 save 与 propose 之前", withBatch,
-               "current_image|image_info|search_tags|web_search|select_image|view_region|" +
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|" +
                "add_tags_to_images|label_images|save_caption|propose");
 
             var noBatch = string.Join("|", AgentKit.Tools(true, withImages: true, canSave: true)
@@ -1278,7 +1278,7 @@ public static class Agent
                  on.Contains(AgentKit.SetTagSectionToolName) &&
                  on.Contains(AgentKit.SortTagsToolName));
             Eq("顺序：读/改/排序在批量与 save 之前", on,
-               "current_image|image_info|search_tags|web_search|select_image|view_region|" +
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|view_region|" +
                "list_tags|set_tag_section|sort_tags|add_tags_to_images|label_images|" +
                "save_caption|propose");
 
@@ -1541,7 +1541,7 @@ public static class Agent
             True("有数据集时下发 add_tags_to_images",
                  withBatch.Contains(AgentKit.AddTagsToImagesToolName));
             Eq("顺序：补标签在批量打标之前", withBatch,
-               "current_image|image_info|search_tags|web_search|select_image|" +
+               "current_image|image_info|search_tags|vocab_resolve|vocab_scan|web_search|read_page|select_image|" +
                "add_tags_to_images|label_images|propose");
             True("没数据集时不下发",
                  !AgentKit.Tools(true).Any(t => t.Name == AgentKit.AddTagsToImagesToolName));
@@ -1744,6 +1744,89 @@ public static class Agent
             True("日志里记了到上限", ow3.Log.Any(l => l.Contains("已到张数上限")));
         }
 
+        Console.WriteLine("\n=== 39. Phase 2 工具：vocab_resolve / vocab_scan / read_page ===");
+        {
+            // 这三个来自高级 AI 的升级包（移植自 AnimaAIProxy）。价值在于把"逐个
+            // search_tags 往返几十秒"压成"一次调用几秒"。
+            // ---- 工具下发与闸门 ----
+            var off = string.Join("|", AgentKit.Tools(false).Select(t => t.Name));
+            True("vocab_resolve/scan 不依赖联网，常驻下发",
+                 off.Contains(AgentKit.VocabResolveToolName) && off.Contains(AgentKit.VocabScanToolName));
+            True("read_page 是网络行为，不联网时不下发", !off.Contains(AgentKit.ReadPageToolName));
+
+            var on = string.Join("|", AgentKit.Tools(true).Select(t => t.Name));
+            True("联网时 read_page 下发", on.Contains(AgentKit.ReadPageToolName));
+            True("read_page 紧跟在 web_search 之后",
+                 on.IndexOf("web_search") < on.IndexOf("read_page"));
+
+            True("工具清单里有这三项（否则永远关不掉）",
+                 AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.VocabResolveToolName) &&
+                 AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.VocabScanToolName) &&
+                 AgentKit.ToolCatalog.Any(t => t.Name == AgentKit.ReadPageToolName));
+            True("系统提示引导「先批量核验，而不是逐个查」",
+                 AgentKit.SystemPrompt(true, false).Contains("vocab_resolve") &&
+                 AgentKit.SystemPrompt(true, false).Contains("ONE call"));
+
+            // ---- 调度：三个工具各自把结果如实回灌给模型 ----
+            var h = new FakeHost();
+            h.Turn(Tool("v1", AgentKit.VocabResolveToolName, """{"tags":["1girl","blonde hair"]}"""))
+             .Turn(Tool("v2", AgentKit.VocabScanToolName, """{"text":"a girl with blonde hair"}"""))
+             .Turn(Tool("v3", AgentKit.ReadPageToolName, """{"url":"https://example.com/a"}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "批量核验一下");
+            Eq("三个工具都调到了 host", h.VocabCalls.Count, 3);
+            True("参数原样传下去", h.VocabCalls.Any(c => c.StartsWith("resolve:") && c.Contains("1girl")));
+            bool AnyToolMsg38(string needle) => h.SeenMessages.SelectMany(r => r)
+                .Any(m => m["role"]?.GetValue<string>() == "tool" &&
+                          (m["content"]?.GetValue<string>() ?? "").Contains(needle));
+            True("vocab_resolve 结果回给模型", AnyToolMsg38("resolved_count"));
+            True("vocab_scan 结果回给模型", AnyToolMsg38("matched_count"));
+            True("read_page 结果回给模型", AnyToolMsg38("body"));
+            True("三样都记进日志", o.Log.Any(l => l.Contains("批量核验")) &&
+                                   o.Log.Any(l => l.Contains("扫描提取")) &&
+                                   o.Log.Any(l => l.Contains("读网页")));
+
+            // ---- 引擎本身（有真词库时）----
+            var dbPath = Environment.GetEnvironmentVariable("AC_VOCABDB");
+            var seedPath = Environment.GetEnvironmentVariable("AC_SEED");
+            if (!string.IsNullOrWhiteSpace(dbPath) && System.IO.File.Exists(dbPath))
+            {
+                var db = new VocabDb();
+                db.Load(dbPath, seedPath ?? "");
+                var v = 0;
+                void V(string label, bool ok, string got) { Console.WriteLine($"  {(ok ? "ok  " : "BAD ")} {label,-40} {got}"); if (!ok) v++; }
+
+                // FindExact：直查、别名、下划线/空格、未知
+                var e1 = db.FindExact("1girl");
+                V("FindExact 直查命中 1girl", e1 is not null && e1.Tag == "1girl" && e1.InAnima, e1?.Tag ?? "(null)");
+                var e2 = db.FindExact("looking at camera");   // BuiltInAlias 之外，词库应有别名或近似
+                V("FindExact 下划线/空格互换不崩", e2 is null || e2.Tag.Length > 0, e2?.Tag ?? "(null)");
+                V("FindExact 未知词返回 null", db.FindExact("zzz_not_a_tag_zzz") is null, "null?");
+
+                // ResolveBatch：已知 + 未知混合，未命中带 suggestions 或被列入 unresolved
+                var rb = VocabBatchEngine.ResolveBatch(db, new[] { "1girl", "blonde hair", "zzz_not_a_tag_zzz" });
+                V("已知的进了 known_tags", rb.CanonicalKnownTags.Any(t => t == "1girl"),
+                  string.Join(",", rb.CanonicalKnownTags));
+                V("未知的进了 unresolved", rb.UnresolvedInputs.Contains("zzz_not_a_tag_zzz"),
+                  string.Join(",", rb.UnresolvedInputs));
+                V("JSON 摘要含 resolved_count", rb.ToJsonSummary().Contains("resolved_count"), "ok");
+
+                // ScanText：从一句话里抠出真标签
+                var sc = VocabBatchEngine.ScanText(db, "a blonde hair girl with blue eyes, standing", 20);
+                V("从描述里扫出了 blonde hair", sc.MatchedTags.Any(t => t.Tag == "blonde hair"),
+                  string.Join(",", sc.MatchedTags.Take(6).Select(t => t.Tag)));
+
+                // 工具执行入口返回合法 JSON
+                V("vocab_resolve 工具入口返回 JSON",
+                  VocabBatchEngine.ExecuteVocabResolveTool(db, """{"tags":["1girl"]}""").Contains("known_tags"), "ok");
+                V("vocab_scan 缺参数时如实报错",
+                  VocabBatchEngine.ExecuteVocabScanTool(db, "{}").Contains("error"), "ok");
+
+                if (v > 0) { Console.WriteLine($"  引擎断言失败 {v} 条"); bad += v; }
+            }
+            else { Console.WriteLine("  （跳过引擎断言：没有 AC_VOCABDB）"); }
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }
@@ -1850,6 +1933,30 @@ public static class Agent
         }
 
         public void ReportBatchProgress(string text) => BatchProgress.Add(text);
+
+        // ---- Phase 2 工具：vocab_resolve / vocab_scan / read_page ----
+        public List<string> VocabCalls { get; } = new();
+        public string VocabResolveResult { get; set; } = """{"resolved_count":1}""";
+        public string VocabScanResult { get; set; } = """{"matched_count":2}""";
+        public string ReadPageResult { get; set; } = """{"ok":true,"title":"x","text":"body"}""";
+
+        public string VocabResolve(string jsonArgs)
+        {
+            VocabCalls.Add("resolve:" + jsonArgs);
+            return VocabResolveResult;
+        }
+
+        public string VocabScan(string jsonArgs)
+        {
+            VocabCalls.Add("scan:" + jsonArgs);
+            return VocabScanResult;
+        }
+
+        public Task<string> ReadPageAsync(string jsonArgs, CancellationToken ct = default)
+        {
+            VocabCalls.Add("page:" + jsonArgs);
+            return Task.FromResult(ReadPageResult);
+        }
 
         // ---- 标签清单 / 类型 / 排序 ----
         /// <summary>探针不过滤工具开关。</summary>

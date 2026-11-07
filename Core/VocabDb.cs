@@ -391,6 +391,55 @@ public sealed class VocabDb
         return new ResolveResult(null, "unknown");
     }
 
+    /// <summary>
+    /// **精确**查找（批量解析用）：只认字面命中——Anima 索引、别名重定向、下划线/空格互换、
+    /// best 表、Danbooru 原名，**不做任何模糊匹配**。命中返回带中文/分类/帖数/是否 Anima/
+    /// 是否废弃的 <see cref="SearchHit"/>，否则 null。
+    ///
+    /// 与 <see cref="ResolveEnglish"/> 的分工：那个只给"标签名 + 状态串"，调用方还得再查一遍
+    /// 分类与帖数；批量解析一次要处理几十个词，多查一遍就是几十次多余查找。
+    /// 它与 `TagSearch.Query` 的命中结构一致，所以批量引擎两条来源可以共用同一套字段。
+    /// </summary>
+    public SearchHit? FindExact(string q)
+    {
+        q = (q ?? "").Trim().Trim('.', ',', ';', ':');
+        if (q.Length == 0) return null;
+        var low = q.ToLowerInvariant();
+
+        // 1. Anima 索引是权威：它自带一些 Danbooru 会重定向掉的名字（see-through 等）
+        if (_anima.TryGetValue(low, out var animaPosts))
+        {
+            _byTag.TryGetValue(low, out var ar);
+            var cat = ar?.Category;
+            if (string.IsNullOrEmpty(cat) && _animaCategory.TryGetValue(low, out var ac)) cat = ac;
+            return new SearchHit(
+                Tag: ar is { Tag.Length: > 0 } ? ar.Tag : low,
+                Cn: ar?.Cn ?? "",
+                Category: cat ?? "",
+                PostCount: animaPosts > 0 ? animaPosts : (ar?.PostCount ?? 0),
+                InAnima: true,
+                Deprecated: false);
+        }
+
+        // 2. 别名 → 规范名，跟随一次（只一次：避免 A→B→A 的环把递归打穿）
+        if (_alias.TryGetValue(low, out var target) &&
+            !string.Equals(target, low, StringComparison.OrdinalIgnoreCase))
+            return FindExact(target);
+
+        // 3. best 表精确命中（下划线/空格互换各试一次）
+        foreach (var cand in new[] { low, low.Replace('_', ' '), low.Replace(' ', '_') })
+        {
+            if (_byTag.TryGetValue(cand, out var r))
+                return new SearchHit(r.Tag, r.Cn, r.Category, r.PostCount, r.InAnima, r.Deprecated);
+        }
+
+        // 4. Danbooru 原名兜底
+        if (_byDanbooru.TryGetValue(low, out var d))
+            return new SearchHit(d.Tag, d.Cn, d.Category, d.PostCount, d.InAnima, d.Deprecated);
+
+        return null;
+    }
+
     /// <summary>中文关键词 → 标签。</summary>
     public ResolveResult ResolveChinese(string kw, double minRatio = 0.5)
     {
