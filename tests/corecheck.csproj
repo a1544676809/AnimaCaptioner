@@ -63,6 +63,7 @@
     <Compile Include="..\Core\MultiRegion.cs" />
     <Compile Include="..\Core\CaptionMode.cs" />
     <Compile Include="..\Core\FastBatchCaptioner.cs" />
+    <Compile Include="..\Core\CaptionPreset.cs" />
     <Compile Include="..\Core\AgentChatStore.cs" />
     <Compile Include="..\Core\TagAgent.cs" />
     <Compile Include="..\Core\ImageSizing.cs" />

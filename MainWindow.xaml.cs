@@ -323,7 +323,7 @@ public sealed partial class MainWindow : Window
         FillSectionMenu(TagSectionMenu, SelectedTagRows());
 
         // 打标格式菜单的勾选对齐到配置里的当前模式（Phase 1）。
-        InitCaptionModeMenu();
+        InitializeDynamicPresets();
 
         // 提示词库同理：独立 sidecar，且**必须在 ApplyColumnRatios 之前**载入，
         // 因为分栏比例要按模式取不同的一组值。
@@ -594,7 +594,9 @@ public sealed partial class MainWindow : Window
     /// 当前的打标/解析格式选项（来自设置里的「打标格式」）。
     /// 解析与重建**都走它**，所以切模式立刻生效，而不是只改个界面显示。
     /// </summary>
-    private CaptionFormatOptions CaptionOptions => _cfg?.GetFormatOptions() ?? CaptionFormatOptions.DefaultHybrid;
+    private CaptionFormatOptions CaptionOptions =>
+        _activePreset is not null ? CaptionPresetEngine.ToFormatOptions(_activePreset)
+                                  : (_cfg?.GetFormatOptions() ?? CaptionFormatOptions.DefaultHybrid);
 
     /// <summary>
     /// 把正文规范成"送进模型的线上格式"：给该转义的标签补上括号转义。
@@ -2828,18 +2830,31 @@ public sealed partial class MainWindow : Window
             return null;
         }
 
+        // 预设过滤（剥特征/画风词、补触发词与质量前缀、水印过滤、单行）
+        var fastTags = res.FinalTags;
+        var fastProse = res.FinalProse;
+        if (_activePreset is { } pset)
+        {
+            try
+            {
+                var (ft, fp, _) = CaptionPresetEngine.ApplyPresetFilter(pset, res.FinalTags, res.FinalProse, _vocab, _cfg);
+                fastTags = ft; fastProse = fp;
+            }
+            catch (Exception ex) { Log.Write("fast batch preset filter failed: " + ex.Message); }
+        }
+
         var (changed, refused) = OnUiThread(() =>
         {
-            _pendingTags = new List<string>(res.FinalTags);
-            _proseTail = res.FinalProse;
+            _pendingTags = new List<string>(fastTags);
+            _proseTail = fastProse;
             CommitPrompt();
             var wrote = SaveCurrent(showDialog: false, out var rf);
             return (wrote, rf);
         }, (false, false));
 
         if (refused) return (BatchStatus.Failed, "保存被拒（读不到正文）");
-        Log.Write($"fast batch: {Path.GetFileName(path)} tags={res.FinalTags.Count} " +
-                  $"prose={res.FinalProse.Length} changed={changed}");
+        Log.Write($"fast batch: {Path.GetFileName(path)} tags={fastTags.Count} " +
+                  $"prose={fastProse.Length} changed={changed}");
         return changed ? (BatchStatus.Written, "") : (BatchStatus.Unchanged, "");
     }
 
@@ -2917,6 +2932,8 @@ public sealed partial class MainWindow : Window
                 maxRounds: _cfg.AgentMaxRounds);
 
             if (!outcome.Ok) return (BatchStatus.Failed, outcome.Error);
+
+            outcome = ApplyPresetToOutcome(outcome);
 
             if (outcome.Proposal is not { } p || p.IsEmpty)
                 return (BatchStatus.NoProposal, "");
@@ -5613,6 +5630,8 @@ private void EndEdit(bool commit, bool lostFocus = false)
                 return;
             }
 
+            outcome = ApplyPresetToOutcome(outcome);
+
             _agentChat.Add(AgentChatStore.Kind.User, text);
             _agentChat.Add(AgentChatStore.Kind.Assistant, outcome.Reply,
                            outcome.Reasoning, outcome.Log, outcome.ToolCalls);
@@ -6579,6 +6598,18 @@ private void EndEdit(bool commit, bool lostFocus = false)
     /// 刻意不走 AddTagCore：那个每次都会自己记一个撤销点，一条 8 个标签的提案
     /// 就会占掉 8 步。这里直接动 _pendingTags，只在开头记一笔。
     /// </summary>
+    /// <summary>把当前预设应用到 AI 提案上（剥特征/画风词、补触发词与质量前缀、水印过滤）。</summary>
+    private TagAgent.Outcome ApplyPresetToOutcome(TagAgent.Outcome o)
+    {
+        if (_activePreset is null || o.Proposal is not { } p) return o;
+        try
+        {
+            var filtered = CaptionPresetEngine.ApplyPresetToProposal(_activePreset, p, _vocab, _cfg);
+            return o with { Proposal = filtered };
+        }
+        catch (Exception ex) { Log.Write("preset filter failed: " + ex.Message); return o; }
+    }
+
     private void ApplyAgentProposal(AgentProposal p, bool single)
     {
         if (_doc is null) return;

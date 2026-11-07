@@ -1,0 +1,40 @@
+{
+  "id": "moss-character-lora",
+  "name": "MOSS-Image · 角色 LoRA (Character LoRA)",
+  "description": "针对 OpenMOSS MOSS-Image (5B DiT + Qwen3.5-9B 4K 编码器) 训练角色 LoRA：遵循官方 Quality->Score->Meta->Year->Character->Series->@Artist->General 顺序，剥离角色固有发色/发型/瞳色，充分发挥 Qwen3.5-9B 长文本优势详述服饰材质、空间方位、光影与画面内双语文字（原样保留在双引号内），严格剔除水印描述。",
+  "model_family": "MossImage",
+  "training_intent": "CharacterLora",
+  "caption_mode": "Hybrid",
+  "hybrid_profile": "CompactTagsRichProse",
+  "trigger_word": "",
+  "pin_trigger_at_front": false,
+  "prefix_style_trigger_with_at": true,
+  "quality_prefix_tags": [
+    "best quality",
+    "highres"
+  ],
+  "max_token_budget": 4096,
+  "force_single_line_output": false,
+  "strip_tag_sections": [],
+  "strip_tags": [
+    "watermark",
+    "signature",
+    "jpeg artifacts",
+    "username"
+  ],
+  "auto_strip_core_hair_eye_in_character_lora": true,
+  "preserve_exact_visible_text_in_quotes": true,
+  "exclude_watermarks_and_signatures": true,
+  "must_omit_dimensions": [
+    "Character's fixed hair color, base hairstyle, and eye color (bound to the character trigger word)",
+    "Any watermarks, artist signatures, or platform logos (never mention them in tags or prose)"
+  ],
+  "must_describe_dimensions": [
+    "Detailed clothing layers, fabric textures, colors, and accessories worn in this specific image",
+    "Spatial composition: foreground, midground, background, camera perspective, and subject placement",
+    "Nuanced posture, hand/finger actions, and facial expression",
+    "Lighting direction, shadow quality, bokeh/depth of field, and artistic medium/style (so style is not baked into the character LoRA)",
+    "All non-watermark visible Chinese/English text in the image verbatim inside double quotes \"...\" along with its position and typography"
+  ],
+  "system_prompt_template": "You are captioning a training image for a **MOSS-Image (5B DiT + Qwen3.5-9B encoder) Character LoRA**.\n- **Trigger Word**: `{{trigger_word}}` (follows MOSS-Image official tag order: `Quality -> Score -> Meta -> Year -> Character -> Series -> @Artist -> General`).\n- **MOSS-Image Character LoRA Rules**:\n  1. **Identity Lock**: Do NOT describe the character's permanent hair color, base hairstyle, or eye color in either tags or prose. Refer to the character by `{{trigger_word}}` or pronouns so those core traits bind tightly to the LoRA trigger.\n  2. **Rich Spatial & Outfit Prose**: Leverage Qwen3.5-9B's long-context comprehension to write a thorough, structured natural language description covering attire (fabrics, colors, layering), pose and hand interactions, spatial layout (foreground/midground/background), lighting/depth of field, and rendering style.\n  3. **Exact Visible Text Preservation**: If the image contains non-watermark text (signs, speech bubbles, clothing prints, UI, titles in Chinese, English, or Japanese), transcribe the exact characters verbatim inside double quotes `\"...\"` without translating or romanizing, and note its position.\n  4. **Zero Watermark Mention**: Never describe or tag watermarks or signatures; MOSS-Image bakes watermark tokens into weights if mentioned."
+}

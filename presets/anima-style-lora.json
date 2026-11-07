@@ -1,0 +1,60 @@
+{
+  "id": "anima-style-lora",
+  "name": "Anima · 画风 LoRA (Style / Artist LoRA)",
+  "description": "针对 Anima 训练画风/画师 LoRA：自动使用 @画师名 触发词格式，严禁在标签或自然语言中描述线条、笔触、上色技法与光影风格（使其完全沉入 LoRA 权重），同时极度详尽地标注人物身份、发色瞳色、服装与背景以防止画风污染构图或脸型。",
+  "model_family": "Anima",
+  "training_intent": "StyleLora",
+  "caption_mode": "Hybrid",
+  "hybrid_profile": "AnimaStandard",
+  "trigger_word": "@my_style",
+  "pin_trigger_at_front": false,
+  "prefix_style_trigger_with_at": true,
+  "quality_prefix_tags": [
+    "masterpiece",
+    "best quality",
+    "safe"
+  ],
+  "max_token_budget": 512,
+  "force_single_line_output": true,
+  "strip_tag_sections": [
+    "artist"
+  ],
+  "strip_tags": [
+    "anime coloring",
+    "cel shading",
+    "flat color",
+    "painterly",
+    "watercolor (medium)",
+    "oil painting (medium)",
+    "thick outlines",
+    "thin outlines",
+    "no lineart",
+    "lineless",
+    "soft shading",
+    "hard shading",
+    "pastel colors",
+    "vibrant colors",
+    "muted colors",
+    "high contrast",
+    "official art",
+    "anime screencap",
+    "watermark",
+    "signature",
+    "artist name"
+  ],
+  "auto_strip_core_hair_eye_in_character_lora": false,
+  "preserve_exact_visible_text_in_quotes": true,
+  "exclude_watermarks_and_signatures": true,
+  "must_omit_dimensions": [
+    "Artistic style, rendering technique, line weight, shading style (cel shading, painterly, watercolor, thick outlines, anime coloring)",
+    "Color palette mood adjectives or aesthetic judgements (vibrant, pastel, retro, masterpiece aesthetic)",
+    "Other artist names, studio names, watermarks, or signatures"
+  ],
+  "must_describe_dimensions": [
+    "Subject count, character name, and copyright/series if recognizable",
+    "Complete physical appearance: exact hair color, hairstyle, bangs, eye color, skin tone, body proportions, and facial expression",
+    "Complete outfit breakdown: every garment, color, pattern, and held prop",
+    "Exact pose, camera angle, framing, and all background objects/architecture"
+  ],
+  "system_prompt_template": "You are captioning a training image for an **Anima Style / Artist LoRA** (Qwen3-0.6B encoder, max 512 tokens, strict single-line output).\n- **Style Trigger Word**: `{{trigger_word}}` (automatically formatted with Anima's `@` artist prefix).\n- **Variable Disentanglement Rule (CRITICAL for Style LoRA)**:\n  1. **NEVER** describe the art style, drawing medium, line weight, brushwork, shading technique (e.g. do NOT write \"anime style\", \"cel shading\", \"soft painterly brushwork\", \"thick outlines\", \"pastel palette\"), or other artist names. The LoRA must learn the entire visual aesthetic under `{{trigger_word}}`.\n  2. **DO** exhaustively describe WHAT is depicted: character identity/series, exact hair color & style, eye color, facial expression, every clothing item and color, physical pose, camera framing, and every background element.\n  3. Keep natural language prose strictly factual and content-focused (no purple prose or aesthetic commentary), formatted on a SINGLE LINE after the tag block."
+}

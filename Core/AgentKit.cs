@@ -1429,6 +1429,21 @@ public static class AgentKit
             }
         }
 
+        // 动态打标预设（用户选的 Anima/MOSS 角色/画风 LoRA 预设）：把它的
+        // 系统提示段（输出格式、触发词、禁写/必写维度、文字与水印规则）接在后面。
+        if (!string.IsNullOrWhiteSpace(cfg?.ActivePresetId))
+        {
+            try
+            {
+                if (CaptionPresetEngine.GetPresetById(cfg.ActivePresetId) is { } preset)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine(CaptionPresetEngine.RenderSystemPrompt(preset));
+                }
+            }
+            catch (Exception ex) { Log.Write("preset prompt render failed: " + ex.Message); }
+        }
+
         return sb.ToString();
     }
 

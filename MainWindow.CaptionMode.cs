@@ -1,23 +1,48 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using AnimaCaptioner.Core;
 
 namespace AnimaCaptioner;
 
 /// <summary>
-/// 「模式 → 打标格式」三个单选：纯标签 / 纯自然语言 / 混合（Anima）。
+/// 「模式」菜单的行为：打标格式三选一 + 动态打标预设（Anima / MOSS 的角色 / 画风 LoRA）。
 ///
-/// 关键：**它不是只改一个显示开关**。`_cfg.ActiveCaptionMode` 会被
-/// <c>ParseCaption</c>（读）和 <c>CommitPrompt</c>（写）同时使用，所以切换之后
-/// 当前正文立刻按新语义重新解析、标签列表跟着变，后续保存也按新格式落盘。
-///
-/// 切换本身**不改写正文文字**（只重新解析），所以不会因为切模式丢内容：
-/// - 切到「纯标签」：逗号分隔的全部内容都算标签，不再有"散文尾巴"；
-/// - 切到「纯自然语言」：整段都算描述，标签列表为空；
-/// - 切回「混合」：重新按词库/句子特征切出标签与散文。
+/// 关键：预设**默认不启用**（<see cref="_activePreset"/> 为 null）。这样老用户不碰菜单
+/// 就完全是原来的行为；选了某个预设才会注入触发词、剥离特征、追加预设系统提示。
 /// </summary>
 public sealed partial class MainWindow
 {
-    /// <summary>当前打标格式（来自设置，改了就存盘）。</summary>
+    private List<CaptionPreset> _availablePresets = new();
+    private CaptionPreset? _activePreset;
+
+    /// <summary>当前预设（可能为 null = 不使用预设）。</summary>
+    public CaptionPreset? ActivePreset
+    {
+        get => _activePreset;
+        set
+        {
+            _activePreset = value;
+            if (_cfg is not null)
+            {
+                // 预设带模式；选了预设就让编辑器/保存也按它的模式走
+                if (value is not null)
+                {
+                    _cfg.ActiveCaptionMode = value.CaptionMode;
+                    _cfg.ActiveHybridProfile = value.HybridProfile;
+                }
+                _cfg.ActivePresetId = value?.Id ?? "";
+                _cfg.Save();
+            }
+            UpdateCaptionModeMenuState(_cfg?.ActiveCaptionMode ?? CaptionMode.Hybrid);
+            UpdatePresetMenuSelection(value?.Id ?? "");
+            if (value is not null)
+                Log.Write($"preset -> {value.Id} (mode={value.CaptionMode}, intent={value.TrainingIntent})");
+            else
+                Log.Write("preset -> (none)");
+        }
+    }
+
     public CaptionMode CurrentCaptionMode
     {
         get => _cfg?.ActiveCaptionMode ?? CaptionMode.Hybrid;
@@ -32,57 +57,112 @@ public sealed partial class MainWindow
         }
     }
 
-    /// <summary>启动时把菜单勾选对齐到配置里的当前模式。</summary>
-    private void InitCaptionModeMenu()
+    /// <summary>启动时载入预设并把选中状态对齐到配置。只读 id、不写盘。</summary>
+    public void InitializeDynamicPresets()
     {
-        try { UpdateCaptionModeMenuState(CurrentCaptionMode); }
-        catch (Exception ex) { Log.Write("init caption mode menu failed: " + ex.Message); }
+        try { _availablePresets = CaptionPresetEngine.LoadAllPresets(); }
+        catch (Exception ex) { Log.Write("load presets failed: " + ex.Message); _availablePresets = new(); }
+
+        _activePreset = string.IsNullOrWhiteSpace(_cfg?.ActivePresetId)
+            ? null
+            : _availablePresets.FirstOrDefault(p =>
+                string.Equals(p.Id, _cfg!.ActivePresetId, StringComparison.OrdinalIgnoreCase));
+
+        UpdateCaptionModeMenuState(CurrentCaptionMode);
+        UpdatePresetMenuSelection(_activePreset?.Id ?? "");
+        Log.Write($"presets loaded: {_availablePresets.Count}; active={( _activePreset?.Id ?? "(none)")}");
+    }
+
+    public void SelectPresetById(string presetId)
+    {
+        if (string.IsNullOrWhiteSpace(presetId)) { ActivePreset = null; return; }
+        if (_availablePresets.Count == 0)
+            _availablePresets = CaptionPresetEngine.LoadAllPresets();
+        var target = _availablePresets.FirstOrDefault(p =>
+            string.Equals(p.Id, presetId, StringComparison.OrdinalIgnoreCase));
+        if (target is not null) ActivePreset = target;
     }
 
     private void CaptionModeHybridClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
         => SetActiveCaptionMode(CaptionMode.Hybrid);
-
     private void CaptionModeTagsOnlyClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
         => SetActiveCaptionMode(CaptionMode.TagsOnly);
-
     private void CaptionModeProseOnlyClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
         => SetActiveCaptionMode(CaptionMode.ProseOnly);
 
-    /// <summary>切模式：存盘 → 对齐菜单 → **重新解析当前正文** → 重建标签列表。</summary>
+    private void PresetNoneClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => SelectPresetById("");
+    private void PresetAnimaCharLoraClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => SelectPresetById("anima-character-lora");
+    private void PresetAnimaStyleLoraClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => SelectPresetById("anima-style-lora");
+    private void PresetMossCharLoraClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => SelectPresetById("moss-character-lora");
+    private void PresetMossStyleLoraClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        => SelectPresetById("moss-style-lora");
+
+    private void OpenPresetsFolderClick(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        try
+        {
+            var dir = CaptionPresetEngine.UserPresetsDirectory;
+            System.IO.Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = dir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex) { Log.Write("open presets folder failed: " + ex.Message); }
+    }
+
+    /// <summary>手动切打标格式：会**清掉当前预设**（预设自带格式，留着会打架）。</summary>
     public void SetActiveCaptionMode(CaptionMode mode)
     {
-        if (_cfg is null) return;
-
-        var changed = _cfg.ActiveCaptionMode != mode;
-        CurrentCaptionMode = mode;   // 存盘 + 菜单勾选
-
-        if (changed)
+        if (_activePreset is not null)
         {
-            // 不重写正文，只重新按新语义解析（正文文字原样保留）。
-            var text = GetCaptionText();
-            var parsed = ParseCaption(text);
-            _pendingTags = parsed.Tags;
-            _proseTail = parsed.ProseTail;
-            RefreshTagRows();
-            ApplyPromptColors();
-            Log.Write($"caption mode -> {mode}: tags={_pendingTags.Count} prose={_proseTail.Length}");
+            _activePreset = null;
+            if (_cfg is not null) { _cfg.ActivePresetId = ""; _cfg.Save(); }
+            UpdatePresetMenuSelection("");
+            Log.Write("preset cleared by manual mode switch");
         }
+
+        CurrentCaptionMode = mode;
+        UpdateCaptionModeMenuState(mode);
+
+        var text = GetCaptionText();
+        var parsed = ParseCaption(text);
+        _pendingTags = parsed.Tags;
+        _proseTail = parsed.ProseTail;
+        RefreshTagRows();
+        ApplyPromptColors();
 
         TranslateInfoText.Text = mode switch
         {
-            CaptionMode.TagsOnly => "打标格式：纯标签 —— 逗号分隔的全部内容都算标签，不再分出自然语言尾巴。",
+            CaptionMode.TagsOnly => "打标格式：纯标签 —— 逗号分隔的全部内容都算标签。",
             CaptionMode.ProseOnly => "打标格式：纯自然语言 —— 整段都算描述，标签列表为空。",
-            _ => "打标格式：标签 + 自然语言（Anima）—— 前置分类标签 + 尾段描述。",
+            _ => "打标格式：标签 + 自然语言（Anima）。",
         };
     }
 
     private void UpdateCaptionModeMenuState(CaptionMode mode)
     {
-        if (CaptionModeHybridItem is not null)
-            CaptionModeHybridItem.IsChecked = mode == CaptionMode.Hybrid;
-        if (CaptionModeTagsOnlyItem is not null)
-            CaptionModeTagsOnlyItem.IsChecked = mode == CaptionMode.TagsOnly;
-        if (CaptionModeProseOnlyItem is not null)
-            CaptionModeProseOnlyItem.IsChecked = mode == CaptionMode.ProseOnly;
+        if (CaptionModeHybridItem is not null) CaptionModeHybridItem.IsChecked = mode == CaptionMode.Hybrid;
+        if (CaptionModeTagsOnlyItem is not null) CaptionModeTagsOnlyItem.IsChecked = mode == CaptionMode.TagsOnly;
+        if (CaptionModeProseOnlyItem is not null) CaptionModeProseOnlyItem.IsChecked = mode == CaptionMode.ProseOnly;
+    }
+
+    private void UpdatePresetMenuSelection(string presetId)
+    {
+        if (PresetNoneItem is not null)
+            PresetNoneItem.IsChecked = string.IsNullOrWhiteSpace(presetId);
+        if (PresetAnimaCharItem is not null)
+            PresetAnimaCharItem.IsChecked = string.Equals(presetId, "anima-character-lora", StringComparison.OrdinalIgnoreCase);
+        if (PresetAnimaStyleItem is not null)
+            PresetAnimaStyleItem.IsChecked = string.Equals(presetId, "anima-style-lora", StringComparison.OrdinalIgnoreCase);
+        if (PresetMossCharItem is not null)
+            PresetMossCharItem.IsChecked = string.Equals(presetId, "moss-character-lora", StringComparison.OrdinalIgnoreCase);
+        if (PresetMossStyleItem is not null)
+            PresetMossStyleItem.IsChecked = string.Equals(presetId, "moss-style-lora", StringComparison.OrdinalIgnoreCase);
     }
 }

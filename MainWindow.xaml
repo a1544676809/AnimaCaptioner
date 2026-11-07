@@ -47,6 +47,20 @@
                                      GroupName="captionmode"
                                      Click="CaptionModeProseOnlyClick" />
                 <MenuFlyoutSeparator />
+                <!-- 动态打标预设（Anima / MOSS-Image 的角色 / 画风 LoRA）。 -->
+                <RadioMenuFlyoutItem x:Name="PresetNoneItem" Text="打标预设：不使用（仅按打标格式）"
+                                     GroupName="captionpreset" IsChecked="True"
+                                     Click="PresetNoneClick" />
+                <RadioMenuFlyoutItem x:Name="PresetAnimaCharItem" Text="打标预设：Anima · 角色 LoRA"
+                                     GroupName="captionpreset" Click="PresetAnimaCharLoraClick" />
+                <RadioMenuFlyoutItem x:Name="PresetAnimaStyleItem" Text="打标预设：Anima · 画风 LoRA"
+                                     GroupName="captionpreset" Click="PresetAnimaStyleLoraClick" />
+                <RadioMenuFlyoutItem x:Name="PresetMossCharItem" Text="打标预设：MOSS-Image · 角色 LoRA"
+                                     GroupName="captionpreset" Click="PresetMossCharLoraClick" />
+                <RadioMenuFlyoutItem x:Name="PresetMossStyleItem" Text="打标预设：MOSS-Image · 画风 LoRA"
+                                     GroupName="captionpreset" Click="PresetMossStyleLoraClick" />
+                <MenuFlyoutItem Text="打开预设文件夹…" Click="OpenPresetsFolderClick" />
+                <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="切换模式" Click="ToggleMode_Click"
                                 KeyboardAcceleratorTextOverride="Ctrl+M">
                     <MenuFlyoutItem.KeyboardAccelerators>

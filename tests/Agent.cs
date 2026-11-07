@@ -2131,6 +2131,87 @@ public static class Agent
                false);
         }
 
+        Console.WriteLine("\n=== 45. 动态打标预设（Anima / MOSS 角色 / 画风 LoRA）===");
+        {
+            // ---- 目录与内置 ----
+            var all = CaptionPresetEngine.LoadAllPresets();
+            True("至少内置 4 个预设", all.Count >= 4);
+            foreach (var id in new[] { "anima-character-lora", "anima-style-lora", "moss-character-lora", "moss-style-lora" })
+                True($"内置含 {id}", all.Any(p => p.Id == id));
+            True("按 id 取预设", CaptionPresetEngine.GetPresetById("anima-style-lora") is not null);
+            True("未知 id 返回 null", CaptionPresetEngine.GetPresetById("nope") is null);
+
+            var charP = CaptionPresetEngine.GetPresetById("anima-character-lora")!;
+            var styleP = CaptionPresetEngine.GetPresetById("anima-style-lora")!;
+
+            // ---- 角色 LoRA：剥离发色/瞳色、补质量前缀、去水印 ----
+            var (ft, fp, stripped) = CaptionPresetEngine.ApplyPresetFilter(
+                charP,
+                new[] { "blonde hair", "blue eyes", "white dress", "watermark" },
+                "She\nstands by the window.", null, null);
+            True("角色：发色被剥离", !ft.Contains("blonde hair") && stripped.Contains("blonde hair"));
+            True("角色：瞳色被剥离", !ft.Contains("blue eyes") && stripped.Contains("blue eyes"));
+            True("角色：水印被剥离", !ft.Contains("watermark"));
+            True("角色：服装保留", ft.Contains("white dress"));
+            True("角色：补了质量前缀", ft.Contains("masterpiece") && ft.Contains("best quality") && ft.Contains("safe"));
+            True("角色：单行（换行被并成空格）", !fp.Contains('\n') && fp.Contains("She stands"));
+
+            // ---- 画风 LoRA：剥离画风/媒介词、触发词补 @（并加入结果）----
+            var (sf, _, ss) = CaptionPresetEngine.ApplyPresetFilter(
+                styleP,
+                new[] { "cel shading", "anime coloring", "blonde hair", "dress" },
+                "desc", null, null);
+            True("画风：cel shading 被剥离", !sf.Contains("cel shading") && ss.Contains("cel shading"));
+            True("画风：anime coloring 被剥离", !sf.Contains("anime coloring"));
+            True("画风：发色保留（画风要详写外貌）", sf.Contains("blonde hair"));
+            True("画风：触发词 @my_style 被加入", sf.Contains("@my_style"));
+
+            // ---- artist 分区剥离（需要词库才能把标签判成 artist）----
+            var dbPath = Environment.GetEnvironmentVariable("AC_VOCABDB");
+            var seedPath = Environment.GetEnvironmentVariable("AC_SEED");
+            if (!string.IsNullOrWhiteSpace(dbPath) && System.IO.File.Exists(dbPath))
+            {
+                var db = new VocabDb(); db.Load(dbPath, seedPath ?? "");
+                // 造一个真实画师名：从词库里找一个 artist 分类的标签
+                string? artistTag = null;
+                foreach (var q in new[] { "artist", "wlop", "ask", "sakimichan", "fuzichoco", "guweiz", "ciloranko" })
+                {
+                    foreach (var h in db.Search(q, 60))
+                        if (TagSections.Classify(h.Tag, db) == TagSections.Artist) { artistTag = h.Tag; break; }
+                    if (artistTag is not null) break;
+                }
+                if (!string.IsNullOrEmpty(artistTag))
+                {
+                    var (af, _, _) = CaptionPresetEngine.ApplyPresetFilter(
+                        styleP, new[] { artistTag!, "dress" }, "d", db, null);
+                    True("画风：artist 分区被整段剥离", !af.Contains(artistTag!));
+                }
+                else Console.WriteLine("  （跳过 artist 分区断言：没找到分类为 artist 的样本）");
+            }
+            // ---- 格式选项映射 ----
+            var optC = CaptionPresetEngine.ToFormatOptions(charP);
+            Eq("角色预设模式 = Hybrid", optC.Mode, CaptionMode.Hybrid);
+            var optS = CaptionPresetEngine.ToFormatOptions(styleP);
+            True("画风预设 PinTriggerWordsFirst 与其配置一致", optS.PinTriggerWordsFirst == styleP.PinTriggerAtFront);
+
+            // ---- 系统提示渲染 ----
+            var pre45 = CaptionPresetEngine.RenderSystemPrompt(charP);
+            True("系统提示含预设名与禁写维度", pre45.Contains(charP.Id) || pre45.Contains(charP.Name));
+            True("系统提示写了 DO NOT mention", pre45.Contains("DO NOT mention"));
+
+            // ---- 提案落地：模式强制 + 预设过滤 ----
+            var prop = AgentKit.ParseProposal(
+                """{"add_tags":["blonde hair","white dress"],"prose":"a girl"}""", null);
+            var filteredProp = CaptionPresetEngine.ApplyPresetToProposal(charP, prop, null, null);
+            True("提案：发色被剥", !filteredProp.AddTags.Contains("blonde hair"));
+            True("提案：服装保留", filteredProp.AddTags.Contains("white dress"));
+
+            // ---- JSON 读写 ----
+            var json = CaptionPresetEngine.ToJson(charP);
+            var back = CaptionPresetEngine.LoadPresetFromJson(json);
+            True("预设 JSON 往返", back is not null && back!.Id == charP.Id && back.MaxTokenBudget == charP.MaxTokenBudget);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }

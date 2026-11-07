@@ -114,6 +114,11 @@ public sealed class AppSettings
     /// 默认开。关掉则回到逐张完整助手。
     /// </summary>
     public bool UseFastBatchPipeline { get; set; } = true;
+    /// <summary>
+    /// 当前选中的动态打标预设 id（见 presets/*.json）。空 = 不用预设。
+    /// 只存 id，预设内容每次按 id 现读——用户改了 json 立刻生效，不用重启。
+    /// </summary>
+    public string ActivePresetId { get; set; } = "";
 
     /// <summary>
     /// 助手工具循环的轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。

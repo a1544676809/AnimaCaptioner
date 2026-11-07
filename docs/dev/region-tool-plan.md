@@ -738,3 +738,32 @@ LlmClient.ChatAsync(cfg,sys,user,image) 完成（不是它自己发请求）。
 纯自然语言保描述 / 混合无描述判回退、开关往返）；全 17 套件回归通过；直接对本地
 qwen3.5-9b 发单轮图请求，返回合法 JSON（tags+prose）。
 （UI 里从菜单触发整批的自动化点击不稳，未机器验证；快通道逻辑与落盘路径由单测+直连模型覆盖。）
+
+### ⑤ 动态打标预设（Anima / MOSS 角色 / 画风 LoRA）
+
+来自 Advanced Agent 的 CaptionPreset.cs（47KB）+ docs/13 + presets/*.json。核心价值：不同训练
+目标（角色 vs 画风；Anima vs MOSS-Image）需要**相反**的打标策略，预设把这些规则固化：
+
+- 触发词位置/@ 前缀、质量前缀、Token 预算、单行约束
+- 剥离清单（角色：发色/发型/瞳色；画风：画风/媒介词 + artist 分区）
+- 注入系统提示：禁写维度 / 必写维度 / 双引号原样转录文字 / 禁水印
+
+接线（与升级包不同：**默认不启用**，不碰菜单与以前一致）：
+- AppSettings.ActivePresetId（空=不用预设）；InitializeDynamicPresets 启动载入并对齐
+- 选预设 → 同步 ActiveCaptionMode/HybridProfile 并存盘；手动切打标格式会清掉预设
+- AgentKit.SystemPrompt 末尾追加 CaptionPresetEngine.RenderSystemPrompt(预设)
+- AI 提案落地前 ApplyPresetToProposal（模式强制 + 剥离 + 补触发/质量前缀 + 单行）
+- 批量快通道 FastBatch 结果再过 ApplyPresetFilter
+- 菜单「模式」下新增 5 个单选（不使用 / 4 个预设）+ 打开预设文件夹
+
+移植适配（本仓库没有 ModeCaptioningKit，且 TagItem 是 WinUI 类型不能进纯 net10 回归）：
+- RenderSystemPrompt 的 BuildModeSystemPrompt → 本文件内 BuildModeSystemPromptLocal
+- EnforceModePolicy → AgentKit.EnforceProposalMode
+- 分区剥离/排序的 TagItem → TagSections.Classify 纯逻辑
+- **修了升级包一个真 bug**：分区剥离前把 @ 去掉导致画师识别失败（我们词库画师标签带 @），
+  现按原样 Classify，画风预设的 artist 分区剥离才真的生效（第 45 节断言钉住）
+
+验证：agent 第 45 节（内置目录/按id取、角色剥离发色瞳色+质量前缀+去水印+单行、画风剥离
+媒介词+artist分区+补@触发、格式映射、系统提示渲染、提案过滤、JSON 往返）。全 17 套件除
+parity 外全绿；**parity 的 8 条失败是既有问题**（tests/golden.json 期望 seed=273，实际 285，
+golden 过期），与本次改动无关。
