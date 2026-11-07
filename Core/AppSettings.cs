@@ -105,6 +105,17 @@ public sealed class AppSettings
         HybridProfile: ActiveHybridProfile);
 
     /// <summary>
+    /// 批量打标是否走"两阶段极速流水线"：
+    /// Stage 1 让视觉模型**单轮**输出结构化 JSON（tags/prose），
+    /// Stage 2 本地词库毫秒级对齐 + 按大类排序 + 落盘。
+    ///
+    /// 比"每张跑完整工具循环"（2~5 次请求/张）快数倍；但当它觉得结果太差
+    /// （没标签 / 混合模式没描述）会**自动回退**到完整助手循环，所以不是"只快不准"。
+    /// 默认开。关掉则回到逐张完整助手。
+    /// </summary>
+    public bool UseFastBatchPipeline { get; set; } = true;
+
+    /// <summary>
     /// 助手工具循环的轮数上限。**一轮 = 一次请求**，一轮里模型可以同时发多个工具调用。
     ///
     /// 默认 32，比原先写死的 4 大得多——实测 4 轮一问"查 A 和 B 两个标签"就用光，

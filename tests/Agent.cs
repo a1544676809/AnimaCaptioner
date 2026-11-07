@@ -2072,6 +2072,65 @@ public static class Agent
             True("日志说明按格式忽略了散文", o.Log.Any(l => l.Contains("忽略了") && l.Contains("散文")));
         }
 
+        Console.WriteLine("\n=== 44. 两阶段极速批量（FastBatchCaptioner）===");
+        {
+            // ---- 单轮系统提示按模式给出不同的 JSON 形状 ----
+            var pT = FastBatchCaptioner.BuildSingleShotSystemPrompt(CaptionMode.TagsOnly);
+            var pP = FastBatchCaptioner.BuildSingleShotSystemPrompt(CaptionMode.ProseOnly);
+            var pH = FastBatchCaptioner.BuildSingleShotSystemPrompt(CaptionMode.Hybrid);
+            True("纯标签提示：要 tags、明说不要 prose",
+                 pT.Contains("\"tags\"") && pT.Contains("TAGS_ONLY") && pT.Contains("Do NOT include a \"prose\""));
+            True("纯自然语言提示：要 prose、明说不要 tags",
+                 pP.Contains("\"prose\"") && pP.Contains("PROSE_ONLY") && pP.Contains("do NOT include a \"tags\""));
+            True("混合提示：tags 与 prose 都要", pH.Contains("\"tags\"") && pH.Contains("\"prose\""));
+            True("额外指令会被追加",
+                 FastBatchCaptioner.BuildSingleShotSystemPrompt(CaptionMode.Hybrid, HybridProfile.AnimaStandard, "多加触发词")
+                     .Contains("多加触发词"));
+
+            // ---- 解析：fenced / 纯 JSON / 纯文本 / 空 ----
+            var d1 = FastBatchCaptioner.ParseModelResponse(
+                "```json\n{\"tags\":[\"1girl\",\"solo\"],\"prose\":\"stands\"}\n```", CaptionMode.Hybrid);
+            Eq("fenced JSON 的 tags", string.Join(",", d1.CandidateTags), "1girl,solo");
+            Eq("fenced JSON 的 prose", d1.Prose, "stands");
+            Eq("没有解析错误", d1.ParseError, "");
+
+            var d2 = FastBatchCaptioner.ParseModelResponse("{\"prose\":\"a girl\"}", CaptionMode.ProseOnly);
+            Eq("纯 JSON prose", d2.Prose, "a girl");
+            Eq("无 tags", d2.CandidateTags.Count, 0);
+
+            var d3 = FastBatchCaptioner.ParseModelResponse("", CaptionMode.Hybrid);
+            True("空响应给出 ParseError", d3.ParseError.Length > 0);
+
+            // ---- Stage 2：本地对齐（无词库时保留候选、纯标签丢散文）----
+            var optT = CaptionFormatOptions.ForMode(CaptionMode.TagsOnly);
+            var rT = FastBatchCaptioner.FinalizeDraft(
+                new FastBatchCaptioner.FastCaptionDraft(new[] { "solo", "smile" }, "should drop", ""),
+                optT, vocab: null, settings: null);
+            Eq("纯标签：标签保留", string.Join(",", rT.FinalTags), "solo,smile");
+            Eq("纯标签：散文被丢弃", rT.FinalProse, "");
+            True("纯标签：格式化文本只有标签", rT.FormattedCaptionText == "solo, smile");
+
+            var optP = CaptionFormatOptions.ForMode(CaptionMode.ProseOnly);
+            var rP = FastBatchCaptioner.FinalizeDraft(
+                new FastBatchCaptioner.FastCaptionDraft(new[] { "1girl" }, "a girl stands by a window", ""),
+                optP, vocab: null, settings: null);
+            Eq("纯自然语言：没有标签", rP.FinalTags.Count, 0);
+            Eq("纯自然语言：保留描述", rP.FinalProse, "a girl stands by a window");
+            True("纯自然语言：不需要回退", !rP.NeedsAgentFallback);
+
+            var optH = CaptionFormatOptions.ForMode(CaptionMode.Hybrid);
+            var rH = FastBatchCaptioner.FinalizeDraft(
+                new FastBatchCaptioner.FastCaptionDraft(new[] { "1girl" }, "", ""),
+                optH, vocab: null, settings: null);
+            True("混合：有标签但没描述 → 判需要回退（质量兜底）", rH.NeedsAgentFallback);
+
+            // ---- 设置开关 ----
+            True("默认走快通道", new AppSettings().UseFastBatchPipeline);
+            Eq("开关能落盘再读回",
+               AppSettings.FromJson(new AppSettings { UseFastBatchPipeline = false }.ToJson())?.UseFastBatchPipeline,
+               false);
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }

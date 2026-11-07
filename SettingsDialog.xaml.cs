@@ -100,6 +100,7 @@ public sealed partial class SettingsDialog : ContentDialog
         AgentAttachImageBox.IsChecked = cfg.AgentAttachImage;
         AgentFullAccessBox.IsChecked = cfg.AgentFullAccess;
         AgentRoundsBox.Value = cfg.AgentMaxRounds;
+        FastBatchBox.IsChecked = cfg.UseFastBatchPipeline;
         AgentMaxTokensBox.Value = cfg.AgentMaxTokens;
         AgentTempBox.Value = cfg.AgentTemperature;
 
@@ -1111,6 +1112,7 @@ public sealed partial class SettingsDialog : ContentDialog
         cfg.AgentAttachImage = AgentAttachImageBox.IsChecked == true;
         cfg.AgentFullAccess = AgentFullAccessBox.IsChecked == true;
         cfg.AgentMaxRounds = (int)(double.IsNaN(AgentRoundsBox.Value) ? 32 : AgentRoundsBox.Value);
+        cfg.UseFastBatchPipeline = FastBatchBox.IsChecked == true;
         // 0 是合法值（= 自动），所以兜底也回 0 而不是某个大数字：读懂"自动"的
         // 那一层是 LlmClient.ResolveBudget，这里不该替它做决定。
         cfg.AgentMaxTokens = (int)(double.IsNaN(AgentMaxTokensBox.Value) ? 0 : AgentMaxTokensBox.Value);

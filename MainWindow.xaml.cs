@@ -2790,6 +2790,60 @@ public sealed partial class MainWindow : Window
         OnUiThread(() => { SetAgentStatus(text); return true; }, true);
 
     /// <summary>
+    /// 两阶段极速流水线的单张实现。返回 null = **让调用方回退到完整助手循环**
+    /// （模型请求失败、或结果太差被判 needsFallback）。返回非 null = 已处理完。
+    /// </summary>
+    private async Task<(BatchStatus Status, string Note)?> TryFastCaptionOneAsync(
+        string path, EncodedImage image, string? instruction, CancellationToken ct)
+    {
+        var opts = _cfg.GetFormatOptions();
+        var sys = FastBatchCaptioner.BuildSingleShotSystemPrompt(
+            opts.Mode, opts.HybridProfile, instruction ?? "");
+
+        // 用**助手那一档**预算/温度（不是翻译那档）：克隆一份配置再改，
+        // 避免动到全局 _cfg（并发时全局突变是灾难）。
+        AppSettings cl;
+        try { cl = AppSettings.FromJson(_cfg.ToJson()) ?? _cfg; }
+        catch { cl = _cfg; }
+        cl.MaxTokens = LlmClient.ResolveBudget(_cfg.AgentMaxTokens, _llm.Caps(_cfg), AppSettings.AgentAutoFallback);
+        cl.Temperature = _cfg.AgentTemperature;
+
+        var chatImage = new LlmClient.ChatImage(ImagePayload.Mime, image.Jpeg);
+        var r = await _llm.ChatAsync(cl, sys,
+            "Inspect the image and return ONLY the JSON object described in the system prompt.",
+            chatImage, ct).ConfigureAwait(false);
+
+        if (!r.Ok)
+        {
+            Log.Write("fast batch: llm failed, fallback -> " + r.Error);
+            return null;
+        }
+
+        var draft = FastBatchCaptioner.ParseModelResponse(r.Content, opts.Mode);
+        var res = FastBatchCaptioner.FinalizeDraft(draft, opts, _vocab, _cfg);
+        if (res.NeedsAgentFallback)
+        {
+            Log.Write($"fast batch: needs fallback (tags={res.FinalTags.Count} " +
+                      $"prose={res.FinalProse.Length}) -> {Path.GetFileName(path)}");
+            return null;
+        }
+
+        var (changed, refused) = OnUiThread(() =>
+        {
+            _pendingTags = new List<string>(res.FinalTags);
+            _proseTail = res.FinalProse;
+            CommitPrompt();
+            var wrote = SaveCurrent(showDialog: false, out var rf);
+            return (wrote, rf);
+        }, (false, false));
+
+        if (refused) return (BatchStatus.Failed, "保存被拒（读不到正文）");
+        Log.Write($"fast batch: {Path.GetFileName(path)} tags={res.FinalTags.Count} " +
+                  $"prose={res.FinalProse.Length} changed={changed}");
+        return changed ? (BatchStatus.Written, "") : (BatchStatus.Unchanged, "");
+    }
+
+    /// <summary>
     /// 处理一张：切到它 → 读图 → 跑一轮助手 → 落盘。
     ///
     /// 返回给记账用的状态。**"模型没提案"与"失败"分开**：前者是模型觉得这张图
@@ -2821,6 +2875,14 @@ public sealed partial class MainWindow : Window
 
             var image = await ImagePayload.LoadAsync(path);
             if (image is null) return (BatchStatus.Failed, "图片读不出来");
+
+            // 两阶段极速流水线（默认开）：单轮结构化输出 + 本地词库对齐。它自己判断
+            // "结果太差"就返回 null，回退到下面完整助手循环——所以是又快又不牺牲质量。
+            if (_cfg.UseFastBatchPipeline)
+            {
+                var fast = await TryFastCaptionOneAsync(path, image, instruction, ct);
+                if (fast is not null) return fast.Value;
+            }
 
             // 与手动路径同一条：不带历史，只这一句。
             // **模型可以自带一句指令**（`label_images` 的 instruction）：给了就用它，

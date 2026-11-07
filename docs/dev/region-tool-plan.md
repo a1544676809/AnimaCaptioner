@@ -718,3 +718,23 @@ AgentKit.IsDisabled 先过一张旧名→现名映射表（LegacyToolNames），
 
 实测：直接对本地模型喂裁剪后的 schema——纯标签只回 add_tags、纯自然语言只回 prose，
 无越界字段。单测见 agent 第 43 节（schema 裁剪/提示词/强校验/调度清散文）。
+
+### ④ 两阶段极速批量（FastBatchCaptioner）
+
+直接用升级包的 Core/FastBatchCaptioner.cs（纯逻辑：BuildSingleShotSystemPrompt /
+ParseModelResponse / FinalizeDraft），Stage 1 的模型调用由 MainWindow 用
+LlmClient.ChatAsync(cfg,sys,user,image) 完成（不是它自己发请求）。
+
+接线（MainWindow.LabelOneAsync）：
+- 若 cfg.UseFastBatchPipeline：先试 TryFastCaptionOneAsync；它返回 null 就回退到完整助手。
+- Stage1 用**助手那一档**预算/温度：克隆配置（AppSettings.FromJson(ToJson())）再改，
+  避免并发时全局 _cfg 突变。
+- 结果落盘仍走 CommitPrompt + SaveCurrent，与手动改动同一条写路径。
+- 兜底：NeedsAgentFallback（无标签 / 混合无描述 / 请求失败）→ 返回 null 走完整循环。
+
+设置：助手工具页底部「批量打标走两阶段极速流水线」勾选框（默认开）。
+
+验证：agent 第 44 节（三种模式的单轮提示形状、fenced/纯 JSON/空解析、Stage2 纯标签丢散文 /
+纯自然语言保描述 / 混合无描述判回退、开关往返）；全 17 套件回归通过；直接对本地
+qwen3.5-9b 发单轮图请求，返回合法 JSON（tags+prose）。
+（UI 里从菜单触发整批的自动化点击不稳，未机器验证；快通道逻辑与落盘路径由单测+直连模型覆盖。）

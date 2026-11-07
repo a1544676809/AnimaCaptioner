@@ -319,6 +319,13 @@
                     <TextBlock FontSize="11" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                                Text="关掉「提出改动」之后助手就只能回答问题、改不了提示词——除非你确实只想拿它当顾问，否则别关。" />
+
+                    <TextBlock Text="批量打标速度" FontWeight="SemiBold" Margin="0,12,0,0" />
+                    <CheckBox x:Name="FastBatchBox" Content="批量打标走「两阶段极速流水线」（推荐）"
+                              ToolTipService.ToolTip="每张图只发一次结构化请求，标签对齐/排序在本地毫秒级完成，比逐张完整助手快数倍。结果太差时会自动回退到完整助手。" />
+                    <TextBlock FontSize="11" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="关掉则每张图跑完整的多轮工具循环（更慢、更「会思考」，每张 2~5 次请求）。只是慢，不是不能用。" />
                 </StackPanel>
 
                 <!-- ============ 联网搜索 ============ -->
