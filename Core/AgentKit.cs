@@ -728,6 +728,23 @@ public static class AgentKit
         });
 
     /// <summary>
+    /// 助手用的 search_tags：在**共享描述**（TagSearchAgent 也用同一段，不能改）之上
+    /// 追加一句"有多个候选就改用 vocab_resolve"。
+    ///
+    /// 为什么单独做一个：实测小模型（qwen3.5-9b）即便系统提示写了"批量核验"，
+    /// 仍然连调 13 次 search_tags 只调 1 次 vocab_resolve——**说明要写在工具描述里**
+    /// 才会被真正遵守（模型选工具时读的就是这段）。而共享描述属于另一个功能，
+    /// 不能为了这里去改它。
+    /// </summary>
+    public static AgentTool SearchToolAssistant => new(
+        SearchToolName,
+        TagSearchAgent.ToolDescription +
+        " IMPORTANT: if you need to check more than ONE name, call vocab_resolve ONCE with " +
+        "the whole list instead of calling this tool repeatedly — vocab_resolve returns the " +
+        "same information for up to 60 names in a single call.",
+        SearchTool.Parameters);
+
+    /// <summary>
     /// 联网查一个词的意思。只在设置里开了联网搜索时下发——没配后端时下发它，
     /// 模型会调一个必然失败的工具，白烧一轮预算。
     /// </summary>
@@ -913,7 +930,7 @@ public static class AgentKit
             tools.Add(CurrentImageTool);
             tools.Add(ImageInfoTool);
         }
-        tools.Add(SearchTool);
+        tools.Add(SearchToolAssistant);
         // 批量核验/扫描：纯本地词库，便宜，和 search_tags 一起常驻。
         tools.Add(VocabResolveTool);
         tools.Add(VocabScanTool);
@@ -996,7 +1013,9 @@ public static class AgentKit
             "- When you have SEVERAL candidate tags at once (you usually do, right after " +
             "looking at the image), pass the whole list to vocab_resolve in ONE call instead " +
             "of one search_tags per tag: it checks up to 60 names and returns the same " +
-            "information. Use vocab_scan to pull real tags out of a paragraph you wrote.\n" +
+            "information. Use vocab_scan to pull real tags out of a paragraph you wrote. " +
+            "Do NOT call search_tags more than twice in a row — for anything beyond a couple " +
+            "of names, use vocab_resolve.\n" +
             "- Search with SHORT queries of one or two words, one concept at a time. Never " +
             "pass a whole sentence: split \"white lace dress\" into \"white dress\" and " +
             "\"lace\" and search both.\n" +
