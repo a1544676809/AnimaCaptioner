@@ -380,6 +380,41 @@ public static class AgentKit
     /// 认不出时返回 <c>""</c>（空串）——与 null（= 明确要求清除）区分开，
     /// 这样调用方能如实告诉模型"这个名字我不认识"而不是悄悄当成清除。
     /// </summary>
+    /// <summary>
+    /// 从 search_tags 的参数里取查询列表。**同时兼容两种形态**：
+    /// - 助手：`{"queries":["a","b"]}`（数组，AnimaAIProxy 形态）
+    /// - TagSearchAgent（共享 SearchTool）：`{"query":"a"}`（单条，旧形态）
+    /// 归一成列表；去重、最多 12 条（与 schema 的上限一致）。
+    /// </summary>
+    public static List<string> ParseQueries(string arguments)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(arguments)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(arguments);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return list;
+            var root = doc.RootElement;
+            if (root.TryGetProperty("queries", out var q) && q.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var e in q.EnumerateArray())
+                {
+                    var s = (e.ValueKind == JsonValueKind.String ? e.GetString() : null)?.Trim() ?? "";
+                    if (s.Length > 0) list.Add(s);
+                }
+            }
+            else if (root.TryGetProperty("query", out var one) && one.ValueKind == JsonValueKind.String)
+            {
+                var s = (one.GetString() ?? "").Trim();
+                if (s.Length > 0) list.Add(s);
+            }
+        }
+        catch (JsonException) { /* 交给调用方按"空查询"处理 */ }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return list.Where(seen.Add).Take(12).ToList();
+    }
+
     public static string? NormalizeSection(string? raw)
     {
         var s = (raw ?? "").Trim();
@@ -728,21 +763,47 @@ public static class AgentKit
         });
 
     /// <summary>
-    /// 助手用的 search_tags：在**共享描述**（TagSearchAgent 也用同一段，不能改）之上
-    /// 追加一句"有多个候选就改用 vocab_resolve"。
+    /// 助手用的 search_tags：**入参是"查询数组"**，和 AnimaAIProxy 的
+    /// `danbooru_search_tags` 完全一致。
     ///
-    /// 为什么单独做一个：实测小模型（qwen3.5-9b）即便系统提示写了"批量核验"，
-    /// 仍然连调 13 次 search_tags 只调 1 次 vocab_resolve——**说明要写在工具描述里**
-    /// 才会被真正遵守（模型选工具时读的就是这段）。而共享描述属于另一个功能，
-    /// 不能为了这里去改它。
+    /// 这是本次的关键修正。我们之前是"search_tags(单个 query) + vocab_resolve(批量)"
+    /// 两个工具并存，结果小模型（qwen3.5-9b）连调 13~16 次 search_tags——因为单条
+    /// 查询更符合它"一个词查一次"的直觉，批量那个成了摆设。AnimaAIProxy 的做法是
+    /// **把搜索工具本身改成数组入参**："只查一个"不过是数组里只有一个元素，
+    /// 于是没有单条形态可退，天然每次都走批量、一次回合查完。
+    ///
+    /// 共享的 <see cref="SearchTool"/>（单个 query）保留给 TagSearchAgent 那个功能；
+    /// 助手这边用这个数组版本，两者同名 `search_tags`、参数形状不同。
     /// </summary>
     public static AgentTool SearchToolAssistant => new(
         SearchToolName,
-        TagSearchAgent.ToolDescription +
-        " IMPORTANT: if you need to check more than ONE name, call vocab_resolve ONCE with " +
-        "the whole list instead of calling this tool repeatedly — vocab_resolve returns the " +
-        "same information for up to 60 names in a single call.",
-        SearchTool.Parameters);
+        "Search a local Danbooru/Anima tag database (330k tags, with Chinese meanings, " +
+        "categories and usage counts). Pass SEVERAL short queries in ONE call (up to 12, one " +
+        "or two words each, one concept per entry) — never a whole sentence, and never one " +
+        "call per tag: checking a single tag is just an array with one element. Tags are " +
+        "EXACT strings (`blush` and `blushing` are different; the latter does not exist), so " +
+        "never name a tag from memory — copy it out of the result. Each row reads " +
+        "`N. tag=<exact tag> | cn=<meaning> | posts=<usage>`. An empty result means the " +
+        "database has no such tag; try fewer or more general words, or the Chinese equivalent. " +
+        "The query matches tag names AND their Chinese meanings, so English or Chinese work.",
+        new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject
+            {
+                ["queries"] = new JsonObject
+                {
+                    ["type"] = "array",
+                    ["items"] = new JsonObject { ["type"] = "string" },
+                    ["minItems"] = 1,
+                    ["maxItems"] = 12,
+                    ["description"] = "1-12 short queries, e.g. [\"white dress\", \"lace\", " +
+                                      "\"蕾丝\"]. One concept per entry; English or Chinese. " +
+                                      "A single tag is a one-element array.",
+                },
+            },
+            ["required"] = new JsonArray { "queries" },
+        });
 
     /// <summary>
     /// 联网查一个词的意思。只在设置里开了联网搜索时下发——没配后端时下发它，
@@ -844,6 +905,7 @@ public static class AgentKit
     /// "有数据集就能切"的老行为；**批量内层那一轮必须传 false**——外层循环已经替它
     /// 选好了这一张，模型再切走就会把提案落到别的图上，而外层还以为在改这一张。
     /// </summary>
+    // ---- Phase 2：vocab_resolve / vocab_scan / read_page ----
     /// <summary>
     /// 批量核验候选标签名：一次提交一批（最多 60 个）候选词，本地词库毫秒级返回
     /// 精确命中 / 别名重定向 / 中文释义 / 分类 / 帖数，未命中的附 Top-3 近似词。
@@ -1008,17 +1070,15 @@ public static class AgentKit
             "A finished prompt is comma-separated English Danbooru tags, optionally " +
             "followed by one paragraph of English natural language.\n" +
             "Rules:\n" +
-            "- Call search_tags for EVERY tag name before you use it. Tag names are exact " +
+            "- Before you use any tag, look it up with search_tags. Tag names are exact " +
             "strings; a name you write from memory is probably not a real tag.\n" +
-            "- When you have SEVERAL candidate tags at once (you usually do, right after " +
-            "looking at the image), pass the whole list to vocab_resolve in ONE call instead " +
-            "of one search_tags per tag: it checks up to 60 names and returns the same " +
-            "information. Use vocab_scan to pull real tags out of a paragraph you wrote. " +
-            "Do NOT call search_tags more than twice in a row — for anything beyond a couple " +
-            "of names, use vocab_resolve.\n" +
-            "- Search with SHORT queries of one or two words, one concept at a time. Never " +
-            "pass a whole sentence: split \"white lace dress\" into \"white dress\" and " +
-            "\"lace\" and search both.\n" +
+            "- **search_tags takes an ARRAY of queries.** Put all your candidate tags into ONE " +
+            "call (up to 12 short entries), do not call it once per tag — checking a single tag " +
+            "is just an array with one element. Use vocab_scan to pull real tags out of a " +
+            "paragraph you wrote, and vocab_resolve to verify a list of exact spellings at once.\n" +
+            "- Keep each query SHORT (one or two words, one concept). Never pass a whole " +
+            "sentence: split \"white lace dress\" into \"white dress\" and \"lace\" — but put " +
+            "both in the SAME search_tags call.\n" +
             "- If a concept has no matching tag, DO NOT invent a tag for it. Say it in the " +
             "prose paragraph in plain English instead. Relations between things (\"the cat " +
             "sits on her shoulder\"), actions in a sentence, and made-up names belong in " +

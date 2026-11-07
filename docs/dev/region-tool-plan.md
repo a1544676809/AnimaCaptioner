@@ -629,3 +629,24 @@ FastBatchCaptioner 两阶段流水线、Phase 4 SharedCore。要做得对，需�
 331,808 tags 验 FindExact/ResolveBatch/ScanText）；全 17 个套件回归通过。
 真机 E2E 未完成：当前活动站点是用户新加的 tailscale 本地模型（100.68.153.10:8080），
 那一轮在等待窗口内没返回，属环境问题；工具调度已由假 host 单测覆盖。
+
+### 续：search_tags 改成数组入参（照 AnimaAIProxy 的实际做法）
+
+上一轮"加 vocab_resolve 并劝模型用它"没解决问题：qwen3.5-9b 仍连调 13~16 次
+search_tags。去读 AnimaAIProxy 源码（E:\source\repos\AnimaAIProxy\Core\ToolCatalog.cs）
+才发现关键——它**没有移除 search_tags**，而是把 \danbooru_search_tags\ 的**入参从
+单个 query 改成 queries 数组**。原注释："入参从『一个查询』改成了『查询数组』…
+『只查一个』不过是数组里只有一个元素。"
+
+照此改造 AnimaCaptioner：
+- \AgentKit.SearchToolAssistant\：参数改成 \queries: string[]\（1~12），描述强调
+  "单条也传数组、不要一个词一次"。
+- \AgentKit.ParseQueries\：同吃 \queries\ 数组与旧的 \query\ 单条（TagSearchAgent
+  的共享 SearchTool 仍是单条，不能动）。
+- \TagAgent\ 的 search_tags 分支：逐条查、拼成一段（每条带"— 查询词"小标题）。
+
+实测（同一个本地模型）：改前 16 次单条 → 改后 **2 次、每次带一串 queries**，轮次 10→7。
+这才对上"完全迁移到批量查询、即使只查一个"的实际机制：**工具本身只有数组形态，
+没有单条退路**。名字不是关键。
+
+教训：遇到"模型不用新工具"，先去读那个已知能跑通的参照实现，比在提示词上反复加词更有效。

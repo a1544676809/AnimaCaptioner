@@ -1827,6 +1827,56 @@ public static class Agent
             else { Console.WriteLine("  （跳过引擎断言：没有 AC_VOCABDB）"); }
         }
 
+        Console.WriteLine("\n=== 40. search_tags 改成数组入参（照 AnimaAIProxy 的做法）===");
+        {
+            // 关键洞察来自 AnimaAIProxy 的 ToolCatalog：它不是"移除 search_tags、只留批量工具"，
+            // 而是**把 search_tags 的入参从单个 query 改成 queries 数组**——"只查一个"
+            // 不过是数组里有一个元素。这样没有单条形态可退，模型天然一次查完。
+            var q1 = AgentKit.ParseQueries("""{"queries":["white dress","lace","蕾丝"]}""");
+            Eq("数组形态解析", string.Join("|", q1), "white dress|lace|蕾丝");
+
+            var q2 = AgentKit.ParseQueries("""{"query":"smile"}""");
+            Eq("旧的单条 query 也认（TagSearchAgent 还在用）", string.Join("|", q2), "smile");
+
+            var q3 = AgentKit.ParseQueries("""{"queries":["a","A","b"]}""");
+            Eq("去重（忽略大小写）", string.Join("|", q3), "a|b");
+
+            var many = AgentKit.ParseQueries("{\"queries\":[" +
+                string.Join(",", Enumerable.Range(0, 20).Select(i => $"\"t{i}\"")) + "]}");
+            Eq("最多 12 条（与 schema 上限一致）", many.Count, 12);
+
+            Eq("空/坏参数返回空列表", AgentKit.ParseQueries("{}").Count, 0);
+            Eq("非 JSON 返回空列表", AgentKit.ParseQueries("nope").Count, 0);
+
+            // 助手下发的 search_tags 参数是 queries（数组），不是 query
+            var props = AgentKit.SearchToolAssistant.Parameters["properties"] as System.Text.Json.Nodes.JsonObject;
+            True("助手 search_tags 的参数是 queries", props!.ContainsKey("queries"));
+            True("不再有单个 query 参数", !props.ContainsKey("query"));
+            True("描述里说明「单条也传数组」",
+                 AgentKit.SearchToolAssistant.Description.Contains("array with one element"));
+
+            // 调度：一次调用查两条，host 被调两次，结果合并回给模型
+            var h = new FakeHost();
+            h.Turn(Tool("s1", AgentKit.SearchToolName, """{"queries":["a","b"]}"""))
+             .Turn(Tool("p1", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            var o = Run(h, "查两个词");
+            Eq("host 被查了两次", h.Searches.Count, 2);
+            Eq("两个词都查了", string.Join("|", h.Searches), "a|b");
+            var toolMsg = o.Log.Any(l => l.Contains("批量查 2 个词"));
+            True("日志说是批量查", toolMsg);
+            bool HasToolText(string needle) => h.SeenMessages.SelectMany(r => r)
+                .Any(m => m["role"]?.GetValue<string>() == "tool" &&
+                          (m["content"]?.GetValue<string>() ?? "").Contains(needle));
+            True("两条结果都在回灌文本里", HasToolText("query=a") && HasToolText("query=b"));
+
+            // 单元素数组也走同一条路（"只查一个"）
+            var h2 = new FakeHost();
+            h2.Turn(Tool("s2", AgentKit.SearchToolName, """{"queries":["solo"]}"""))
+              .Turn(Tool("p2", AgentKit.ProposeToolName, """{"add_tags":[]}"""));
+            Run(h2, "查一个词");
+            Eq("单元素数组也查了", string.Join("|", h2.Searches), "solo");
+        }
+
         Console.WriteLine($"\n=== agent: {(bad == 0 ? "OK" : bad + " FAILED")} ===");
         return bad == 0 ? 0 : 1;
     }

@@ -783,11 +783,14 @@ public sealed class TagAgent
 
                 if (string.Equals(call.Name, AgentKit.SearchToolName, StringComparison.Ordinal))
                 {
-                    var query = DescribeQuery(call.Arguments);
-                    if (query.Length == 0)
+                    // **一次调用查多条**（AnimaAIProxy 形态）：queries 数组，单条也走这里。
+                    // 旧形态 `{"query":"..."}` 也认（TagSearchAgent 那个功能还在用）。
+                    var queries = AgentKit.ParseQueries(call.Arguments);
+                    if (queries.Count == 0)
                     {
                         const string retry =
-                            "The query was empty. Call search_tags again with one or two words.";
+                            "No query was given. Call search_tags again with a `queries` array of " +
+                            "one or two words each (a single tag is a one-element array).";
                         messages.Add(LlmClient.ToolMessage(call.Id, retry));
                         log.Add("查（空查询）→ 已要求重试");
                         Report(new ToolCallLog(call.Name, call.Arguments, retry));
@@ -796,11 +799,24 @@ public sealed class TagAgent
 
                     ReportStart(call.Name, call.Arguments);
 
-                    var res = host.Search(query, out var hits, out var split);
-                    found.AddRange(hits);
-                    log.Add(hits.Count > 0 ? $"查「{query}」→ {hits.Count} 条" : $"查「{query}」→ 无结果");
-                    Report(new ToolCallLog(call.Name, call.Arguments, res));
-                    messages.Add(LlmClient.ToolMessage(call.Id, res));
+                    // 逐条查，拼成一段：每条前面带一个 "— 查询词" 的小标题，模型才分得清
+                    // 哪条结果对应哪个词（与 AnimaAIProxy "一次查完"同一个意图）。
+                    var sb = new StringBuilder();
+                    var total = 0;
+                    foreach (var q in queries)
+                    {
+                        var res = host.Search(q, out var hits, out _);
+                        found.AddRange(hits);
+                        total += hits.Count;
+                        if (queries.Count > 1) sb.Append("— ").Append(q).Append('\n');
+                        sb.Append(res).Append('\n');
+                    }
+                    var text = sb.ToString().TrimEnd();
+                    log.Add(queries.Count > 1
+                        ? $"批量查 {queries.Count} 个词 → 共 {total} 条"
+                        : $"查「{queries[0]}」→ {total} 条");
+                    Report(new ToolCallLog(call.Name, call.Arguments, text));
+                    messages.Add(LlmClient.ToolMessage(call.Id, text));
                     continue;
                 }
 
